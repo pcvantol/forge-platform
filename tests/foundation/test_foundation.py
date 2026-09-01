@@ -82,6 +82,10 @@ def main() -> None:
         "Forge Platform MVP 1.0",
         "MVP 1.0 release gate",
         "Production action for this roadmap consolidation is **NONE**",
+        "MULTI_PROJECT_CONSOLE_QUALIFIED",
+        "EP_EXTRACTION_CUTOVER_COMPLETE",
+        "EP_SELF_HOSTING_QUALIFIED",
+        "zero-live-duplicate audit",
     ):
         if required_term not in roadmap:
             raise SystemExit(f"MVP roadmap is missing required term: {required_term}")

@@ -196,6 +196,14 @@ Co-location changes no authority. An EP Server and Project Agent on the same mac
 
 The family runtime rule is: **source checkouts develop, test, and build; published/installed artifacts run.** In particular, an Engineering Platform source checkout never becomes runtime authority.
 
+### Two-project B8C qualification and extraction boundary
+
+Immediately after B8, CENTRAL and the same Project Agent qualify their real multi-project behavior using two attached development projects: DJConnect and the Engineering Platform source checkout. The latter is an ordinary development repository/project declared by `.engineering-platform/repository.json`; it is not a disposable fixture and it is not a self-hosted execution target. The installed EP Server/Agent artifacts remain the only runtime authority. B8C must prove project-selector behavior, strict `project_id` isolation for queue/runs/reports/Prompt History/evidence/status, correct distinction between installation-wide diagnostics and project data, browser refresh/deep-link/selection safety, and fail-closed absence of cross-project leakage.
+
+B9 subsequently exercises the first governed execution only for DJConnect: CENTRAL → Project Agent → DJConnect isolated worktree → provider/Codex → validation, qualification, evidence, and finalization. A successful B9 establishes `STANDALONE_EP_VERIFIED`. Only then may DJConnect retire its active generic EP implementation/runtime/source duplicates under a zero-live-duplicate audit. That audit protects historical prompts, receipts, provenance, the `HISTORY_ONLY` legacy database, migration/extraction evidence, `.engineering-platform/repository.json`, and necessary DJConnect-specific installed-EP consumer adapters. It does not permit historical evidence to be erased or the EP source checkout to become runtime authority.
+
+After `STANDALONE_EP_VERIFIED`, EP self-hosting, CENTRAL relocation, and multi-repository parallelism are separate qualification lanes. They may be planned in parallel with the DJConnect cleanup, but none replaces or changes its independently auditable `EP_EXTRACTION_CUTOVER_COMPLETE` end gate.
+
 ## Explicitly open implementation questions
 
 The following are intentionally not canonicalized here:
