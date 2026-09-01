@@ -13,8 +13,8 @@
   "materializer_version": "1",
   "profile": "forge-platform",
   "projection_digest": "34d04daa1668d5ee1288a22d77aa143fecf4e167cb7fdc443d4082cb3ed45d77",
-  "projection_file_digest": "64b52f43a1d972dd57b227f74951774c4bb1b64a232d48e9bb82b89ffaf66173",
+  "projection_file_digest": "193b69287e070da2e2a0f4c17118ebab477b5ca0a2689cdc3c0787dc39af450f",
   "schema_version": "1",
-  "source_commit": "dc58a5351b69074f445e0e81499bff816dbca738",
+  "source_commit": "4a39841a0c85b0e9962c85a74a3fd49d9803c13d",
   "source_repo": "pcvantol/ai-development-contracts"
 }

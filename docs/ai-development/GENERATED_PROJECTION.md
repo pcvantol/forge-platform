@@ -4,7 +4,7 @@ Do not edit; update the local extension or canonical contracts.
 
 - schema_version: `1`
 - source_repo: `pcvantol/ai-development-contracts`
-- source_commit: `dc58a5351b69074f445e0e81499bff816dbca738`
+- source_commit: `4a39841a0c85b0e9962c85a74a3fd49d9803c13d`
 - profile: `forge-platform`
 - extension_identity: `FORGE_PLATFORM_DEVELOPMENT_EXTENSION`
 - projection_digest: `34d04daa1668d5ee1288a22d77aa143fecf4e167cb7fdc443d4082cb3ed45d77`
