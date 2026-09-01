@@ -85,6 +85,10 @@ def main() -> None:
         "MULTI_PROJECT_CONSOLE_QUALIFIED",
         "EP_EXTRACTION_CUTOVER_COMPLETE",
         "EP_SELF_HOSTING_QUALIFIED",
+        "MVP_1_0_RELEASE_READY",
+        "B8C_PASS",
+        "B8D_PASS",
+        "CANONICAL_SUBMISSION_INGRESS_READY",
         "zero-live-duplicate audit",
     ):
         if required_term not in roadmap:

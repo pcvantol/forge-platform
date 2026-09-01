@@ -56,7 +56,8 @@ The following need later ADRs or versioned product contracts; they do not block 
 | W4 `MVP-INST-001` macOS installation lifecycle | Forge Platform, consuming product artifacts | **Current:** no universal installer implementation. **Target:** clean-machine macOS Complete, Server/headless, Developer Workstation, and Custom role flows; verification, credentials, explicit service registration, receipts, upgrade, repair, and uninstall. | W0–W3; `MVP-COMP-001`. | Clean-install and repeatability tests; upgrade/repair/uninstall tests; least-privilege/security review; receipts and diagnostics. | Yes |
 | W4 `MVP-MIG-001` Historical EP transition qualification | EP owns product migration; Forge Platform owns composed-install disposition | **Current:** DJConnect records clean-slate extraction and forensic-retention decisions; it is not a production migration authorization. **Target:** a qualified legacy-to-standalone clean-install/re-registration runbook: fresh official Schema 41 CENTRAL database, no legacy database migration, retained legacy store as immutable forensic evidence only, and no legacy runtime authority. | `MVP-REC-001`; `MVP-INST-001`; EP-owned contract. | Executed non-production clean-host qualification; legacy-store fingerprint/integrity evidence; fresh-store and new-registration evidence; recovery evidence; migration decision record; documented operator path. | Yes |
 | B8C `MULTI_PROJECT_CONSOLE_QUALIFIED` First real multi-project qualification | Engineering Platform Server/Operations Console and Project Agent; Forge Platform records composed evidence | **Target:** immediately after B8, attach `djconnect` and the `engineering-platform` development checkout as two first-class projects to the same CENTRAL/Agent. The latter uses its portable `.engineering-platform/repository.json`; it remains a development/source project while the installed EP artifact remains runtime authority. | B8 pairing and first DJConnect attachment; installed EP artifacts. | Project-selector/pulldown, `project_id` scoping, project-isolated queue/runs/reports/Prompt History/evidence/status, installation-wide versus project-scoped views, refresh/deep-link/selection behavior, and fail-closed cross-project-leakage negatives. | Yes for B9 / `STANDALONE_EP_VERIFIED`; it does not execute EP against its own source checkout. |
-| B9 `STANDALONE_EP_VERIFIED` First governed end-to-end execution | Engineering Platform Server and Project Agent; DJConnect is the first execution target | **Target:** the first governed standalone execution follows CENTRAL → Project Agent → DJConnect isolated worktree → provider/Codex → validation/qualification/evidence/finalization. | `MULTI_PROJECT_CONSOLE_QUALIFIED`; installed EP artifacts; DJConnect attachment. | Retained end-to-end receipt and qualification bundle proving the full path, authority boundaries, isolated-worktree handling, and successful finalization. | Yes; success establishes `STANDALONE_EP_VERIFIED`. |
+| B8D `CANONICAL_SUBMISSION_INGRESS_READY` Canonical submission service and multi-adapter ingress | Engineering Platform Server | **Target:** installed CENTRAL exposes one authenticated HTTP JSON consumer ingress for project adapters, Forge and Workspace; CLI submission and legacy file Inbox input are adapters to that same Server-owned submission/admission service. | `MULTI_PROJECT_CONSOLE_QUALIFIED`; installed EP Server; project-identity/scope contract. | One versioned submission model; required project/repository scope; producer provenance; idempotency; common validation/normalization/persistence/admission/preflight/queue/Prompt History/telemetry/retry-recovery behavior; route-equivalence and fail-closed negative tests. | Yes for B9; it introduces no second lifecycle domain and does not itself execute engineering work. |
+| B9 `STANDALONE_EP_VERIFIED` First governed end-to-end execution | Engineering Platform Server and Project Agent; DJConnect is the first execution target | **Target:** the first governed standalone execution follows canonical consumer ingress → CENTRAL → Project Agent → DJConnect isolated worktree → provider/Codex → validation/qualification/evidence/finalization. | `CANONICAL_SUBMISSION_INGRESS_READY`; installed EP artifacts; DJConnect attachment. | Retained end-to-end receipt and qualification bundle proving the full path, authority boundaries, isolated-worktree handling, and successful finalization. | Yes; success establishes `STANDALONE_EP_VERIFIED`. |
 | F0 `EP_EXTRACTION_CUTOVER_COMPLETE` DJConnect EP extraction cutover/finalization | DJConnect owns removal from its repository; Engineering Platform owns the retained installed product/runtime; Forge Platform records boundary evidence | **Target:** only after `STANDALONE_EP_VERIFIED`, remove or retire every active generic EP product/runtime/source duplicate from DJConnect while retaining explicitly protected consumer declarations and historical evidence. | `STANDALONE_EP_VERIFIED`; DJConnect-governed cleanup plan and zero-live-duplicate audit. | Audit proves generic live EP implementation, runtime authority, and duplicated EP product semantics in DJConnect each equal zero; protected evidence and consumer material remain intact. | Yes for declaring extraction cutover complete; it does not retroactively alter B8C or B9 evidence. |
 | S0 `EP_SELF_HOSTING_QUALIFIED` Separate EP self-hosting qualification | Engineering Platform | **Target:** an installed EP artifact executes governed development work for the Engineering Platform source project under the published contracts. | `STANDALONE_EP_VERIFIED`; separate EP-owned self-hosting plan and safeguards. | Dedicated self-hosting qualification and evidence; no source-checkout runtime authority. | No — separate from B8C/B9 and may not be inferred from their success. |
 | K1–K4 `MVP-KNOW-001` Governed knowledge consumption boundary | Knowledge Base, Forge, EP/TDE evidence producers | **Current:** KB is a Git-backed CLI; governed observation/certification and read-only consumption are architecture-defined. **Target:** no mandatory runtime dependency for MVP; if evidence is used, it is traceable, read-only, and independently certified. | Knowledge-loop architecture; explicit producer contracts. | Boundary review; provenance tests for any adopted evidence. | No |
@@ -69,23 +70,28 @@ The following need later ADRs or versioned product contracts; they do not block 
 
 ## Critical path
 
-```text
-B7 clean-host retirement
-  → B7A/B7B installed standalone EP Server + Project Agent
-    → B8 DJConnect pairing and attachment
-      → B8C two real development projects / multi-project Operations Console qualification
-        → B9 first governed DJConnect execution
-          → STANDALONE_EP_VERIFIED
-            → DJConnect EP extraction cutover/finalization
-              → EP_EXTRACTION_CUTOVER_COMPLETE
+The roadmap has two prerequisite chains that join at the MVP release decision. The composition chain proves that a supported installed-artifact product exists. The standalone-transition chain proves that the historical DJConnect-hosted implementation has been replaced without leaving a second live generic EP authority. Neither chain can substitute for the other.
 
-Composition work remains dependency ordered:
-W0 contracts and trust → W1 publishable artifacts + qualified composition
-  → W2 execution + Forge/Workspace integration → W3 operations/recovery
-    → W4 installation lifecycle + historical-EP transition → MVP 1.0 release gate
+```text
+COMPOSITION PREREQUISITES                         STANDALONE-TRANSITION PREREQUISITES
+W0 contracts/trust                                B7 clean-host retirement
+  → W1 artifacts + qualified composition            → B7A/B7B installed standalone Server + Agent
+    → W2 execution + consumer integration              → B8_PASS: DJConnect paired and attached
+      → W3 operations/persistence/recovery                → B8C_PASS: two real development projects isolated
+        → W4 installation + clean-slate transition           → B8D_PASS: canonical consumer ingress ready
+                                                               → B9_PASS: governed DJConnect execution finalized
+                                                               → STANDALONE_EP_VERIFIED
+                                                                 → CUTOVER_PASS: zero-live-duplicate audit
+                                                                   → EP_EXTRACTION_CUTOVER_COMPLETE
+
+W4 + EP_EXTRACTION_CUTOVER_COMPLETE
+  → MVP_1_0_RELEASE_READY
+    → evidence-based MVP 1.0 release gate
 ```
 
-`B8C` deliberately uses two actual repositories, not a disposable fixture. `djconnect` remains the first B9 execution target; the Engineering Platform source checkout is attached solely as a second development project for multi-project qualification. In every stage, source checkouts develop, test, and build, while the installed EP artifact is runtime authority.
+`B8_PASS` is limited to authenticated pairing plus DJConnect attachment; it does not prove multi-project correctness or an execution-ready submission path. `B8C_PASS` deliberately uses two actual repositories, not a disposable fixture. `B8D_PASS` is a separate hard admission prerequisite for B9: HTTP JSON, CLI, and legacy file-Inbox transports must converge on one authenticated CENTRAL submission/admission service, with no adapter-specific execution semantics or parallel lifecycle domain. `B9_PASS` requires a successful full DJConnect lifecycle, not merely provider activity or a created worktree. `STANDALONE_EP_VERIFIED` exists only when B8C, B8D, and B9 have passed with retained evidence. In every stage, source checkouts develop, test, and build, while the installed EP artifact is runtime authority.
+
+`CUTOVER_PASS` is intentionally narrower and harder than a documentation review: the DJConnect zero-live-duplicate audit must pass while protected historical evidence remains. `EP_EXTRACTION_CUTOVER_COMPLETE` is therefore a prerequisite to `MVP_1_0_RELEASE_READY`, not an optional later tidying activity.
 
 Knowledge integration may progress in parallel only as an additive, read-only governed capability. After `STANDALONE_EP_VERIFIED`, CENTRAL relocation, multi-repository parallel execution, and separately scoped EP self-hosting may also progress in parallel with the DJConnect cutover where their repository and change controls allow it. None weakens, substitutes for, or broadens the cutover's zero-live-duplicate audit; `EP_EXTRACTION_CUTOVER_COMPLETE` remains an independent finalization gate.
 
@@ -100,6 +106,19 @@ The retained qualification bundle must prove all of the following:
 - Installation-wide diagnostics remain installation-wide and are not falsely presented as project-scoped data.
 - Browser refresh, direct/deep links, selector changes, and restored selection retain or safely re-establish project context without stale cross-project display.
 - Positive isolation and negative leakage tests fail closed: a missing, stale, forged, or mismatched project context returns no other project's data and cannot be repaired by client-side filtering alone.
+
+## B8D canonical submission ingress
+
+`CANONICAL_SUBMISSION_INGRESS_READY` closes the admission-path gap before B9. It is distinct from the CENTRAL↔Project Agent protocol: the Agent protocol is the authenticated Server-to-host execution boundary, while B8D is the consumer-to-CENTRAL submission boundary. Pairing, health, and repository attachment do not prove either first-class consumer ingress or a governed execution dispatch.
+
+```text
+HTTP JSON consumer API ─┐
+CLI submit ─────────────┼─→ one CENTRAL submission/admission service
+Legacy file Inbox ──────┘                 │
+                                            → durable queue/lifecycle → Project Agent
+```
+
+HTTP JSON is for authenticated project adapters, Forge, Workspace, and future permitted consumers. The legacy file Inbox remains only a transport adapter if retained; its polling/filesystem behavior is not a second execution authority. All three routes must use the same versioned request model, project/repository identity resolution, producer provenance, idempotency, validation/normalization, durable persistence, admission/preflight, queue, Prompt History, telemetry, retry/recovery, and lifecycle semantics. Unknown, ambiguous, stale, or conflicting project/repository identity fails closed. B8D does not run an engineering task; B9 is the first live execution proof.
 
 ## DJConnect EP extraction cutover/finalization
 
@@ -209,7 +228,7 @@ Release requires a retained qualification bundle, not a subjective readiness sta
 | Observability | Component health/version, queues/runs, bounded logs, Prompt History/evidence, and truthful provider/host/model attribution are available; unavailable data is not fabricated. |
 | Qualification and TDE | Contract, integration, security, and installer evidence is retained; applicable standalone TDE validation is linked without copying TDE authority. |
 | Documentation and operations | Bootstrap, supported topology, credential/service operation, recovery, upgrade, and operator runbooks are discoverable from this repository. |
-| Historical transition | EP has a qualified clean-slate legacy-to-standalone disposition: a fresh Schema 41 CENTRAL store, new registrations, preserved forensic legacy evidence, and no live legacy authority. A later standalone-to-standalone relocation, if used, follows the separately qualified EP-owned relocation contract. |
+| Standalone transition and extraction closure | `B8C_PASS` proves two-real-project Operations Console/data isolation; `B8D_PASS` proves one canonical consumer-to-CENTRAL submission/admission path; `B9_PASS` proves the first governed DJConnect lifecycle through CENTRAL→Agent; `STANDALONE_EP_VERIFIED` is retained; and `EP_EXTRACTION_CUTOVER_COMPLETE` proves the zero-live-duplicate audit while preserving protected historical/consumer material. A later standalone-to-standalone relocation, if used, follows the separately qualified EP-owned relocation contract. |
 
 ## Interpretation rules
 
