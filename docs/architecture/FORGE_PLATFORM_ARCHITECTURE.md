@@ -129,6 +129,16 @@ It consumes independently published artifacts and does not compile or repackage 
 
 A Forge Platform release is a tested composition, not a monorepo source version. Each product owns its version and protocol implementation; Forge Platform owns the cross-product compatibility declaration used for a platform release/install.
 
+### CENTRAL transition and future relocation boundary
+
+The historical DJConnect-hosted EP to standalone CENTRAL transition is clean-slate: it creates a fresh official Schema 41 CENTRAL database and new standalone identities. No legacy database is migrated into CENTRAL. The explicitly retained legacy store is immutable forensic history, not runtime input or a fallback authority.
+
+After `STANDALONE_EP_VERIFIED`, Engineering Platform may define and qualify a supported standalone CENTRAL relocation capability for moving an existing operational CENTRAL to another host, first concretely MacBook to Mac mini. Engineering Platform alone owns export/import, admission quiescence, integrity and compatibility checks, snapshot/restore, new-host binding, recovery, health qualification, and Agent endpoint/trust transition semantics. Operational CENTRAL history may be portable only under that EP-owned contract.
+
+Host-local state is not portable by default: launchd definitions/state, PIDs, locks, sockets, caches, absolute host paths, host diagnostics, and other machine-specific runtime material must be regenerated or explicitly handled by Engineering Platform. Before implementation, EP must decide and publish whether logical CENTRAL identity is portable and how it relates to newly established physical Server installation and host identities. Agent endpoint rebind, re-pairing, stale-trust invalidation, and credential rotation are likewise EP-owned contract behavior.
+
+Forge Platform may compose the user journey around qualified EP artifacts—for example, choosing a new CENTRAL or invoking an EP-provided restore/relocate flow—and retain deployment receipts. It is not an owner of CENTRAL migration, data, trust, Agent credential, or recovery semantics.
+
 Installable roles remain independent:
 
 | Role class | Components |

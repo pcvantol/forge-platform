@@ -19,7 +19,7 @@ It is not a source monorepo release and it does not turn Forge Platform into the
 - Durable EP execution semantics required for usable engineering work: project scoping, queue/admission, repository serialization, validation, PR/finalization observation, failure/recovery, and immutable execution evidence.
 - Operational visibility sufficient to run the composition safely: component health/version, host/Agent availability, queue/run status, Prompt History and execution evidence, bounded logs, and provider/machine/model usage attribution where the provider exposes it.
 - Security and qualification evidence: artifact digest/provenance checks, explicit authenticated consumers and Agents, no localhost or co-location bypass, least privilege, release-composition qualification, and TDE evidence where an applicable product contract exists.
-- A documented, qualified migration disposition from the historical DJConnect-hosted EP: either a supported migration path or an explicit clean-install/re-registration path that preserves required forensic evidence without making legacy stores runtime authority.
+- A documented, qualified transition from the historical DJConnect-hosted EP: the legacy-to-standalone transition is clean-slate, with a fresh official Schema 41 CENTRAL database, new standalone identities, and no legacy database migration. The explicitly retained legacy store is immutable forensic history only and never becomes standalone runtime authority.
 
 ### Explicitly post-MVP
 
@@ -33,7 +33,7 @@ It is not a source monorepo release and it does not turn Forge Platform into the
 
 ### Deferred architecture decisions
 
-The following need later ADRs or versioned product contracts; they do not block defining MVP, but may block their own implementation wave: Agent pairing/transport, Workspace-to-local-Agent IPC, durable scheduling API, project-topology manifest schema, credential/pairing lifecycle, multi-host discovery, and the precise legacy-EP migration evidence-retention contract.
+The following need later ADRs or versioned product contracts; they do not block defining MVP, but may block their own implementation wave: Workspace-to-local-Agent IPC, durable scheduling API, project-topology manifest schema, multi-host discovery, the precise legacy-EP forensic-retention contract, and the CENTRAL logical-identity versus physical-installation/host-identity decision required before standalone CENTRAL relocation is implemented.
 
 ## Capability map and dependency order
 
@@ -51,8 +51,9 @@ The following need later ADRs or versioned product contracts; they do not block 
 | W3 `MVP-OPS-001` Operations, evidence, and honest usage | EP primarily; Workspace projects; Forge Platform qualifies composition | **Current:** historical EP material documents bounded status, logs, Prompt History, receipts, and Codex usage semantics. **Target:** qualified views for health, version, queue/run state, Agent availability, logs/evidence, and provider/model/host usage; unavailable measures remain explicitly unavailable. | W2 integration; provider telemetry contract. | Redaction/privacy tests; evidence and availability tests; provider attribution fixtures; no fabricated cost/token assertions. | Yes |
 | W3 `MVP-REC-001` Persistence, backup, and recovery | EP and product storage contracts; Forge Platform validates deployment lifecycle | **Current:** clean-store and transactional-recovery principles exist in historical EP evidence. **Target:** durable supported-store lifecycle, backup/restore and upgrade recovery for the installed composition, with one writable authority. | `MVP-EXEC-001`; product storage migration contract. | Restart/interruption, backup/restore, upgrade/rollback-or-fail-safe evidence; forensic legacy-store disposition. | Yes |
 | W4 `MVP-INST-001` macOS installation lifecycle | Forge Platform, consuming product artifacts | **Current:** no universal installer implementation. **Target:** clean-machine macOS Complete, Server/headless, Developer Workstation, and Custom role flows; verification, credentials, explicit service registration, receipts, upgrade, repair, and uninstall. | W0–W3; `MVP-COMP-001`. | Clean-install and repeatability tests; upgrade/repair/uninstall tests; least-privilege/security review; receipts and diagnostics. | Yes |
-| W4 `MVP-MIG-001` Historical EP transition qualification | EP owns product migration; Forge Platform owns composed-install disposition | **Current:** DJConnect records clean-slate extraction and forensic-retention decisions; it is not a production migration authorization. **Target:** approved migration or clean-install/re-registration runbook with evidence boundaries and no legacy runtime authority. | `MVP-REC-001`; `MVP-INST-001`; EP-owned contract. | Executed non-production qualification, recovery evidence, migration decision record, and documented operator path. | Yes |
+| W4 `MVP-MIG-001` Historical EP transition qualification | EP owns product migration; Forge Platform owns composed-install disposition | **Current:** DJConnect records clean-slate extraction and forensic-retention decisions; it is not a production migration authorization. **Target:** a qualified legacy-to-standalone clean-install/re-registration runbook: fresh official Schema 41 CENTRAL database, no legacy database migration, retained legacy store as immutable forensic evidence only, and no legacy runtime authority. | `MVP-REC-001`; `MVP-INST-001`; EP-owned contract. | Executed non-production clean-host qualification; legacy-store fingerprint/integrity evidence; fresh-store and new-registration evidence; recovery evidence; migration decision record; documented operator path. | Yes |
 | K1–K4 `MVP-KNOW-001` Governed knowledge consumption boundary | Knowledge Base, Forge, EP/TDE evidence producers | **Current:** KB is a Git-backed CLI; governed observation/certification and read-only consumption are architecture-defined. **Target:** no mandatory runtime dependency for MVP; if evidence is used, it is traceable, read-only, and independently certified. | Knowledge-loop architecture; explicit producer contracts. | Boundary review; provenance tests for any adopted evidence. | No |
+| P0 `POST-VERIFY-EP-RELOC-001` Standalone CENTRAL relocation | Engineering Platform owns relocation/export-import and lifecycle semantics; Forge Platform supplies only qualified installer/composition UX and orchestration | **Current:** not implemented or qualified. **Target:** after `STANDALONE_EP_VERIFIED`, EP can support a controlled relocation of an existing standalone CENTRAL to another host (first concrete case: MacBook to Mac mini), preserving supported operational CENTRAL history while establishing a new physical installation/host binding. | `STANDALONE_EP_VERIFIED`; EP-owned relocation contract; clean target-host Server install; explicit logical-CENTRAL versus physical-installation/host identity decision. | EP-owned export/import, quiescence, integrity, compatibility, restore, health, Agent rebind/re-pair/credential-rotation, old-host retirement, and end-to-end qualification evidence. | No — it does not block the B7/B8/B9 path or initial standalone verification; it must qualify before a permanent Mac mini CENTRAL deployment. |
 | P1 `POST-DIST-001` Distributed/team execution | EP, Workspace, Forge; Forge Platform deployment qualification | Multi-host capacity, assignment, disconnect handling, and team fleet operations after a single supported topology qualifies. | W4 stable composition; deferred discovery/scheduling contracts. | Multi-host recovery and concurrency qualification. | No |
 
 ## Critical path
@@ -68,6 +69,43 @@ W0 contracts and trust
 
 Knowledge integration may progress in parallel only as an additive, read-only governed capability. Distributed/team work, additional platforms, and provider expansion follow MVP rather than delay the first coherent composition.
 
+## Post-verification CENTRAL relocation
+
+`POST-VERIFY-EP-RELOC-001` is deliberately distinct from `MVP-MIG-001`:
+
+```text
+Historical legacy EP → standalone CENTRAL
+  clean-slate transition; fresh official Schema 41 CENTRAL DB
+  no legacy DB migration
+
+Existing standalone CENTRAL → another host
+  later supported EP Server/CENTRAL relocation
+  operational history may be preserved under the EP-owned contract
+```
+
+The sequencing is: B7 clean-host retirement, B7A/B7B standalone Server and Agent installation, B8 pairing/attachment, B9 first governed execution, then `STANDALONE_EP_VERIFIED`. Only after that milestone may the relocation capability be implemented and qualified. It may proceed alongside later Forge/Workspace work, but it must be qualified before using a Mac mini as the permanent CENTRAL host. It does not reopen or block the current B7/B8/B9 critical path.
+
+Engineering Platform owns the relocation engine and its product semantics: admission quiescence, integrity checks, a consistent snapshot and manifest/checksums, compatibility validation, restore/import, new-host binding, health/qualification, and controlled retirement of the old installation. Forge Platform may present an installer choice such as **new CENTRAL** or **restore/relocate existing CENTRAL**, validate a qualified composition, and orchestrate calls to EP's published contract. It must not implement or own database migration, snapshot, restore, trust, or recovery semantics.
+
+Before implementation, EP must explicitly decide whether a logical CENTRAL identity is portable while a physical Server installation/host identity is newly issued. The roadmap does not prejudge that decision. The relocation contract must also define the EP-owned Agent endpoint/trust transition: authenticated rebind or re-pair as appropriate, credential rotation/re-provisioning where required, and rejection of stale old-server trust.
+
+### Relocation acceptance and qualification evidence
+
+- A controlled source quiescence proof: no new work is admitted after the relocation boundary and in-flight work is resolved or represented by EP-defined recovery semantics.
+- Source integrity, snapshot consistency, manifest, checksum, supported schema/version compatibility, and import/restore verification evidence.
+- A clean target-host Server installation and a qualification record that distinguishes retained portable CENTRAL history from newly established host/install state.
+- Health, durable-history, execution-evidence, restart, and bounded rollback-or-fail-safe qualification on the target before the source is retired.
+- Agent endpoint/trust transition evidence, including the chosen rebind or re-pair flow, credential rotation where applicable, and negative proof that old credentials/endpoints do not remain silently trusted.
+- An auditable old-host retirement record and a retained relocation receipt that identifies source, target, artifact/version compatibility, and outcome without exposing secrets.
+
+### Relocation non-goals
+
+- It is not a legacy EP-to-standalone migration and may not seed a standalone CENTRAL from the historical legacy database.
+- It does not blindly copy machine-specific launchd state, PIDs, locks, sockets, caches, absolute host paths, host diagnostics, or other host-local runtime state.
+- It does not clone Agent host identities or assume localhost/co-location bypasses endpoint or trust changes.
+- It does not make Forge Platform the owner of an EP migration engine, CENTRAL database semantics, Agent credentials, or recovery policy.
+- It does not authorize a permanent Mac mini deployment before the EP-owned contract and qualification evidence exist.
+
 ## MVP 1.0 release gate
 
 Release requires a retained qualification bundle, not a subjective readiness statement. Every gate below must be `PASS`, or have an explicitly accepted non-blocking exception that does not weaken a listed MVP invariant.
@@ -82,7 +120,7 @@ Release requires a retained qualification bundle, not a subjective readiness sta
 | Observability | Component health/version, queues/runs, bounded logs, Prompt History/evidence, and truthful provider/host/model attribution are available; unavailable data is not fabricated. |
 | Qualification and TDE | Contract, integration, security, and installer evidence is retained; applicable standalone TDE validation is linked without copying TDE authority. |
 | Documentation and operations | Bootstrap, supported topology, credential/service operation, recovery, upgrade, and operator runbooks are discoverable from this repository. |
-| Historical transition | EP has a qualified migration or clean-install/re-registration disposition from DJConnect, with forensic preservation and no live legacy authority. |
+| Historical transition | EP has a qualified clean-slate legacy-to-standalone disposition: a fresh Schema 41 CENTRAL store, new registrations, preserved forensic legacy evidence, and no live legacy authority. A later standalone-to-standalone relocation, if used, follows the separately qualified EP-owned relocation contract. |
 
 ## Interpretation rules
 
