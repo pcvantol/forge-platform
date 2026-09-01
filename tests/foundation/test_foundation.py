@@ -11,6 +11,8 @@ ROOT = Path(__file__).resolve().parents[2]
 
 REQUIRED = (
     "README.md",
+    "BOOTSTRAP.md",
+    "HANDOFF.md",
     "SECURITY.md",
     ".github/workflows/foundation-validation.yml",
     "docs/architecture/README.md",
@@ -28,7 +30,12 @@ REQUIRED = (
     "docs/development/AI_DEVELOPMENT_PROFILE_STATUS.md",
     "docs/development/FORGE_PLATFORM_DEVELOPMENT_EXTENSION.md",
     "docs/development/TDE_INTEGRATION.md",
+    "docs/ai-development/GENERATED_PROJECTION.md",
+    "docs/ai-development/projection-manifest.json",
+    "docs/ai-development/validate_projection.py",
     "docs/governance/FAMILY_MIGRATION_HANDOFF.md",
+    "docs/governance/AI_DEVELOPMENT_CONTRACT_SEMANTIC_EQUIVALENCE_RECEIPT.md",
+    "scripts/validate.sh",
     "provenance/FOUNDATION_RECEIPT.md",
     "schemas/component-manifest.schema.json",
 )
@@ -58,6 +65,13 @@ def main() -> None:
     ):
         if required_term not in architecture:
             raise SystemExit(f"architecture is missing canonical term: {required_term}")
+    manifest = json.loads((ROOT / "docs/ai-development/projection-manifest.json").read_text())
+    if manifest["profile"] != "forge-platform":
+        raise SystemExit("projection profile is invalid")
+    if manifest["extension_identity"] != "FORGE_PLATFORM_DEVELOPMENT_EXTENSION":
+        raise SystemExit("projection extension identity is invalid")
+    if len(manifest["contracts"]) != 8:
+        raise SystemExit("projection must contain all eight generic contracts")
     print("Foundation validation: PASS")
 
 
