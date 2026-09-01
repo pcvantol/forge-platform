@@ -1,17 +1,20 @@
 # Forge Platform roadmap
 
-| Stage | Scope |
-| --- | --- |
-| 0 | Repository and architecture foundation: product boundaries, topology, trust, roles, and ADRs |
-| 1 | Artifact, component-manifest, and compatibility contracts; central Forge Platform AI-development profile/projection |
-| 2 | Independently published Engineering Platform Server and Project Agent artifacts |
-| 3 | Independently published Workspace Server/Client and Forge Runtime artifacts |
-| 4 | macOS native universal installer and clean complete-platform installation |
-| 5 | Updater, repair, uninstall, diagnostics, and deployment receipts |
-| 6 | Distributed/team topology and multi-host qualification |
-| 7 | Windows/Linux Agent and Client installer support |
+This directory is the canonical roadmap location for Forge Platform's cross-product composition product. Architecture remains authoritative for ownership, trust, topology, and runtime boundaries; roadmaps state intent, maturity, sequencing, and qualification work without changing those decisions.
 
-Stages are sequencing guidance, not commitments to implementation details or release dates.
+## Canonical entrypoints
+
+- [Forge Platform MVP 1.0](MVP_1_0.md) — product boundary, capability waves, critical path, and evidence-based release gate.
+- [Historical migration register](MIGRATION_REGISTER.md) — auditable classification of relevant historical DJConnect material and its canonical destination or retained status.
+
+The earlier stage view is retained here as orientation only; it is superseded for MVP planning by the dependency-aware capability map in [MVP 1.0](MVP_1_0.md).
+
+| Earlier stage | Corresponding roadmap concern |
+| --- | --- |
+| 0–1 | Foundation, contracts, manifest, compatibility, and governance |
+| 2–3 | Independently published product artifacts and consumer integration |
+| 4–5 | macOS installation, lifecycle, diagnostics, and receipts |
+| 6–7 | Distributed qualification and Windows/Linux support after MVP |
 
 ## Knowledge learning-loop integration
 

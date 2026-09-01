@@ -29,6 +29,8 @@ REQUIRED = (
     "docs/architecture/COMPATIBILITY.md",
     "docs/architecture/ROLES_AND_PRESETS.md",
     "docs/roadmap/README.md",
+    "docs/roadmap/MVP_1_0.md",
+    "docs/roadmap/MIGRATION_REGISTER.md",
     "docs/development/AI_DEVELOPMENT_PROFILE_STATUS.md",
     "docs/development/FORGE_PLATFORM_DEVELOPMENT_EXTENSION.md",
     "docs/development/TDE_INTEGRATION.md",
@@ -75,6 +77,14 @@ def main() -> None:
     ):
         if required_term not in learning_loop:
             raise SystemExit(f"learning-loop architecture is missing canonical term: {required_term}")
+    roadmap = (ROOT / "docs/roadmap/MVP_1_0.md").read_text()
+    for required_term in (
+        "Forge Platform MVP 1.0",
+        "MVP 1.0 release gate",
+        "Production action for this roadmap consolidation is **NONE**",
+    ):
+        if required_term not in roadmap:
+            raise SystemExit(f"MVP roadmap is missing required term: {required_term}")
     manifest = json.loads((ROOT / "docs/ai-development/projection-manifest.json").read_text())
     if manifest["profile"] != "forge-platform":
         raise SystemExit("projection profile is invalid")

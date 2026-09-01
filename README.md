@@ -18,6 +18,7 @@ Forge Platform consumes qualified, versioned artifacts published by product repo
 - [Architecture Decision Records](docs/architecture/adr/README.md)
 - [Cross-repository ownership matrix](docs/architecture/OWNERSHIP_MATRIX.md)
 - [Roadmap](docs/roadmap/README.md)
+- [MVP 1.0 roadmap](docs/roadmap/MVP_1_0.md)
 - [Development and bootstrap](docs/development/README.md)
 - [Governance](docs/governance/README.md)
 - [TDE integration](docs/development/TDE_INTEGRATION.md)
