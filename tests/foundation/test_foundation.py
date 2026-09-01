@@ -17,12 +17,14 @@ REQUIRED = (
     ".github/workflows/foundation-validation.yml",
     "docs/architecture/README.md",
     "docs/architecture/FORGE_PLATFORM_ARCHITECTURE.md",
+    "docs/architecture/KNOWLEDGE_LEARNING_LOOP.md",
     "docs/architecture/OWNERSHIP_MATRIX.md",
     "docs/architecture/adr/README.md",
     "docs/architecture/adr/ADR-0001-first-class-product-boundaries.md",
     "docs/architecture/adr/ADR-0002-project-repository-host-agent-model.md",
     "docs/architecture/adr/ADR-0003-deployment-and-trust-boundaries.md",
     "docs/architecture/adr/ADR-0004-universal-installer-artifact-composition.md",
+    "docs/architecture/adr/ADR-0005-governed-engineering-learning-loop.md",
     "docs/architecture/COMPONENT_MANIFEST_CONTRACT.md",
     "docs/architecture/COMPATIBILITY.md",
     "docs/architecture/ROLES_AND_PRESETS.md",
@@ -65,6 +67,14 @@ def main() -> None:
     ):
         if required_term not in architecture:
             raise SystemExit(f"architecture is missing canonical term: {required_term}")
+    learning_loop = (ROOT / "docs/architecture/KNOWLEDGE_LEARNING_LOOP.md").read_text()
+    for required_term in (
+        "KB CURRENTLY CLI/REPOSITORY CAPABILITY",
+        "no system becomes authoritative merely because it produced evidence about itself",
+        "Knowledge integration is additive",
+    ):
+        if required_term not in learning_loop:
+            raise SystemExit(f"learning-loop architecture is missing canonical term: {required_term}")
     manifest = json.loads((ROOT / "docs/ai-development/projection-manifest.json").read_text())
     if manifest["profile"] != "forge-platform":
         raise SystemExit("projection profile is invalid")

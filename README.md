@@ -14,6 +14,7 @@ Forge Platform consumes qualified, versioned artifacts published by product repo
 
 - [Architecture](docs/architecture/README.md)
 - [System architecture](docs/architecture/FORGE_PLATFORM_ARCHITECTURE.md)
+- [Governed Knowledge Learning Loop](docs/architecture/KNOWLEDGE_LEARNING_LOOP.md)
 - [Architecture Decision Records](docs/architecture/adr/README.md)
 - [Cross-repository ownership matrix](docs/architecture/OWNERSHIP_MATRIX.md)
 - [Roadmap](docs/roadmap/README.md)

@@ -8,6 +8,8 @@ Forge Platform is a first-class product repository, not a canonical project auth
 
 Detailed decisions are recorded in the [ADRs](adr/README.md). The [ownership matrix](OWNERSHIP_MATRIX.md) is the concise authority reference.
 
+The [Governed Engineering Knowledge Learning Loop](KNOWLEDGE_LEARNING_LOOP.md) records the independently owned Knowledge Base lifecycle and its additive cross-product integration boundary.
+
 ## First-class component model
 
 | Repository | First-class authority / published component |
@@ -21,6 +23,8 @@ Detailed decisions are recorded in the [ADRs](adr/README.md). The [ownership mat
 | `pcvantol/ai-platform-engineering-knowledge-base` | Generalized and certified engineering knowledge authority |
 
 Forge, Workspace, and Engineering Platform are peers. No product repository is a parent source authority for another.
+
+The Knowledge Base is currently a Git-backed, repository-local CLI capability, not a Workspace/EP server role and not a current Forge Platform installer component. It owns source onboarding, observation, knowledge lifecycle, certification, and publications. Forge Platform may later distribute a qualified KB artifact, but owns neither its runtime nor its knowledge authority.
 
 ```mermaid
 flowchart LR
@@ -154,6 +158,8 @@ There are three distinct relationships:
 3. **Workspace Client ↔ local Project Agent:** machine-local repository/host UX integration. It may expose health/version, local project attachment, repository metadata/status, host/tool capability, IDE opening, and other approved local UX operations. It cannot bypass EP admission, provider execution, durable scheduling, finalization/merge authority, direct task execution, or TDE.
 
 The future **EP Local Project Agent API Contract** is owned by Engineering Platform; Workspace owns its consumer/adapter implementation. Forge Platform owns neither side of that protocol.
+
+Knowledge-specific boundaries are separate from these three relationships. A Knowledge Source is read-only to KB operations; KB lifecycle writes occur in the KB repository or an explicit output location. Certified Knowledge is consumed read-only and traceably. Execution outcomes, Agent facts, Forge planning outputs, and TDE evidence are not Certified Knowledge unless independently promoted through the KB lifecycle and governed certification.
 
 Co-location changes no authority. An EP Server and Project Agent on the same machine still use the canonical Agent↔Server contract; EP Server does not directly access local repositories. Localhost never implies trust or authentication bypass.
 
