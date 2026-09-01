@@ -4,7 +4,7 @@ This directory is the canonical roadmap location for Forge Platform's cross-prod
 
 ## Canonical entrypoints
 
-- [Forge Platform MVP 1.0](MVP_1_0.md) — product boundary, capability waves, critical path, and evidence-based release gate.
+- [Forge Platform MVP 1.0](MVP_1_0.md) — product boundary, capability waves, critical path, evidence-based release gate, and post-`STANDALONE_EP_VERIFIED` capabilities (including bounded multi-repository parallel lane execution).
 - [Historical migration register](MIGRATION_REGISTER.md) — auditable classification of relevant historical DJConnect material and its canonical destination or retained status.
 
 The earlier stage view is retained here as orientation only; it is superseded for MVP planning by the dependency-aware capability map in [MVP 1.0](MVP_1_0.md).
@@ -15,6 +15,8 @@ The earlier stage view is retained here as orientation only; it is superseded fo
 | 2–3 | Independently published product artifacts and consumer integration |
 | 4–5 | macOS installation, lifecycle, diagnostics, and receipts |
 | 6–7 | Distributed qualification and Windows/Linux support after MVP |
+
+The first post-verification parallelism capability is not general fleet scheduling: it is EP-owned, capacity-bounded mutation across independent repositories, with one mutating lane per repository. It starts only after `STANDALONE_EP_VERIFIED`; same-repository worktree/disjoint-scope parallelism remains a separate later capability.
 
 ## Knowledge learning-loop integration
 

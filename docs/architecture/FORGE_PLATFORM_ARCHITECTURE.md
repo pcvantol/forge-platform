@@ -57,9 +57,9 @@ Local facts such as repository presence, current branch, IDE availability, and i
 
 ### Engineering Platform Server and Project Agent
 
-Engineering Platform Server is execution authority. It owns engineering admission, durable queueing/scheduling, lane admission, host/agent selection, repository execution locking, provider execution, validation, qualification, evidence, EP-owned Prompt History, finalization/execution state, Consumer API, and server-side Agent protocol authority. Forge and Workspace do not bypass it.
+Engineering Platform Server is execution authority. It owns engineering admission, durable queueing/scheduling, lane admission, host/agent selection, repository lock/lease lifecycle, provider execution, validation, qualification, evidence, EP-owned Prompt History, finalization/execution state, Consumer API, and server-side Agent protocol authority. Forge and Workspace do not bypass it. It alone decides whether advertised Agent capacity becomes an admitted execution; an Agent never self-admits work merely because it has a free slot.
 
-Engineering Platform Project Agent belongs solely to `pcvantol/engineering-platform`. One installed Agent service/process per host and OS-user context may serve zero or more locally attached repositories. It owns the local repository/Git/filesystem boundary, attachment/discovery, host-capability discovery, bounded local execution, secure local credential handling, health, approved local IPC, and protocol communication with EP Server. It is not owned by Forge, Workspace, or Forge Platform.
+Engineering Platform Project Agent belongs solely to `pcvantol/engineering-platform`. One installed Agent service/process per Host/OS-user context may serve zero or more locally attached repositories. It owns the local repository/Git/filesystem boundary, attachment/discovery, host-capability discovery, bounded local execution, secure local credential handling, health, approved local IPC, and protocol communication with EP Server. For post-verification parallel execution it advertises a bounded capacity (for example `max_parallel_executions` or execution slots), but that is availability input to EP admission rather than scheduling authority. It is not owned by Forge, Workspace, or Forge Platform.
 
 An Agent is not one binary or process per repository. A repository may later contain non-secret declarative configuration such as `.engineering/project.json`; secrets remain in OS-native secure credential storage.
 
@@ -102,7 +102,7 @@ Agents may be offline. Forge planning and Workspace shared state remain availabl
 
 Agents discover host capabilities such as Xcode/iOS signing, .NET/Windows, Android SDK, Docker, Python, Node, OS, and architecture. Forge may express planning requirements; EP alone determines actual eligibility and admission.
 
-## Execution lanes, dependencies, and locks
+## Execution lanes, dependencies, locks, and post-verification parallelism
 
 Forge plans lane dependencies. EP admits executable work and enforces ordering.
 
@@ -112,7 +112,28 @@ The safe initial concurrency rule is **at most one mutating Execution Lane per R
 - a lane touching the Canonical Project Authority Repository and `ios` locks both;
 - an Android-only lane may proceed concurrently if it has no plan dependency.
 
-Resource exclusion and plan dependency are distinct. The same repository excludes simultaneous mutation even without a planned dependency. Different repositories may still need A → B sequencing because Forge planned it. Future same-repository parallelism using separate worktrees, disjoint declared scopes, and no shared generated/migration resources is explicitly deferred.
+Resource exclusion and plan dependency are distinct. The same repository excludes simultaneous mutation even without a planned dependency. Different repositories may still need A → B sequencing because Forge planned it. The repository lock/lease is the resource-exclusion boundary: EP durably grants, renews, releases, and recovers it; neither Forge, Workspace, nor an Agent may replace it with a local convention.
+
+### Post-`STANDALONE_EP_VERIFIED` multi-repository parallel lane execution
+
+The first qualified parallelism capability is **parallel mutating execution across different repositories**. It starts only after `STANDALONE_EP_VERIFIED` and is deliberately narrower than general distributed execution or same-repository concurrency.
+
+```text
+Forge DAG/dependencies ──plans──> EP Server admission/durable state
+                                      ├─ repository A lock/lease → Agent slot 1 → lane A
+                                      ├─ repository B lock/lease → Agent slot 2 → lane B
+                                      └─ repository A busy or A → B dependency → queued
+```
+
+- Forge plans the DAG, dependencies, and intent, but is not execution authority and cannot admit a lane.
+- EP matches an eligible Host and Agent capability, evaluates dependency state, repository lock/lease availability and bounded Agent capacity, then applies backpressure and fairness before admission. It owns lane-scoped evidence, validation and finalization even when several lanes run at once.
+- A Project Agent may expose `0..N` repositories for its Host/OS-user context and advertises bounded executable capacity; it safely manages only the executions EP has admitted.
+- Workspace presents and controls the resulting state only through its permitted control-plane and UX boundary. It does not allocate slots, grant locks, schedule work, or directly execute it.
+- At most one mutating lane may hold a given repository's lease. Independent repositories may mutate in parallel only when their Forge-planned dependencies are satisfied. A multi-repository lane must hold every required repository lease before it mutates any target.
+
+This gives direct safe acceleration for independent work in Forge, Workspace, Engineering Platform, Forge Platform, and other autonomous repositories. It does not imply that all such work is independent: Forge can still require a sequence between otherwise separately lockable repositories.
+
+Same-repository parallel execution through multiple worktrees, declared disjoint scopes, and explicit handling of shared generated or migration resources is a later, separately qualified capability. It is not required for the first multi-repository parallelism milestone.
 
 ## Deployment, artifacts, and installer roles
 

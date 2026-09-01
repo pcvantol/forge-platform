@@ -16,6 +16,10 @@ Each product retains ownership of its artifact build, protocol implementation, a
 
 Components remain separately owned products even when installed on one machine. They communicate through their canonical APIs and protocols; no hidden in-process shortcut or direct repository-filesystem access is introduced. For example, Engineering Platform Server reaches a local EP Project Agent through the canonical agent protocol.
 
+## Execution-lane boundary
+
+Forge plans dependency DAGs; Engineering Platform Server remains the durable execution and admission authority. After `STANDALONE_EP_VERIFIED`, its first parallelism capability is bounded mutation across different repositories: an Agent may serve `0..N` repositories and advertise bounded capacity, while EP enforces one mutating lock/lease holder per repository, admission, backpressure, fairness, evidence, and finalization. Workspace only presents or issues permitted control intent. See the [system architecture](FORGE_PLATFORM_ARCHITECTURE.md), [ownership matrix](OWNERSHIP_MATRIX.md), and [MVP roadmap](../roadmap/MVP_1_0.md).
+
 ## Lifecycle boundary
 
 The future platform manages install, role add/remove, upgrade, repair, uninstall, health diagnostics, and deployment receipts. Privileged installer logic is intentionally not implemented in this foundation.

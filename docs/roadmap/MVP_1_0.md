@@ -25,6 +25,7 @@ It is not a source monorepo release and it does not turn Forge Platform into the
 
 - Windows/Linux installer support for Agents and Clients, and native installers beyond the supported macOS path.
 - General distributed/team deployment: multi-host scheduling, automatic host assignment, cross-network recovery, and operational fleet management. The architecture already permits them; MVP does not claim them qualified.
+- Multi-repository parallel mutating execution. This is a bounded post-`STANDALONE_EP_VERIFIED` Engineering Platform capability; it does not block MVP, B8 pairing/attachment, B9 first governed execution, or initial standalone verification.
 - Same-repository parallel mutation with worktrees or declared disjoint scopes.
 - Full mobile/remote Workspace experience, remote desktop control, and consumer UX breadth beyond the supported local/remote contract.
 - Arbitrary remote-provider and local-model orchestration, automatic model optimization, pricing policy, or exact cost allocation. MVP requires honest attribution only where emitted.
@@ -54,7 +55,11 @@ The following need later ADRs or versioned product contracts; they do not block 
 | W4 `MVP-MIG-001` Historical EP transition qualification | EP owns product migration; Forge Platform owns composed-install disposition | **Current:** DJConnect records clean-slate extraction and forensic-retention decisions; it is not a production migration authorization. **Target:** a qualified legacy-to-standalone clean-install/re-registration runbook: fresh official Schema 41 CENTRAL database, no legacy database migration, retained legacy store as immutable forensic evidence only, and no legacy runtime authority. | `MVP-REC-001`; `MVP-INST-001`; EP-owned contract. | Executed non-production clean-host qualification; legacy-store fingerprint/integrity evidence; fresh-store and new-registration evidence; recovery evidence; migration decision record; documented operator path. | Yes |
 | K1–K4 `MVP-KNOW-001` Governed knowledge consumption boundary | Knowledge Base, Forge, EP/TDE evidence producers | **Current:** KB is a Git-backed CLI; governed observation/certification and read-only consumption are architecture-defined. **Target:** no mandatory runtime dependency for MVP; if evidence is used, it is traceable, read-only, and independently certified. | Knowledge-loop architecture; explicit producer contracts. | Boundary review; provenance tests for any adopted evidence. | No |
 | P0 `POST-VERIFY-EP-RELOC-001` Standalone CENTRAL relocation | Engineering Platform owns relocation/export-import and lifecycle semantics; Forge Platform supplies only qualified installer/composition UX and orchestration | **Current:** not implemented or qualified. **Target:** after `STANDALONE_EP_VERIFIED`, EP can support a controlled relocation of an existing standalone CENTRAL to another host (first concrete case: MacBook to Mac mini), preserving supported operational CENTRAL history while establishing a new physical installation/host binding. | `STANDALONE_EP_VERIFIED`; EP-owned relocation contract; clean target-host Server install; explicit logical-CENTRAL versus physical-installation/host identity decision. | EP-owned export/import, quiescence, integrity, compatibility, restore, health, Agent rebind/re-pair/credential-rotation, old-host retirement, and end-to-end qualification evidence. | No — it does not block the B7/B8/B9 path or initial standalone verification; it must qualify before a permanent Mac mini CENTRAL deployment. |
-| P1 `POST-DIST-001` Distributed/team execution | EP, Workspace, Forge; Forge Platform deployment qualification | Multi-host capacity, assignment, disconnect handling, and team fleet operations after a single supported topology qualifies. | W4 stable composition; deferred discovery/scheduling contracts. | Multi-host recovery and concurrency qualification. | No |
+| P1 `POST-VERIFY-PAR-001` Multi-execution runtime foundation | Engineering Platform | **Current:** no post-standalone parallel qualification is claimed. **Target:** after standalone verification, EP has durable, lane-isolated execution state that can represent more than one active execution without cross-lane evidence, validation, or finalization ambiguity. | `STANDALONE_EP_VERIFIED`; EP-owned durable execution contract. | Concurrent-lane lifecycle, restart/recovery, evidence isolation, and negative duplicate-finalization qualification. | No — starts only after standalone verification and does not block B8/B9. |
+| P2 `POST-VERIFY-PAR-002` Repository lock/lease admission | Engineering Platform | **Target:** EP uses one durable repository lock/lease per mutating repository as the resource-exclusion boundary. A lane targeting multiple repositories atomically obtains every required lease before mutation; distinct repositories remain independently lockable. | `POST-VERIFY-PAR-001`; versioned EP admission/lease contract. | Contention, lease renewal/expiry/recovery, multi-repository acquisition, no-double-writer, and dependency-versus-resource-exclusion qualification. | No — post-verification only. |
+| P3 `POST-VERIFY-PAR-003` Agent execution slots and capacity | Engineering Platform Project Agent and Server | **Target:** an Agent serving `0..N` repositories per Host/OS-user context advertises bounded capacity such as `max_parallel_executions`/slots; EP matches host/capability, capacity, dependencies, and leases, then applies admission, backpressure, and fairness. | `POST-VERIFY-PAR-002`; versioned Agent capability contract. | Capacity advertisement/reconciliation, eligible-host matching, saturation/backpressure, fairness, Agent disconnect, and no-self-admission qualification. | No — post-verification only. |
+| P4 `MULTI_REPOSITORY_PARALLEL_EXECUTION_VERIFIED` Installed-Codex multi-repository parallel qualification | Engineering Platform; Forge/Workspace as contract consumers; Forge Platform qualifies only the supported composition | **Target:** a qualified installed-Codex run performs independent mutating lanes in parallel across different repositories while Forge-provided dependencies still sequence dependent work. EP remains execution/admission/durable-state authority; Workspace remains presentation/permitted control only. | P1–P3; qualified installed artifacts and test repositories. | Retained end-to-end qualification bundle proving parallel independent execution, one mutating lane per repository, dependency sequencing, capacity/backpressure, failure recovery, isolated evidence/validation/finalization, and authority-boundary negative tests. | No — it follows `STANDALONE_EP_VERIFIED` and does not delay the B8/B9 critical path. |
+| P5 `POST-DIST-001` Distributed/team execution | EP, Workspace, Forge; Forge Platform deployment qualification | Multi-host capacity, assignment, disconnect handling, and team fleet operations after a single supported topology and bounded multi-repository parallel execution qualify. | W4 stable composition; `MULTI_REPOSITORY_PARALLEL_EXECUTION_VERIFIED`; deferred discovery/scheduling contracts. | Multi-host recovery and concurrency qualification. | No |
 
 ## Critical path
 
@@ -105,6 +110,46 @@ Before implementation, EP must explicitly decide whether a logical CENTRAL ident
 - It does not clone Agent host identities or assume localhost/co-location bypasses endpoint or trust changes.
 - It does not make Forge Platform the owner of an EP migration engine, CENTRAL database semantics, Agent credentials, or recovery policy.
 - It does not authorize a permanent Mac mini deployment before the EP-owned contract and qualification evidence exist.
+
+## Post-verification multi-repository parallel lane execution
+
+`MULTI_REPOSITORY_PARALLEL_EXECUTION_VERIFIED` is a deliberately bounded acceleration path, not a redefinition of product ownership. It begins only after B7 clean-host retirement, B7A/B7B standalone Server and Agent installation, B8 pairing/attachment, B9 first governed execution, and `STANDALONE_EP_VERIFIED`. It may proceed alongside the separately scoped CENTRAL-relocation capability, but neither capability reopens or blocks the B8/B9 critical path.
+
+```text
+P1 durable multi-execution foundation
+  → P2 repository lock/lease admission
+    → P3 Agent slots/capacity and EP admission
+      → P4 installed-Codex qualification
+        → MULTI_REPOSITORY_PARALLEL_EXECUTION_VERIFIED
+```
+
+The P4 outcome is parallel mutation over different repositories only. It gives a direct path to accelerate independent work across Forge, Workspace, Engineering Platform, Forge Platform, and other autonomous repositories. Forge can nevertheless require sequence A → B between different repositories through its DAG/dependency plan. Forge plans that graph and intent; it never becomes an execution, lock, slot, queue, evidence, or finalization authority.
+
+### Admission and backpressure semantics
+
+- EP Server is the sole execution, admission, and durable-state authority. It evaluates dependencies, repository lease availability, Agent/Host capability matching, advertised bounded execution slots, and its fairness policy before admitting a lane.
+- A Project Agent may serve `0..N` repositories in one Host/OS-user context and advertises bounded capacity such as `max_parallel_executions`. An advertised free slot is not permission to start work; only an EP admission creates an executable lane.
+- A mutating lane holds an EP-managed lock/lease for every repository it will mutate. No second mutating lane may be admitted for a leased repository. Different repositories may run concurrently only when all dependencies are satisfied and every target lease and required capacity are available.
+- When a required lease, eligible Agent, capability, or slot is unavailable, EP retains the lane in durable queued/blocked state and applies bounded backpressure and fairness rather than bypassing an existing lane or overcommitting an Agent. A dependent lane remains unadmitted until its planned predecessors complete under EP-defined success semantics.
+- On Agent disconnect, capacity reduction, lease-renewal failure, provider interruption, validation failure, or finalization uncertainty, EP records lane-scoped durable state and uses its bounded recovery policy. It must not silently duplicate a mutation, transfer a live lease, reuse stale capacity, or finalize one lane using another lane's evidence. Lease recovery may admit a replacement only after EP has established that the prior holder can no longer mutate under the published contract.
+- Workspace may display queue, capacity, blocked, failure, and finalization state and issue only permitted control intent through canonical APIs. It does not grant leases, allocate slots, override backpressure, or execute work through an Agent.
+
+### Acceptance criteria and qualification evidence
+
+- An installed EP Server/Project Agent composition executes at least two independent mutating lanes concurrently against different attached repositories, with a retained receipt for each lane.
+- A contention test proves that two mutating lanes targeting one repository cannot execute concurrently, including when the lanes originate from different Forge-planned actions or Agents.
+- A dependency test proves that different repositories remain sequenced when Forge declares a dependency, while an independent repository can proceed in parallel.
+- Capacity tests prove that `max_parallel_executions`/slots are advertised and respected, saturation is durably queued or blocked, and EP applies its configured fairness/backpressure policy without Agent self-admission.
+- Failure/recovery tests cover Agent loss, expired or failed lease renewal, provider interruption, validation failure, and finalization interruption, with no duplicate mutation, stale lease, evidence crossover, or unsafe automatic reassignment.
+- Host/capability tests prove that EP selects only eligible attached repositories and Agents. Authority-boundary negative tests prove Forge cannot admit/lock/finalize and Workspace cannot allocate/override/directly execute.
+- The qualification bundle records exact installed artifact versions, topology, capability advertisements, dependency plan, lease/admission decisions, lane-scoped validation/evidence/finalization, recovery outcomes, and redacted diagnostics. Forge Platform may retain composition qualification evidence but does not own EP runtime semantics.
+
+### Non-goals
+
+- This milestone does not provide same-repository parallelism. Multiple worktrees, declared disjoint scopes, generated-file coordination, migrations, and merge/conflict semantics require a separate post-MVP capability and qualification.
+- It does not make Forge a scheduler or execution authority, Workspace a direct Agent controller, Forge Platform an EP runtime owner, or an Agent an independent admission authority.
+- It does not require broad distributed/fleet scheduling, automatic cross-host rebalancing, arbitrary scaling, or every repository to be simultaneously available on every Host.
+- It does not weaken repository serialization, dependency sequencing, durable evidence, validation, finalization, trust, or the no-direct-server-repository-access boundary.
 
 ## MVP 1.0 release gate
 
