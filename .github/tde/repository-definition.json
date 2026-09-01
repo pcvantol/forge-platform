@@ -1,0 +1,9 @@
+{
+  "identifier": "forge-platform",
+  "name": "Forge Platform",
+  "repositoryRoot": "../..",
+  "repositoryType": "source",
+  "primaryLanguage": "Python",
+  "defaultAssessmentProfile": "standard",
+  "metadata": {"consumer": "Forge Platform", "rolloutPhase": "observe", "productSourceState": "foundation_only"}
+}
