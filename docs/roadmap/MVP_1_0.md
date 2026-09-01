@@ -20,12 +20,14 @@ It is not a source monorepo release and it does not turn Forge Platform into the
 - Operational visibility sufficient to run the composition safely: component health/version, host/Agent availability, queue/run status, Prompt History and execution evidence, bounded logs, and provider/machine/model usage attribution where the provider exposes it.
 - Security and qualification evidence: artifact digest/provenance checks, explicit authenticated consumers and Agents, no localhost or co-location bypass, least privilege, release-composition qualification, and TDE evidence where an applicable product contract exists.
 - A documented, qualified transition from the historical DJConnect-hosted EP: the legacy-to-standalone transition is clean-slate, with a fresh official Schema 41 CENTRAL database, new standalone identities, and no legacy database migration. The explicitly retained legacy store is immutable forensic history only and never becomes standalone runtime authority.
+- A first real two-project qualification after B8: DJConnect and the Engineering Platform source checkout are independently attached development projects at the same CENTRAL/Project Agent. This is a live multi-project data and Operations Console qualification, not EP self-hosting and not a disposable fixture.
 
 ### Explicitly post-MVP
 
 - Windows/Linux installer support for Agents and Clients, and native installers beyond the supported macOS path.
 - General distributed/team deployment: multi-host scheduling, automatic host assignment, cross-network recovery, and operational fleet management. The architecture already permits them; MVP does not claim them qualified.
 - Multi-repository parallel mutating execution. This is a bounded post-`STANDALONE_EP_VERIFIED` Engineering Platform capability; it does not block MVP, B8 pairing/attachment, B9 first governed execution, or initial standalone verification.
+- EP self-hosted execution. It is a separately qualified post-`STANDALONE_EP_VERIFIED` capability; it is neither exercised nor implied by B8C or B9.
 - Same-repository parallel mutation with worktrees or declared disjoint scopes.
 - Full mobile/remote Workspace experience, remote desktop control, and consumer UX breadth beyond the supported local/remote contract.
 - Arbitrary remote-provider and local-model orchestration, automatic model optimization, pricing policy, or exact cost allocation. MVP requires honest attribution only where emitted.
@@ -53,6 +55,10 @@ The following need later ADRs or versioned product contracts; they do not block 
 | W3 `MVP-REC-001` Persistence, backup, and recovery | EP and product storage contracts; Forge Platform validates deployment lifecycle | **Current:** clean-store and transactional-recovery principles exist in historical EP evidence. **Target:** durable supported-store lifecycle, backup/restore and upgrade recovery for the installed composition, with one writable authority. | `MVP-EXEC-001`; product storage migration contract. | Restart/interruption, backup/restore, upgrade/rollback-or-fail-safe evidence; forensic legacy-store disposition. | Yes |
 | W4 `MVP-INST-001` macOS installation lifecycle | Forge Platform, consuming product artifacts | **Current:** no universal installer implementation. **Target:** clean-machine macOS Complete, Server/headless, Developer Workstation, and Custom role flows; verification, credentials, explicit service registration, receipts, upgrade, repair, and uninstall. | W0–W3; `MVP-COMP-001`. | Clean-install and repeatability tests; upgrade/repair/uninstall tests; least-privilege/security review; receipts and diagnostics. | Yes |
 | W4 `MVP-MIG-001` Historical EP transition qualification | EP owns product migration; Forge Platform owns composed-install disposition | **Current:** DJConnect records clean-slate extraction and forensic-retention decisions; it is not a production migration authorization. **Target:** a qualified legacy-to-standalone clean-install/re-registration runbook: fresh official Schema 41 CENTRAL database, no legacy database migration, retained legacy store as immutable forensic evidence only, and no legacy runtime authority. | `MVP-REC-001`; `MVP-INST-001`; EP-owned contract. | Executed non-production clean-host qualification; legacy-store fingerprint/integrity evidence; fresh-store and new-registration evidence; recovery evidence; migration decision record; documented operator path. | Yes |
+| B8C `MULTI_PROJECT_CONSOLE_QUALIFIED` First real multi-project qualification | Engineering Platform Server/Operations Console and Project Agent; Forge Platform records composed evidence | **Target:** immediately after B8, attach `djconnect` and the `engineering-platform` development checkout as two first-class projects to the same CENTRAL/Agent. The latter uses its portable `.engineering-platform/repository.json`; it remains a development/source project while the installed EP artifact remains runtime authority. | B8 pairing and first DJConnect attachment; installed EP artifacts. | Project-selector/pulldown, `project_id` scoping, project-isolated queue/runs/reports/Prompt History/evidence/status, installation-wide versus project-scoped views, refresh/deep-link/selection behavior, and fail-closed cross-project-leakage negatives. | Yes for B9 / `STANDALONE_EP_VERIFIED`; it does not execute EP against its own source checkout. |
+| B9 `STANDALONE_EP_VERIFIED` First governed end-to-end execution | Engineering Platform Server and Project Agent; DJConnect is the first execution target | **Target:** the first governed standalone execution follows CENTRAL → Project Agent → DJConnect isolated worktree → provider/Codex → validation/qualification/evidence/finalization. | `MULTI_PROJECT_CONSOLE_QUALIFIED`; installed EP artifacts; DJConnect attachment. | Retained end-to-end receipt and qualification bundle proving the full path, authority boundaries, isolated-worktree handling, and successful finalization. | Yes; success establishes `STANDALONE_EP_VERIFIED`. |
+| F0 `EP_EXTRACTION_CUTOVER_COMPLETE` DJConnect EP extraction cutover/finalization | DJConnect owns removal from its repository; Engineering Platform owns the retained installed product/runtime; Forge Platform records boundary evidence | **Target:** only after `STANDALONE_EP_VERIFIED`, remove or retire every active generic EP product/runtime/source duplicate from DJConnect while retaining explicitly protected consumer declarations and historical evidence. | `STANDALONE_EP_VERIFIED`; DJConnect-governed cleanup plan and zero-live-duplicate audit. | Audit proves generic live EP implementation, runtime authority, and duplicated EP product semantics in DJConnect each equal zero; protected evidence and consumer material remain intact. | Yes for declaring extraction cutover complete; it does not retroactively alter B8C or B9 evidence. |
+| S0 `EP_SELF_HOSTING_QUALIFIED` Separate EP self-hosting qualification | Engineering Platform | **Target:** an installed EP artifact executes governed development work for the Engineering Platform source project under the published contracts. | `STANDALONE_EP_VERIFIED`; separate EP-owned self-hosting plan and safeguards. | Dedicated self-hosting qualification and evidence; no source-checkout runtime authority. | No — separate from B8C/B9 and may not be inferred from their success. |
 | K1–K4 `MVP-KNOW-001` Governed knowledge consumption boundary | Knowledge Base, Forge, EP/TDE evidence producers | **Current:** KB is a Git-backed CLI; governed observation/certification and read-only consumption are architecture-defined. **Target:** no mandatory runtime dependency for MVP; if evidence is used, it is traceable, read-only, and independently certified. | Knowledge-loop architecture; explicit producer contracts. | Boundary review; provenance tests for any adopted evidence. | No |
 | P0 `POST-VERIFY-EP-RELOC-001` Standalone CENTRAL relocation | Engineering Platform owns relocation/export-import and lifecycle semantics; Forge Platform supplies only qualified installer/composition UX and orchestration | **Current:** not implemented or qualified. **Target:** after `STANDALONE_EP_VERIFIED`, EP can support a controlled relocation of an existing standalone CENTRAL to another host (first concrete case: MacBook to Mac mini), preserving supported operational CENTRAL history while establishing a new physical installation/host binding. | `STANDALONE_EP_VERIFIED`; EP-owned relocation contract; clean target-host Server install; explicit logical-CENTRAL versus physical-installation/host identity decision. | EP-owned export/import, quiescence, integrity, compatibility, restore, health, Agent rebind/re-pair/credential-rotation, old-host retirement, and end-to-end qualification evidence. | No — it does not block the B7/B8/B9 path or initial standalone verification; it must qualify before a permanent Mac mini CENTRAL deployment. |
 | P1 `POST-VERIFY-PAR-001` Multi-execution runtime foundation | Engineering Platform | **Current:** no post-standalone parallel qualification is claimed. **Target:** after standalone verification, EP has durable, lane-isolated execution state that can represent more than one active execution without cross-lane evidence, validation, or finalization ambiguity. | `STANDALONE_EP_VERIFIED`; EP-owned durable execution contract. | Concurrent-lane lifecycle, restart/recovery, evidence isolation, and negative duplicate-finalization qualification. | No — starts only after standalone verification and does not block B8/B9. |
@@ -64,15 +70,53 @@ The following need later ADRs or versioned product contracts; they do not block 
 ## Critical path
 
 ```text
-W0 contracts and trust
-  → W1 publishable artifacts + qualified composition
-    → W2 EP execution + Forge/Workspace integration
-      → W3 operations, persistence, recovery
-        → W4 clean installation lifecycle + historical-EP transition
-          → evidence-based MVP 1.0 release gate
+B7 clean-host retirement
+  → B7A/B7B installed standalone EP Server + Project Agent
+    → B8 DJConnect pairing and attachment
+      → B8C two real development projects / multi-project Operations Console qualification
+        → B9 first governed DJConnect execution
+          → STANDALONE_EP_VERIFIED
+            → DJConnect EP extraction cutover/finalization
+              → EP_EXTRACTION_CUTOVER_COMPLETE
+
+Composition work remains dependency ordered:
+W0 contracts and trust → W1 publishable artifacts + qualified composition
+  → W2 execution + Forge/Workspace integration → W3 operations/recovery
+    → W4 installation lifecycle + historical-EP transition → MVP 1.0 release gate
 ```
 
-Knowledge integration may progress in parallel only as an additive, read-only governed capability. Distributed/team work, additional platforms, and provider expansion follow MVP rather than delay the first coherent composition.
+`B8C` deliberately uses two actual repositories, not a disposable fixture. `djconnect` remains the first B9 execution target; the Engineering Platform source checkout is attached solely as a second development project for multi-project qualification. In every stage, source checkouts develop, test, and build, while the installed EP artifact is runtime authority.
+
+Knowledge integration may progress in parallel only as an additive, read-only governed capability. After `STANDALONE_EP_VERIFIED`, CENTRAL relocation, multi-repository parallel execution, and separately scoped EP self-hosting may also progress in parallel with the DJConnect cutover where their repository and change controls allow it. None weakens, substitutes for, or broadens the cutover's zero-live-duplicate audit; `EP_EXTRACTION_CUTOVER_COMPLETE` remains an independent finalization gate.
+
+## B8C multi-project Operations Console qualification
+
+`MULTI_PROJECT_CONSOLE_QUALIFIED` is a required live qualification between B8 and B9. The same Project Agent attaches both `djconnect` and the Engineering Platform development checkout to CENTRAL. The Engineering Platform checkout is declared through its portable `.engineering-platform/repository.json`, but it neither supplies Server modules nor runs the Server/Agent from source. B8C performs no self-hosted execution.
+
+The retained qualification bundle must prove all of the following:
+
+- The project selector/pulldown exposes DJConnect and Engineering Platform as two distinct first-class projects and preserves an unambiguous selected project.
+- Every project-scoped queue, run, report, Prompt History entry, evidence item, and status result is constrained by `project_id`; selecting or querying project A cannot expose rows from project B.
+- Installation-wide diagnostics remain installation-wide and are not falsely presented as project-scoped data.
+- Browser refresh, direct/deep links, selector changes, and restored selection retain or safely re-establish project context without stale cross-project display.
+- Positive isolation and negative leakage tests fail closed: a missing, stale, forged, or mismatched project context returns no other project's data and cannot be repaired by client-side filtering alone.
+
+## DJConnect EP extraction cutover/finalization
+
+The cleanup begins only after B9 succeeds and establishes `STANDALONE_EP_VERIFIED`. It is a DJConnect-governed documentation/change program, not permission for Forge Platform to modify DJConnect here. Its end gate is a **zero-live-duplicate audit**:
+
+```text
+generic live EP implementation in DJConnect = 0
+generic live EP runtime authority in DJConnect = 0
+duplicated generic EP product semantics in DJConnect = 0
+historical evidence retained under preservation policy
+```
+
+The audit removes or retires all active generic EP product/runtime/source duplicates that are obsolete after extraction, including old `tools/engineering` implementation, dashboard/watcher/Local API/runtime code, service/install/launchd tooling, EP-specific CI workflows, bootstrap/repair/migration runtime, duplicated tests, current documentation, and authority assumptions. It must retain `.engineering-platform/repository.json`; necessary DJConnect-specific consumer adapters that use the installed EP interface; immutable historical prompts, receipts, and provenance; the legacy database as `HISTORY_ONLY` under the preservation policy; and migration/extraction evidence. The gate is not "no EP string remains in DJConnect" and must not destroy history to make an audit pass.
+
+## Post-standalone self-hosting
+
+`EP_SELF_HOSTING_QUALIFIED` is a distinct post-`STANDALONE_EP_VERIFIED` lane. It may demonstrate the installed EP artifact governing development work in the Engineering Platform source project, but cannot be merged into B8C (attachment/data-isolation qualification) or B9 (first governed DJConnect execution). Its qualification must preserve the installed-artifact runtime boundary and is neither a prerequisite nor substitute for `EP_EXTRACTION_CUTOVER_COMPLETE`.
 
 ## Post-verification CENTRAL relocation
 
@@ -88,7 +132,7 @@ Existing standalone CENTRAL → another host
   operational history may be preserved under the EP-owned contract
 ```
 
-The sequencing is: B7 clean-host retirement, B7A/B7B standalone Server and Agent installation, B8 pairing/attachment, B9 first governed execution, then `STANDALONE_EP_VERIFIED`. Only after that milestone may the relocation capability be implemented and qualified. It may proceed alongside later Forge/Workspace work, but it must be qualified before using a Mac mini as the permanent CENTRAL host. It does not reopen or block the current B7/B8/B9 critical path.
+The sequencing is: B7 clean-host retirement, B7A/B7B standalone Server and Agent installation, B8 pairing/attachment, B8C real two-project qualification, B9 first governed execution, then `STANDALONE_EP_VERIFIED`. Only after that milestone may the relocation capability be implemented and qualified. It may proceed alongside the DJConnect extraction cutover, self-hosting, and later Forge/Workspace work, but it must be qualified before using a Mac mini as the permanent CENTRAL host. It does not reopen or block the B8C/B9 critical path or satisfy the cutover audit.
 
 Engineering Platform owns the relocation engine and its product semantics: admission quiescence, integrity checks, a consistent snapshot and manifest/checksums, compatibility validation, restore/import, new-host binding, health/qualification, and controlled retirement of the old installation. Forge Platform may present an installer choice such as **new CENTRAL** or **restore/relocate existing CENTRAL**, validate a qualified composition, and orchestrate calls to EP's published contract. It must not implement or own database migration, snapshot, restore, trust, or recovery semantics.
 
@@ -113,7 +157,7 @@ Before implementation, EP must explicitly decide whether a logical CENTRAL ident
 
 ## Post-verification multi-repository parallel lane execution
 
-`MULTI_REPOSITORY_PARALLEL_EXECUTION_VERIFIED` is a deliberately bounded acceleration path, not a redefinition of product ownership. It begins only after B7 clean-host retirement, B7A/B7B standalone Server and Agent installation, B8 pairing/attachment, B9 first governed execution, and `STANDALONE_EP_VERIFIED`. It may proceed alongside the separately scoped CENTRAL-relocation capability, but neither capability reopens or blocks the B8/B9 critical path.
+`MULTI_REPOSITORY_PARALLEL_EXECUTION_VERIFIED` is a deliberately bounded acceleration path, not a redefinition of product ownership. It begins only after B7 clean-host retirement, B7A/B7B standalone Server and Agent installation, B8 pairing/attachment, B8C real two-project qualification, B9 first governed execution, and `STANDALONE_EP_VERIFIED`. It may proceed alongside the separately scoped CENTRAL-relocation, DJConnect cutover, and self-hosting lanes, but none reopens or blocks the B8C/B9 critical path or softens the cutover end criterion.
 
 ```text
 P1 durable multi-execution foundation

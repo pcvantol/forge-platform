@@ -4,7 +4,7 @@ This directory is the canonical roadmap location for Forge Platform's cross-prod
 
 ## Canonical entrypoints
 
-- [Forge Platform MVP 1.0](MVP_1_0.md) — product boundary, capability waves, critical path, evidence-based release gate, and post-`STANDALONE_EP_VERIFIED` capabilities (including bounded multi-repository parallel lane execution).
+- [Forge Platform MVP 1.0](MVP_1_0.md) — product boundary, capability waves, the B8 → B8C → B9 → `STANDALONE_EP_VERIFIED` → `EP_EXTRACTION_CUTOVER_COMPLETE` sequence, evidence-based release gate, and separate post-verification lanes (CENTRAL relocation, EP self-hosting, and bounded multi-repository parallel execution).
 - [Historical migration register](MIGRATION_REGISTER.md) — auditable classification of relevant historical DJConnect material and its canonical destination or retained status.
 
 The earlier stage view is retained here as orientation only; it is superseded for MVP planning by the dependency-aware capability map in [MVP 1.0](MVP_1_0.md).
