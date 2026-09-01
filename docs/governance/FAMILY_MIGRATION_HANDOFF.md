@@ -25,3 +25,5 @@ The ongoing duplicate/authority audit must include this repository. Read-only di
 | `pcvantol/workspace` | No universal-installer/distribution implementation lineage found | `UNRESOLVED` |
 
 Future cross-product installer/composition documentation is `FORGE_PLATFORM_FUTURE_AUTHORITY`; no source document is moved or deleted by this foundation. Future family-wide authority and duplicate audits must include Forge Platform and assess universal installer/composition material found in Forge, Workspace, or Engineering Platform against this boundary.
+
+The canonical product roadmap is now [Forge Platform MVP 1.0](../roadmap/MVP_1_0.md). Its accompanying [historical migration register](../roadmap/MIGRATION_REGISTER.md) records the DJConnect evidence audit and prevents historical plans from accidentally becoming competing current authority.
