@@ -13,6 +13,9 @@ Forge Platform consumes qualified, versioned artifacts published by product repo
 ## Entrypoints
 
 - [Architecture](docs/architecture/README.md)
+- [System architecture](docs/architecture/FORGE_PLATFORM_ARCHITECTURE.md)
+- [Architecture Decision Records](docs/architecture/adr/README.md)
+- [Cross-repository ownership matrix](docs/architecture/OWNERSHIP_MATRIX.md)
 - [Roadmap](docs/roadmap/README.md)
 - [Development and bootstrap](docs/development/README.md)
 - [Governance](docs/governance/README.md)

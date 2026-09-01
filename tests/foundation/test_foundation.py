@@ -14,6 +14,13 @@ REQUIRED = (
     "SECURITY.md",
     ".github/workflows/foundation-validation.yml",
     "docs/architecture/README.md",
+    "docs/architecture/FORGE_PLATFORM_ARCHITECTURE.md",
+    "docs/architecture/OWNERSHIP_MATRIX.md",
+    "docs/architecture/adr/README.md",
+    "docs/architecture/adr/ADR-0001-first-class-product-boundaries.md",
+    "docs/architecture/adr/ADR-0002-project-repository-host-agent-model.md",
+    "docs/architecture/adr/ADR-0003-deployment-and-trust-boundaries.md",
+    "docs/architecture/adr/ADR-0004-universal-installer-artifact-composition.md",
     "docs/architecture/COMPONENT_MANIFEST_CONTRACT.md",
     "docs/architecture/COMPATIBILITY.md",
     "docs/architecture/ROLES_AND_PRESETS.md",
@@ -42,6 +49,15 @@ def main() -> None:
     extension = (ROOT / "docs/development/FORGE_PLATFORM_DEVELOPMENT_EXTENSION.md").read_text()
     if "generic branch" not in extension:
         raise SystemExit("local extension must preserve the generic-contract boundary")
+    architecture = (ROOT / "docs/architecture/FORGE_PLATFORM_ARCHITECTURE.md").read_text()
+    for required_term in (
+        "Canonical Project Authority Repository",
+        "Engineering Platform Project Agent",
+        "at most one mutating Execution Lane per Repository at a time",
+        "source checkouts develop, test, and build; published/installed artifacts run",
+    ):
+        if required_term not in architecture:
+            raise SystemExit(f"architecture is missing canonical term: {required_term}")
     print("Foundation validation: PASS")
 
 
