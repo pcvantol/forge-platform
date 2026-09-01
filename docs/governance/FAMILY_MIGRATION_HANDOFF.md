@@ -2,7 +2,7 @@
 
 ## New canonical repository
 
-`pcvantol/forge-platform` is the future canonical authority for universal multi-product installer UX, component selection, cross-product compatibility declarations, release composition, installation topology, update/repair/uninstall orchestration, diagnostics, and deployment receipts.
+`pcvantol/forge-platform` is the canonical first-class authority for universal multi-product installer UX, component selection, cross-product compatibility declarations, release composition, installation topology, update/repair/uninstall orchestration, diagnostics, and deployment receipts. Its architecture also records cross-product deployment, topology, and trust boundaries without taking ownership of product behavior or protocols.
 
 ## Boundary retained by product repositories
 
@@ -24,4 +24,4 @@ The ongoing duplicate/authority audit must include this repository. Read-only di
 | `pcvantol/forge` | No universal-installer/distribution implementation lineage found | `UNRESOLVED` |
 | `pcvantol/workspace` | No universal-installer/distribution implementation lineage found | `UNRESOLVED` |
 
-Future cross-product installer/composition documentation is `FORGE_PLATFORM_FUTURE_AUTHORITY`; no source document is moved or deleted by this foundation.
+Future cross-product installer/composition documentation is `FORGE_PLATFORM_FUTURE_AUTHORITY`; no source document is moved or deleted by this foundation. Future family-wide authority and duplicate audits must include Forge Platform and assess universal installer/composition material found in Forge, Workspace, or Engineering Platform against this boundary.

@@ -1,6 +1,6 @@
 # Architecture
 
-Forge Platform is the distribution and deployment composition boundary for the Forge product family. It consumes published product artifacts; it does not rebuild product source or take ownership of product behavior.
+Forge Platform is the distribution and deployment composition boundary for the Forge product family. It consumes published product artifacts; it does not rebuild product source or take ownership of product behavior. The complete system composition is defined in the [Forge Platform Architecture](FORGE_PLATFORM_ARCHITECTURE.md).
 
 ## Intended composition
 
@@ -20,4 +20,4 @@ Components remain separately owned products even when installed on one machine. 
 
 The future platform manages install, role add/remove, upgrade, repair, uninstall, health diagnostics, and deployment receipts. Privileged installer logic is intentionally not implemented in this foundation.
 
-Read the [component-manifest contract](COMPONENT_MANIFEST_CONTRACT.md), [compatibility model](COMPATIBILITY.md), [roles and presets](ROLES_AND_PRESETS.md), and [security boundary](SECURITY.md).
+Read the [system architecture](FORGE_PLATFORM_ARCHITECTURE.md), [ADRs](adr/README.md), [cross-repository ownership matrix](OWNERSHIP_MATRIX.md), [component-manifest contract](COMPONENT_MANIFEST_CONTRACT.md), [compatibility model](COMPATIBILITY.md), [roles and presets](ROLES_AND_PRESETS.md), and [security boundary](SECURITY.md).
