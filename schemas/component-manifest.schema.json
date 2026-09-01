@@ -1,0 +1,27 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/pcvantol/forge-platform/schemas/component-manifest.schema.json",
+  "title": "Forge Platform component manifest",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["forge_platform_version", "components"],
+  "properties": {
+    "forge_platform_version": {"type": "string", "minLength": 1},
+    "components": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/component"}}
+  },
+  "$defs": {
+    "component": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["identity", "version", "artifact", "platforms", "protocol_compatibility", "dependencies"],
+      "properties": {
+        "identity": {"enum": ["forge-runtime", "workspace-server", "workspace-client", "engineering-platform-server", "engineering-platform-project-agent"]},
+        "version": {"type": "string", "minLength": 1},
+        "artifact": {"type": "object", "additionalProperties": false, "required": ["source", "digest"], "properties": {"source": {"type": "string", "minLength": 1}, "digest": {"type": "string", "pattern": "^[A-Za-z0-9._:+=-]+$"}, "signature": {"type": "string"}, "provenance": {"type": "string"}}},
+        "platforms": {"type": "array", "minItems": 1, "items": {"type": "object", "required": ["os", "architecture"], "properties": {"os": {"type": "string"}, "architecture": {"type": "string"}}, "additionalProperties": false}},
+        "protocol_compatibility": {"type": "object", "additionalProperties": {"type": "string"}},
+        "dependencies": {"type": "object", "required": ["required", "optional"], "properties": {"required": {"type": "array", "items": {"type": "string"}}, "optional": {"type": "array", "items": {"type": "string"}}}, "additionalProperties": false}
+      }
+    }
+  }
+}
