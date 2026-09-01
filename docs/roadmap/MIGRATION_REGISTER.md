@@ -20,7 +20,7 @@
 | `docs/PRODUCT_DEVELOPMENT_TRANSITION.md` | C | Transition evidence; not a current Forge Platform product roadmap. |
 | `docs/development/ENGINEERING_PLATFORM_ROADMAP.md` | C | Its product-boundary concepts are now represented by the Forge Platform architecture and MVP roadmap; phase names, schemas, ports, and completion claims remain historical evidence. |
 | `docs/development/ENGINEERING_PLATFORM_EXTRACTION_AUDIT.md` | C | Extraction-readiness evidence for the former DJConnect location. |
-| `docs/development/ENGINEERING_PLATFORM_EXTRACTION_MIGRATION_PLAN.md` | B | Supplies the clean-store/forensic-retention migration input for `MVP-MIG-001`; EP owns the future executable migration contract. Historical increment status remains evidence. |
+| `docs/development/ENGINEERING_PLATFORM_EXTRACTION_MIGRATION_PLAN.md` | B | Supplies the clean-slate/forensic-retention input for `MVP-MIG-001`: legacy-to-standalone uses a fresh official Schema 41 CENTRAL database and no legacy DB migration. EP owns the executable transition contract; a later standalone-to-standalone CENTRAL relocation is a separate EP-owned capability, not a reinterpretation of this historical plan. Historical increment status remains evidence. |
 | `docs/engineering/ENGINEERING_PLATFORM_ARCHITECTURE_HANDBOOK.md` | C | Authority, producer-neutral execution, Agent/Worker, and lock concepts are represented in Forge Platform architecture; implementation detail and old runtime claims remain historical. |
 | `docs/engineering/EXECUTION_HOST_ARCHITECTURE.md`, `EXECUTION_LIFECYCLE_FLOW.md`, execution/receipt/report documents | B | Inputs for EP-owned installed-artifact qualification, recovery, and evidence. Do not migrate product implementation detail into Forge Platform. |
 | `docs/engineering/FORGE_GOVERNANCE_HANDOFF.md` and consumer-contract material | B | Input for versioned Forge↔EP provenance and consumer contracts (`MVP-PROJ-001`, `MVP-FORGE-001`); canonical contract location belongs to the owning product repositories. |
@@ -31,16 +31,16 @@
 | `docs/governance/`, `docs/implementation/`, `docs/research/`, `docs/meta/` material concerning DJConnect product delivery | D | Retain in DJConnect unless a separately audited item has cross-product authority. No bulk migration is implied. |
 | `docs/history/`, including prompt and implementation history | C | Preserve as immutable forensic/audit evidence; never promote historical execution prompts or status reports into current requirements without a governed decision. |
 | DJConnect-branded UX, Home Assistant, iCloud, runner, and product release content | D | Remains DJConnect product/development material. |
-| Retired contaminated CENTRAL/LEGACY cutover projections | E | Superseded by the documented clean-slate/forensic-retention direction; retain as evidence. Any source-file status marking requires a separate DJConnect-governed change. |
+| Retired contaminated CENTRAL/LEGACY cutover projections | E | Superseded by the documented clean-slate/forensic-retention direction: fresh official Schema 41 CENTRAL DB, no legacy DB migration, legacy store retained as historical evidence only. A future standalone-to-standalone CENTRAL relocation does not revive these projections. Retain as evidence. Any source-file status marking requires a separate DJConnect-governed change. |
 
 ## Information represented by this consolidation
 
 - Cross-product authority, project/host/Agent topology, canonical APIs rather than filesystem shortcuts, artifact composition, manifest/compatibility, installer lifecycle, and knowledge-loop boundaries are represented in the Forge Platform architecture and [MVP roadmap](MVP_1_0.md).
-- The remaining critical input is intentionally narrow: product-owned versioned artifact, consumer, Agent, storage/recovery, and migration contracts must be implemented and qualified in their owning repositories before Forge Platform may release a composition.
+- The remaining critical input is intentionally narrow: product-owned versioned artifact, consumer, Agent, storage/recovery, and clean-slate transition contracts must be implemented and qualified in their owning repositories before Forge Platform may release a composition. A future existing-standalone-CENTRAL relocation is separately EP-owned and only follows `STANDALONE_EP_VERIFIED`.
 - No DJConnect file is asserted to have been changed by this register. A later DJConnect change may add reader pointers to Forge Platform after its own review, but must retain DJConnect-specific material and historical evidence.
 
 ## Non-transfer rules
 
-Forge Platform does not inherit DJConnect's product authority, EP source implementation, Workspace UX authority, Forge planning authority, provider secrets, host readiness policy, release records, or CENTRAL/LEGACY stores. Historical documents never become canonical merely by being referenced here.
+Forge Platform does not inherit DJConnect's product authority, EP source implementation, Workspace UX authority, Forge planning authority, provider secrets, host readiness policy, release records, or CENTRAL/LEGACY stores. It does not own an EP relocation engine, CENTRAL store migration, Agent trust transition, or recovery semantics. Historical documents never become canonical merely by being referenced here.
 
 The family-wide authority audit should revisit this register whenever an EP, Forge, Workspace, or DJConnect document changes ownership or when a product contract becomes publishable.

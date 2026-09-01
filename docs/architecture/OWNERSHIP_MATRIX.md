@@ -8,6 +8,7 @@
 | EP execution, admission, scheduling, evidence | `pcvantol/engineering-platform` | Forge, Workspace | EP is execution authority. |
 | Engineering Platform Project Agent | `pcvantol/engineering-platform` | Workspace consumer integration; Forge Platform installs it | One process per Host/OS-user context, serving 0..N repositories. |
 | EP Local Project Agent API | `pcvantol/engineering-platform` | Workspace consumer/adapter | Forge Platform owns neither protocol nor adapter. |
+| EP Server/CENTRAL relocation, export-import, and lifecycle semantics | `pcvantol/engineering-platform` | Forge Platform installer/composition UX; Workspace/Forge as contract consumers where applicable | EP owns quiescence, integrity, snapshot/restore, compatibility, identity/trust transition, recovery, and qualification. Forge Platform may orchestrate the published contract but never owns the migration engine or CENTRAL data semantics. |
 | Technical Debt Engine | `pcvantol/technical-debt-engine` | Product repositories | Standalone delivery/integration authority. |
 | Generic AI-development contracts | `pcvantol/ai-development-contracts` | Product repositories | Generated projection plus local extension. |
 | Generalized/certified engineering knowledge | `pcvantol/ai-platform-engineering-knowledge-base` | Product repositories | Knowledge lifecycle authority. |
