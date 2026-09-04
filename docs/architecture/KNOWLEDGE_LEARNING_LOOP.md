@@ -23,7 +23,8 @@ Forge Platform continues to own deployment/composition concerns only.
 
 The following decisions from the original analysis remain valid:
 
-- the KB is currently Git/CLI-backed, not a supported installable server role;
+- **KB CURRENTLY CLI/REPOSITORY CAPABILITY:** the KB is currently Git/CLI-backed, not a supported installable server role;
+- no system becomes authoritative merely because it produced evidence about itself; and Knowledge integration is additive, so it cannot establish an execution or certification authority;
 - Forge Platform must not invent a KB daemon/API for product symmetry;
 - any future KB installer composition requires a qualified published artifact plus persistence, backup, update, concurrency and supported operating-model contracts;
 - Forge Platform does not own knowledge certification, learning semantics, EP evidence semantics or Workspace governance.
