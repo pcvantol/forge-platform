@@ -7,3 +7,4 @@
 | [ADR-0003](ADR-0003-deployment-and-trust-boundaries.md) | Deployment roles and explicit trust boundaries |
 | [ADR-0004](ADR-0004-universal-installer-artifact-composition.md) | Universal installer and independently published artifact composition |
 | [ADR-0005](ADR-0005-governed-engineering-learning-loop.md) | Governed engineering learning loop and knowledge authority boundaries |
+| [ADR-0006](ADR-0006-server-deployment-and-discovery.md) | Installed server deployment, discovery, pairing, and lifecycle boundaries |
