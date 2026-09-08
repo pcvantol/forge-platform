@@ -5,6 +5,7 @@ root_dir=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 cd "$root_dir"
 
 python3 tests/foundation/test_foundation.py
+python3 tests/foundation/test_product_version_operations.py
 python3 scripts/advance_product_version.py --check
 python3 docs/ai-development/validate_projection.py \
   --profile forge-platform \
