@@ -29,6 +29,19 @@
 | Forge knowledge consumption | Forge + Knowledge Base | Workspace, EP | Explicit future read-only consumer contract. |
 | Workspace knowledge UX | Workspace + Knowledge Base | Users | Workspace displays/controls; KB retains lifecycle authority. |
 | KB distribution | Knowledge Base; Forge Platform when qualified | Forge Platform | KB must first publish a supported artifact and operating model. |
-| Universal installer and deployment composition | `pcvantol/forge-platform` | Forge, Workspace, Engineering Platform artifacts | Installs qualified published artifacts only. |
+| Universal installer and deployment composition | `pcvantol/forge-platform` | Forge, Workspace, Engineering Platform artifacts | Installs qualified published artifacts only, within product-owned or explicitly delegated target operations; does not take over project/organization CD. |
 | Cross-product compatibility matrix | `pcvantol/forge-platform` | Product artifacts/releases | Product repos own individual protocol implementation. |
 | Canonical Project topology | A Project's Canonical Project Authority Repository | Workspace, Forge, Engineering Platform | Not owned by `pcvantol/forge-platform`; Git-reconstructable. |
+| Mission progression and review cadence | `pcvantol/forge` | Workspace presents; EP consumes released Actions | Project defaults and approved Mission assignments resolve to concrete requirements; no successor bypass. |
+| Delivery Control Contract | Project authority repository; actual external gate/configuration remains with its owner | Forge, EP, Workspace, Forge Platform | Separates environment/target, trigger, approval and deployment authorities; a declaration cannot mint external rights. |
+| Existing CD/release approval, production execution and rollback | Declared project/organization delivery authority | Qualified consumer adapters | Trigger permission is not approval or deployment permission; Workspace must not duplicate the same external Human Gate. |
+
+## Delivery scope clarification
+
+[Delivery authority and promotion gates](DELIVERY_AUTHORITY_AND_PROMOTION_GATES.md)
+refines generic deployment wording in the architecture: Forge Platform's product
+composition authority is not global authority over customer pipelines. Preserve
+existing external gates, credentials and actual decision evidence. Only explicit
+bounded delegation permits a request or target operation; no provider/installer
+fallback when the external owner is unavailable. This is target architecture,
+not proof that external adapters or management UI have been implemented.
