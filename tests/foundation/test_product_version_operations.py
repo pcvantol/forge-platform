@@ -37,6 +37,12 @@ class OperationsTests(unittest.TestCase):
             versioning.apply(root, "operation-0002", "feature@a", head, "patch", None)
             with self.assertRaisesRegex(RuntimeError, "operation ID conflict"):
                 versioning.apply(root, "operation-0002", "feature@b", head, "patch", None)
+    def test_docs_only_operation_does_not_allocate(self):
+        temporary, root, head = self.repo()
+        with temporary:
+            self.assertEqual(versioning.apply(root, "operation-docs-01", "increment:docs", head, "none", None)["target_version"], "2.3.0")
+            with self.assertRaisesRegex(RuntimeError, "operation ID conflict"):
+                versioning.apply(root, "operation-docs-01", "increment:docs", head, "patch", None)
     def test_exact_release_and_invalid_manifest(self):
         temporary, root, head = self.repo()
         with temporary:
