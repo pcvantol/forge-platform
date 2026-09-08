@@ -10,7 +10,10 @@ entrypoint. Read, in order:
 3. `docs/architecture/FORGE_PLATFORM_ARCHITECTURE.md` and
    `docs/architecture/OWNERSHIP_MATRIX.md` for product boundaries;
 4. `docs/roadmap/README.md` and `docs/development/TDE_INTEGRATION.md` for
-   local planning and delivery evidence.
+   local planning and delivery evidence;
+5. for policy/version/release work, `docs/architecture/POLICY_AWARE_COMPOSITION.md`
+   and `docs/roadmap/POLICY_GOVERNANCE_V1.md`. These route the coordinated
+   documentation target without making this product a peer policy authority.
 
 Validate the checkout offline with `sh scripts/validate.sh`. The generated
 projection is committed evidence, not a live dependency on another checkout or

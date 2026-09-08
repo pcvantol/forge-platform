@@ -5,10 +5,18 @@ This directory is the canonical roadmap location for Forge Platform's cross-prod
 ## Canonical entrypoints
 
 - [Forge Platform MVP 1.0](MVP_1_0.md) — product boundary, capability waves, a two-chain DAG that joins only at `MVP_1_0_RELEASE_READY`, the B8 → B8C → B8D → B9 → `STANDALONE_EP_VERIFIED` → `EP_EXTRACTION_CUTOVER_COMPLETE` transition gates, and separate post-verification lanes (CENTRAL relocation, EP self-hosting, and bounded multi-repository parallel execution).
+- [Policy-aware composition](POLICY_GOVERNANCE_V1.md) — scoped policy/release DAG for `POLICY_GOVERNANCE_AND_EFFECTIVE_PROFILES_V1`; native Forge release planning, EP enforcement and actual published artifact evidence precede qualified production installer composition. Documentation only; implementation remains PLANNED.
 - [Historical migration register](MIGRATION_REGISTER.md) — auditable classification of relevant historical DJConnect material and its canonical destination or retained status.
 - [Evidence-gated component composition](../architecture/EVIDENCE_GATED_COMPONENT_COMPOSITION.md) — cross-repository sequencing seam: producer and installer implementation may proceed in parallel, while final component-manifest Actions wait for exact published artifact digest/source/qualification evidence.
 
 The earlier stage view is retained here as orientation only; it is superseded for MVP planning by the dependency-aware capability map in [MVP 1.0](MVP_1_0.md).
+
+The [policy-aware architecture](../architecture/POLICY_AWARE_COMPOSITION.md) keeps
+Forge Platform's deployment/composition policy separate from Forge planning and
+EP execution/assurance. Workspace is the human management surface, not a global
+policy authority. The policy/release sub-DAG changes no executable programme DAG,
+version manifest, runtime state, grant or consumed budget. Full policy UI is not
+a new first-canary dependency; production compositions require their real proof.
 
 | Earlier stage | Corresponding roadmap concern |
 | --- | --- |
@@ -36,4 +44,4 @@ Knowledge integration is additive and remains independently owned by `pcvantol/a
 | K6 | Governed automated observation extraction, health, and drift signals |
 | K7 | KB productization and optional Forge Platform distribution when qualified |
 
-KB is currently a Git-backed repository-local CLI capability, not a current installer role. See the [learning-loop architecture](../architecture/KNOWLEDGE_LEARNING_LOOP.md).
+KB is currently a Git-backed repository-local CLI capability, not a Workspace/EP server role and not a current Forge Platform installer component. See the [learning-loop architecture](../architecture/KNOWLEDGE_LEARNING_LOOP.md).
