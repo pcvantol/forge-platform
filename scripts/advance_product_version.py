@@ -17,7 +17,7 @@ import hashlib
 from typing import Any
 
 PRODUCT = "forge-platform"
-POLICY_REVISION = "FORGE_FAMILY_REPOSITORY_SEMVER_V1"
+POLICY_REVISION = "forge-platform-bootstrap-release-cadence-v2"
 VERSION = re.compile(r"^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$")
 OPERATION_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{7,127}$")
 MANIFEST_PATH = "product-version.json"
@@ -76,6 +76,7 @@ def _target(actual: str, bump: str | None, exact: str | None) -> str:
     if exact is not None:
         if VERSION.fullmatch(exact) is None: raise RuntimeError("the requested release version must be stable X.Y.Z")
         return exact
+    if bump == "none": return actual
     if bump == "patch": return f"{major}.{minor}.{patch + 1}"
     if bump == "minor": return f"{major}.{minor + 1}.0"
     raise RuntimeError("major requires explicit release authority")
@@ -90,10 +91,13 @@ def _operation_path(root: Path, operation_id: str) -> Path:
 def _operation(operation_id: str, lineage: str, expected_head: str, baseline: str,
                bump: str | None, exact: str | None, target: str) -> dict[str, Any]:
     if not lineage.strip(): raise RuntimeError("event lineage is required")
+    release_class = "EXACT" if exact is not None else {"none": "NO_BUMP", "patch": "PATCH", "minor": "MINOR"}.get(bump)
+    if release_class is None: raise RuntimeError("unsupported bootstrap release classification")
     return {"schema_version": 1, "operation_id": operation_id, "product": PRODUCT,
             "component": PRODUCT, "policy_revision": POLICY_REVISION, "event_lineage": lineage,
             "expected_source_revision": expected_head, "baseline_version": baseline,
             "requested_bump": bump, "requested_exact_version": exact, "target_version": target,
+            "release_class": release_class, "classification_rationale": lineage,
             "allowed_projection_paths": [MANIFEST_PATH]}
 
 
@@ -204,7 +208,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--operation-id")
     parser.add_argument("--event-lineage")
     parser.add_argument("--expected-head")
-    parser.add_argument("--bump", choices=("patch", "minor"))
+    parser.add_argument("--bump", choices=("none", "patch", "minor"))
     parser.add_argument("--set-version")
     parser.add_argument("--expected-version")
     parser.add_argument("--plan", action="store_true")
