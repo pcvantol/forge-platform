@@ -2,6 +2,23 @@
 
 This directory is the canonical roadmap location for Forge Platform's cross-product composition product. Architecture remains authoritative for ownership, trust, topology, and runtime boundaries; roadmaps state intent, maturity, sequencing, and qualification work without changing those decisions.
 
+## Repository hygiene and release scope — documented target
+
+The coordinated `PROJECT_HYGIENE_AND_REPOSITORY_RECONCILIATION_V1` increment
+adds the [repository-hygiene release/install boundary](../architecture/REPOSITORY_HYGIENE_RELEASE_BOUNDARY.md)
+and [HY-P composition roadmap](PROJECT_HYGIENE_V1.md).
+Forge reasons about project-wide branch/case evidence; EP owns host facts and
+admitted cleanup. Forge Platform may consume an applicable source/operation-bound
+assessment but does not become a scanner, cleanup executor or CD authority.
+
+HY-P is PLANNED after relevant Forge/EP HY-Q qualification. Optional read-only
+composition remains distinct from mutation support. Retained unrelated branches
+do not block every release; actual relevant conflicts and required stale evidence
+do. Installer/update/uninstall must not delete project refs or runtime case/
+receipt history. All artifact/publisher/rollback and external CD gates remain
+independent. No new first-canary predecessor, executable DAG, package version,
+workflow, grant, runtime activation or actual cleanup is changed here.
+
 ## Canonical entrypoints
 
 - [Forge Platform MVP 1.0](MVP_1_0.md) — product boundary, capability waves, a two-chain DAG that joins only at `MVP_1_0_RELEASE_READY`, the B8 → B8C → B8D → B9 → `STANDALONE_EP_VERIFIED` → `EP_EXTRACTION_CUTOVER_COMPLETE` transition gates, and separate post-verification lanes (CENTRAL relocation, EP self-hosting, and bounded multi-repository parallel execution).
