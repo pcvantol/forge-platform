@@ -41,3 +41,21 @@ the per-file level: it records the allocation before atomically replacing the
 single manifest, so a retry can complete or refuse the same operation without
 allocating another version. It is not a multi-file Git transaction and it never
 pushes, publishes, or turns a candidate number into release approval.
+
+## Candidate qualification and release boundary
+
+This repository has protected-main pull-request gates but no authorized release
+delivery API, GitHub App, or publication route. A delivery operator therefore
+creates a dedicated version-preparation candidate from the recorded expected
+source revision, commits only `product-version.json` and its receipt, and opens
+that candidate for the ordinary protected route. The canonical-version workflow
+checks out the exact PR head (never GitHub's synthetic merge ref) and runs
+`--verify-operation --candidate-head <sha>`. It rejects a receipt whose parent,
+projection digest, target, or changed paths differ. Thus the new candidate gets
+its own qualification evidence; an older review/check cannot be repurposed.
+
+`release-X.Y.Z` is parsed only as an explicit exact target by the helper; it is
+not a branch authorization. No release workflow is configured here. Until an
+authorized route can bind an approved exact candidate, compatibility decision,
+artifact bytes/digest and publication identity, release preparation and
+publication remain unsupported and fail closed by absence rather than a bypass.

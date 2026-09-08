@@ -149,6 +149,55 @@ def apply(root: Path, operation_id: str, lineage: str, expected_head: str,
     return operation
 
 
+def verify_operation(root: Path, candidate_head: str) -> None:
+    """Verify an already-committed, isolated preparation candidate read-only.
+
+    Qualification is deliberately tied to the exact candidate SHA, not a prior
+    green source SHA or a merge ref synthesized by GitHub Actions.
+    """
+    actual_head = _head(root)
+    if actual_head != candidate_head:
+        raise RuntimeError("candidate head mismatch: qualification must inspect the exact candidate SHA")
+    operation_root = root / OPERATIONS_DIRECTORY
+    if not operation_root.exists():
+        print("PRODUCT_VERSION_OPERATION=NOT_APPLICABLE no version-preparation receipt")
+        return
+    operations = sorted(operation_root.glob("*.json"))
+    if len(operations) != 1:
+        raise RuntimeError("version-preparation candidate must contain exactly one operation receipt")
+    operation = json.loads(operations[0].read_text(encoding="utf-8"), object_pairs_hook=_pairs)
+    if not isinstance(operation, dict) or operation.get("state") != "applied":
+        raise RuntimeError("version operation receipt is not an applied object")
+    required = ("operation_id", "product", "component", "policy_revision", "event_lineage",
+                "expected_source_revision", "baseline_version", "target_version",
+                "allowed_projection_paths", "manifest_sha256_before", "manifest_sha256_after")
+    if any(key not in operation for key in required):
+        raise RuntimeError("version operation receipt is incomplete")
+    if operation["product"] != PRODUCT or operation["component"] != PRODUCT:
+        raise RuntimeError("version operation receipt has the wrong product identity")
+    if operation["policy_revision"] != POLICY_REVISION or operation["allowed_projection_paths"] != [MANIFEST_PATH]:
+        raise RuntimeError("version operation receipt has unsupported policy or projection paths")
+    _operation_path(root, operation["operation_id"])
+    _, payload, _ = current(root)
+    if payload["version"] != operation["target_version"]:
+        raise RuntimeError("version operation target does not match the canonical projection")
+    if hashlib.sha256(version_file(root).read_bytes()).hexdigest() != operation["manifest_sha256_after"]:
+        raise RuntimeError("version operation result digest does not match the canonical projection")
+    try:
+        parent = subprocess.run(["git", "-C", str(root), "rev-parse", f"{candidate_head}^"], check=True,
+                                text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE).stdout.strip()
+        changed = subprocess.run(["git", "-C", str(root), "diff", "--name-only", parent, candidate_head],
+                                 check=True, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE).stdout.splitlines()
+    except (OSError, subprocess.CalledProcessError) as error:
+        raise RuntimeError("candidate must have an inspectable single parent") from error
+    if parent != operation["expected_source_revision"]:
+        raise RuntimeError("candidate parent does not equal the operation's expected source revision")
+    expected_paths = {MANIFEST_PATH, f"{OPERATIONS_DIRECTORY}/{operation['operation_id']}.json"}
+    if set(changed) != expected_paths:
+        raise RuntimeError("version-preparation candidate changes paths outside its declared operation")
+    print(f"PRODUCT_VERSION_OPERATION=PASS operation_id={operation['operation_id']} candidate={candidate_head}")
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--source-root", type=Path, default=Path.cwd())
@@ -160,13 +209,20 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--expected-version")
     parser.add_argument("--plan", action="store_true")
     parser.add_argument("--apply", action="store_true")
+    parser.add_argument("--verify-operation", action="store_true")
+    parser.add_argument("--candidate-head")
     parser.add_argument("--check", action="store_true")
     args = parser.parse_args(argv)
-    if sum((args.check, args.plan, args.apply)) != 1: parser.error("provide exactly one of --check, --plan, or --apply")
+    if sum((args.check, args.plan, args.apply, args.verify_operation)) != 1: parser.error("provide exactly one operation mode")
     if args.check:
         if args.bump or args.set_version or args.operation_id or args.event_lineage or args.expected_head: parser.error("--check only reads the version source")
         _, payload, _ = current(args.source_root)
         print(f"PRODUCT_VERSION=PASS version={payload['version']}")
+    elif args.verify_operation:
+        if not args.candidate_head: parser.error("--verify-operation requires --candidate-head")
+        if any((args.operation_id, args.event_lineage, args.expected_head, args.bump, args.set_version, args.expected_version)):
+            parser.error("--verify-operation only inspects a committed candidate")
+        verify_operation(args.source_root, args.candidate_head)
     else:
         if args.expected_version is not None: parser.error("use expected source head, not --expected-version")
         if not all((args.operation_id, args.event_lineage, args.expected_head)):

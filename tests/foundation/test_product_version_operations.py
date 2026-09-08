@@ -43,5 +43,18 @@ class OperationsTests(unittest.TestCase):
             self.assertEqual(versioning.apply(root, "operation-0003", "release", head, None, "2.4.0")["target_version"], "2.4.0")
             (root / "product-version.json").write_text('{"product":"forge-platform","schema_version":true,"version":"02.4.0"}')
             with self.assertRaises(RuntimeError): versioning.current(root)
+    def test_qualification_binds_the_exact_preparation_commit(self):
+        temporary, root, head = self.repo()
+        with temporary:
+            versioning.apply(root, "operation-0004", "feature@a", head, "patch", None)
+            subprocess.run(["git", "-C", str(root), "add", "."], check=True)
+            subprocess.run(["git", "-C", str(root), "-c", "user.name=t", "-c", "user.email=t@x", "commit", "-qm", "prepare"], check=True)
+            candidate = versioning._head(root)
+            versioning.verify_operation(root, candidate)
+            (root / "unrelated.txt").write_text("not a preparation candidate")
+            subprocess.run(["git", "-C", str(root), "add", "."], check=True)
+            subprocess.run(["git", "-C", str(root), "-c", "user.name=t", "-c", "user.email=t@x", "commit", "-qm", "extra"], check=True)
+            with self.assertRaisesRegex(RuntimeError, "candidate parent"):
+                versioning.verify_operation(root, versioning._head(root))
 
 if __name__ == "__main__": unittest.main()
