@@ -42,6 +42,13 @@ single manifest, so a retry can complete or refuse the same operation without
 allocating another version. It is not a multi-file Git transaction and it never
 pushes, publishes, or turns a candidate number into release approval.
 
+Engineering Platform PR [#105](https://github.com/pcvantol/engineering-platform/pull/105)
+is the pending source-level bounded adapter for product-owned prepared
+operations. It verifies declared helper identity, an isolated allowlisted
+candidate and exact-head qualification evidence. It does not establish an
+installed writer, an active authorization grant, merge authority, artifact
+publication or universal-installer readiness.
+
 ## Candidate qualification and release boundary
 
 This repository has protected-main pull-request gates but no authorized release
