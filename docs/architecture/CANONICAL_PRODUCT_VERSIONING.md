@@ -1,5 +1,15 @@
 # Canonical product versioning
 
+## Bootstrap release cadence V2
+
+`forge-platform-bootstrap-release-cadence-v2` replaces push- and main-event
+allocation for new operations. A bounded engineering increment defaults to one
+`PATCH`; documentation-only work is explicit `NO_BUMP`; only an explicit
+capability/release boundary is `MINOR`; `MAJOR` and `EXACT` require applicable
+release authority. Repair, requalification and protected merge are evidence for
+the same operation and cannot allocate a second version. V1 receipts remain
+immutable historical evidence; CI validates but never writes versions.
+
 **Status:** Adopted cross-product policy v1
 
 Forge Platform owns this policy as the composition authority. Each product
