@@ -4,45 +4,12 @@ on:
   push:
     branches: ['**']
 
-concurrency:
-  group: canonical-product-version-${{ github.ref }}
-  cancel-in-progress: false
-
 permissions:
-  contents: write
+  contents: read
 
 jobs:
-  feature-patch:
-    if: github.ref_name != 'main' && !startsWith(github.ref_name, 'release-') && github.actor != 'github-actions[bot]'
+  validate-version-source:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v5
-        with: {fetch-depth: 0}
-      - id: existing
-        run: |
-          git fetch --no-tags origin main
-          git log --format=%s origin/main..HEAD | grep -Eq '^build: advance canonical product patch version [0-9]+\.[0-9]+\.[0-9]+$' && echo 'present=true' >> "$GITHUB_OUTPUT" || echo 'present=false' >> "$GITHUB_OUTPUT"
-      - if: steps.existing.outputs.present != 'true'
-        run: |
-          set -euo pipefail
-          version="$(python3 scripts/advance_product_version.py --bump patch | sed -n 's/^PRODUCT_VERSION=//p')"
-          python3 scripts/advance_product_version.py --check
-          git config user.name 'github-actions[bot]'
-          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git add product-version.json
-          git commit -m "build: advance canonical product patch version ${version}"
-          git push origin "HEAD:${GITHUB_REF_NAME}"
-  main-minor:
-    if: github.ref_name == 'main' && github.actor != 'github-actions[bot]'
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v5
-      - run: |
-          set -euo pipefail
-          version="$(python3 scripts/advance_product_version.py --bump minor | sed -n 's/^PRODUCT_VERSION=//p')"
-          python3 scripts/advance_product_version.py --check
-          git config user.name 'github-actions[bot]'
-          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git add product-version.json
-          git commit -m "build: advance canonical product minor version ${version}"
-          git push origin HEAD:main
+      - run: python3 scripts/advance_product_version.py --check
