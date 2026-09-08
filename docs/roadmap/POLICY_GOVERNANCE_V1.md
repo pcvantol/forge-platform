@@ -44,3 +44,14 @@ Preserve the existing executable bootstrap DAG and grants. This document neither
 allocates Missions nor resets budgets, authorizes side effects or changes version
 baselines. Merge of this documentation makes a design canonical, not a runtime
 capability implemented.
+
+## Existing delivery authority and promotion gates
+
+The [GP composition roadmap](GOVERNED_PROGRESSION_V1.md) and
+[delivery authority design](../architecture/DELIVERY_AUTHORITY_AND_PROMOTION_GATES.md)
+refine deployment ownership: the universal installer does not replace a project
+or organization CD pipeline, approval gate, credentials or rollback authority.
+GP-P is a planned external-delivery-aware composition extension. Review cadence
+belongs to Forge; Workspace projects the actual local/external owner and does
+not duplicate a gate. GP-P does not replace POL/VR nodes or introduce external
+CD as a prerequisite for every local installation or first Mission canary.
