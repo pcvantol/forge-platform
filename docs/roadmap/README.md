@@ -7,6 +7,7 @@ This directory is the canonical roadmap location for Forge Platform's cross-prod
 - [Forge Platform MVP 1.0](MVP_1_0.md) — product boundary, capability waves, a two-chain DAG that joins only at `MVP_1_0_RELEASE_READY`, the B8 → B8C → B8D → B9 → `STANDALONE_EP_VERIFIED` → `EP_EXTRACTION_CUTOVER_COMPLETE` transition gates, and separate post-verification lanes (CENTRAL relocation, EP self-hosting, and bounded multi-repository parallel execution).
 - [Policy-aware composition](POLICY_GOVERNANCE_V1.md) — scoped policy/release DAG for `POLICY_GOVERNANCE_AND_EFFECTIVE_PROFILES_V1`; native Forge release planning, EP enforcement and actual published artifact evidence precede qualified production installer composition. Documentation only; implementation remains PLANNED.
 - [Historical migration register](MIGRATION_REGISTER.md) — auditable classification of relevant historical DJConnect material and its canonical destination or retained status.
+- [Evidence-gated component composition](../architecture/EVIDENCE_GATED_COMPONENT_COMPOSITION.md) — cross-repository sequencing seam: producer and installer implementation may proceed in parallel, while final component-manifest Actions wait for exact published artifact digest/source/qualification evidence.
 
 The earlier stage view is retained here as orientation only; it is superseded for MVP planning by the dependency-aware capability map in [MVP 1.0](MVP_1_0.md).
 
@@ -25,6 +26,8 @@ a new first-canary dependency; production compositions require their real proof.
 | 6–7 | Distributed qualification and Windows/Linux support after MVP |
 
 The first post-verification parallelism capability is not general fleet scheduling: it is EP-owned, capacity-bounded mutation across independent repositories, with one mutating lane per repository. It starts only after `STANDALONE_EP_VERIFIED`; same-repository worktree/disjoint-scope parallelism remains a separate later capability.
+
+Within that lane Forge may make independent producer and Forge Platform installer Actions concurrently eligible. Forge Platform's final release-composition/manifest work remains evidence-gated: a source merge is not a substitute for the exact published artifact bytes, digest, source revision and required qualification/provenance evidence.
 
 ## Knowledge learning-loop integration
 

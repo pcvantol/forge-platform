@@ -18,10 +18,20 @@ Components remain separately owned products even when installed on one machine. 
 
 ## Execution-lane boundary
 
-Forge plans dependency DAGs; Engineering Platform Server remains the durable execution and admission authority. After `STANDALONE_EP_VERIFIED`, its first parallelism capability is bounded mutation across different repositories: an Agent may serve `0..N` repositories and advertise bounded capacity, while EP enforces one mutating lock/lease holder per repository, admission, backpressure, fairness, evidence, and finalization. Workspace only presents or issues permitted control intent. See the [system architecture](FORGE_PLATFORM_ARCHITECTURE.md), [ownership matrix](OWNERSHIP_MATRIX.md), and [MVP roadmap](../roadmap/MVP_1_0.md).
+Forge plans dependency DAGs; Engineering Platform Server remains the durable execution and admission authority. After `STANDALONE_EP_VERIFIED`, its first parallelism capability is bounded mutation across different repositories: an Agent may serve `0..N` repositories and advertise bounded capacity, while EP enforces repository/resource exclusion, admission, backpressure, evidence, and finalization. Workspace only presents or issues permitted control intent.
+
+Forge-owned hard dependency edges and EP-owned execution-resource constraints are separate. A Forge Platform Action may therefore be logically independent and eligible while EP still delays it for capacity, or it may remain logically blocked by producer evidence even when EP has free capacity.
+
+See the [system architecture](FORGE_PLATFORM_ARCHITECTURE.md), [ownership matrix](OWNERSHIP_MATRIX.md), and [MVP roadmap](../roadmap/MVP_1_0.md).
+
+## Evidence-gated release composition
+
+Installer/component support may be implemented in parallel with producer work, but final component-manifest entries require actual published artifact evidence. A source merge or guessed checksum is not enough.
+
+The canonical target is defined in [Evidence-gated cross-repository component composition](EVIDENCE_GATED_COMPONENT_COMPOSITION.md) and the [component-manifest contract](COMPONENT_MANIFEST_CONTRACT.md). Manifest entries keep source revision distinct from the digest of the installable artifact bytes.
 
 ## Lifecycle boundary
 
 The future platform manages install, role add/remove, upgrade, repair, uninstall, health diagnostics, and deployment receipts. Privileged installer logic is intentionally not implemented in this foundation.
 
-Read the [system architecture](FORGE_PLATFORM_ARCHITECTURE.md), [governed knowledge learning loop](KNOWLEDGE_LEARNING_LOOP.md), [ADRs](adr/README.md), [cross-repository ownership matrix](OWNERSHIP_MATRIX.md), [component-manifest contract](COMPONENT_MANIFEST_CONTRACT.md), [compatibility model](COMPATIBILITY.md), [roles and presets](ROLES_AND_PRESETS.md), and [security boundary](SECURITY.md).
+Read the [system architecture](FORGE_PLATFORM_ARCHITECTURE.md), [evidence-gated composition contract](EVIDENCE_GATED_COMPONENT_COMPOSITION.md), [governed knowledge learning loop](KNOWLEDGE_LEARNING_LOOP.md), [ADRs](adr/README.md), [cross-repository ownership matrix](OWNERSHIP_MATRIX.md), [component-manifest contract](COMPONENT_MANIFEST_CONTRACT.md), [compatibility model](COMPATIBILITY.md), [roles and presets](ROLES_AND_PRESETS.md), and [security boundary](SECURITY.md).

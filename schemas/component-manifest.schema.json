@@ -13,14 +13,44 @@
     "component": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["identity", "version", "artifact", "platforms", "protocol_compatibility", "dependencies"],
+      "required": ["identity", "version", "source_revision", "artifact", "platforms", "protocol_compatibility", "dependencies"],
       "properties": {
         "identity": {"enum": ["forge-runtime", "workspace-server", "workspace-client", "engineering-platform-server", "engineering-platform-project-agent"]},
         "version": {"type": "string", "minLength": 1},
-        "artifact": {"type": "object", "additionalProperties": false, "required": ["source", "digest"], "properties": {"source": {"type": "string", "minLength": 1}, "digest": {"type": "string", "pattern": "^[A-Za-z0-9._:+=-]+$"}, "signature": {"type": "string"}, "provenance": {"type": "string"}}},
-        "platforms": {"type": "array", "minItems": 1, "items": {"type": "object", "required": ["os", "architecture"], "properties": {"os": {"type": "string"}, "architecture": {"type": "string"}}, "additionalProperties": false}},
+        "source_revision": {"type": "string", "minLength": 1},
+        "artifact": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["source", "digest", "qualification"],
+          "properties": {
+            "name": {"type": "string", "minLength": 1},
+            "source": {"type": "string", "minLength": 1},
+            "digest": {"type": "string", "pattern": "^[A-Za-z0-9._:+=-]+$"},
+            "signature": {"type": "string"},
+            "provenance": {"type": "string"},
+            "qualification": {"type": "string", "minLength": 1}
+          }
+        },
+        "platforms": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "object",
+            "required": ["os", "architecture"],
+            "properties": {"os": {"type": "string"}, "architecture": {"type": "string"}},
+            "additionalProperties": false
+          }
+        },
         "protocol_compatibility": {"type": "object", "additionalProperties": {"type": "string"}},
-        "dependencies": {"type": "object", "required": ["required", "optional"], "properties": {"required": {"type": "array", "items": {"type": "string"}}, "optional": {"type": "array", "items": {"type": "string"}}}, "additionalProperties": false}
+        "dependencies": {
+          "type": "object",
+          "required": ["required", "optional"],
+          "properties": {
+            "required": {"type": "array", "items": {"type": "string"}},
+            "optional": {"type": "array", "items": {"type": "string"}}
+          },
+          "additionalProperties": false
+        }
       }
     }
   }
