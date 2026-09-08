@@ -1,0 +1,22 @@
+name: Canonical product versioning
+
+on:
+  pull_request:
+  push:
+    branches: ['**']
+
+permissions:
+  contents: read
+
+jobs:
+  validate-version-source:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v5
+        with:
+          # Pull-request default checkout is a synthetic merge commit; qualification
+          # evidence must bind to the candidate that could actually be delivered.
+          ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
+          fetch-depth: 2
+      - run: python3 scripts/advance_product_version.py --check
+      - run: python3 scripts/advance_product_version.py --verify-operation --candidate-head "${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}"

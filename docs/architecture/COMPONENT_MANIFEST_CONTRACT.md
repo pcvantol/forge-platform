@@ -52,3 +52,8 @@ The same rule applies to Forge Server, Workspace Server, Workspace Client, Engin
 The component manifest records a qualified release composition. It is not Forge's Living Mission Graph and does not carry the engineering execution DAG that produced the release. Action dependency and replanning authority remain Forge-owned; execution/admission evidence remains EP-owned.
 
 The accompanying [JSON Schema](../../schemas/component-manifest.schema.json) is a structural contract, not a production manifest. It must preserve the distinction between source revision and artifact identity/digest.
+
+Where a product version-preparation operation exists, its identity may be carried
+as provenance but is not release authorization. Product version, API/protocol
+version, policy version, source revision and artifact digest remain separate
+identities; matching version strings are not compatibility or publication proof.

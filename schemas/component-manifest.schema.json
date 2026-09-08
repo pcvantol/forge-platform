@@ -18,6 +18,7 @@
         "identity": {"enum": ["forge-runtime", "workspace-server", "workspace-client", "engineering-platform-server", "engineering-platform-project-agent"]},
         "version": {"type": "string", "minLength": 1},
         "source_revision": {"type": "string", "minLength": 1},
+        "version_operation_id": {"type": "string", "minLength": 8},
         "artifact": {
           "type": "object",
           "additionalProperties": false,
@@ -42,6 +43,7 @@
           }
         },
         "protocol_compatibility": {"type": "object", "additionalProperties": {"type": "string"}},
+        "supported_contract_versions": {"type": "object", "additionalProperties": {"type": "string"}},
         "dependencies": {
           "type": "object",
           "required": ["required", "optional"],

@@ -1,0 +1,9 @@
+{
+  "contract_version": "1",
+  "product_id": "forge-platform",
+  "repository_id": "pcvantol/forge-platform",
+  "helper_path": "scripts/advance_product_version.py",
+  "receipt_directory": ".product-version-operations",
+  "allowed_projection_paths": ["product-version.json"],
+  "policy_revision": "FORGE_FAMILY_REPOSITORY_SEMVER_V1"
+}
