@@ -18,6 +18,7 @@ sys.path.insert(0, str(ROOT))
 
 from forge_platform.installer_release_operation import (  # noqa: E402
     InstallerQualificationEvidence,
+    InstallerReleaseIdentity,
     InstallerReleaseOperation,
 )
 
@@ -25,6 +26,17 @@ from forge_platform.installer_release_operation import (  # noqa: E402
 SCRIPT = ROOT / "scripts" / "verify_installer_release_evidence.py"
 SOURCE_SHA = "a" * 40
 CAPABILITIES = ["composition/v1", "provider-gate/v1", "system-launchdaemon/v1"]
+POLICY_REVISION = "forge-platform-installer-release-v1"
+IDENTITY = InstallerReleaseIdentity(
+    github_repository="example/forge-platform",
+    bundle_identifier="com.example.forge-platform-installer",
+    team_identifier="ABCDE12345",
+    release_tag_prefix="forge-platform-installer-v",
+    asset_prefix="ForgePlatformInstaller-macos-",
+    signature_algorithm="ed25519",
+    signature_key_ids=("release-key-001",),
+    signature_threshold=1,
+)
 
 
 class VerifyInstallerReleaseEvidenceTests(unittest.TestCase):
@@ -36,9 +48,9 @@ class VerifyInstallerReleaseEvidenceTests(unittest.TestCase):
             result = self._run(operation_path, descriptor_path, archive)
 
             self.assertEqual(result.returncode, 0, result.stderr)
-            self.assertIn("INSTALLER_RELEASE_EVIDENCE=PASS", result.stdout)
+            self.assertIn("INSTALLER_RELEASE_EVIDENCE_STRUCTURE=PASS", result.stdout)
             self.assertIn("tag=forge-platform-installer-v0.1.0", result.stdout)
-            self.assertIn("signature_verification=EXTERNAL_REQUIRED", result.stdout)
+            self.assertIn("cryptographic_signature_verification=NOT_PERFORMED", result.stdout)
 
     def test_rejects_an_archive_with_changed_bytes(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -64,6 +76,36 @@ class VerifyInstallerReleaseEvidenceTests(unittest.TestCase):
             self.assertNotEqual(result.returncode, 0)
             self.assertIn("descriptor source revision", result.stderr)
 
+    def test_rejects_a_durable_operation_with_a_different_reviewed_identity(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            workspace = Path(temporary)
+            operation_path, descriptor_path, archive = self._write_release_inputs(workspace)
+
+            result = self._run(
+                operation_path,
+                descriptor_path,
+                archive,
+                expected_github_repository="other/forge-platform",
+            )
+
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("reviewed installer release identity", result.stderr)
+
+    def test_rejects_a_durable_operation_with_a_different_policy_revision(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            workspace = Path(temporary)
+            operation_path, descriptor_path, archive = self._write_release_inputs(workspace)
+
+            result = self._run(
+                operation_path,
+                descriptor_path,
+                archive,
+                expected_policy_revision="forge-platform-installer-release-v2",
+            )
+
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("requested installer release context", result.stderr)
+
     def test_rejects_an_unsigned_or_unrecognized_descriptor_shape(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             workspace = Path(temporary)
@@ -82,6 +124,13 @@ class VerifyInstallerReleaseEvidenceTests(unittest.TestCase):
         operation_path: Path,
         descriptor_path: Path,
         archive: Path,
+        *,
+        expected_github_repository: str = IDENTITY.github_repository,
+        expected_policy_revision: str = POLICY_REVISION,
+        expected_release_tag: str = "forge-platform-installer-v0.1.0",
+        expected_bundle_identifier: str = IDENTITY.bundle_identifier,
+        expected_team_identifier: str = IDENTITY.team_identifier,
+        expected_asset_prefix: str = IDENTITY.asset_prefix,
     ) -> subprocess.CompletedProcess[str]:
         return subprocess.run(
             [
@@ -95,6 +144,24 @@ class VerifyInstallerReleaseEvidenceTests(unittest.TestCase):
                 f"arm64={archive}",
                 "--source-sha",
                 SOURCE_SHA,
+                "--operation-id",
+                "installer-release-0001",
+                "--installer-version",
+                "0.1.0",
+                "--channel",
+                "stable",
+                "--policy-revision",
+                expected_policy_revision,
+                "--github-repository",
+                expected_github_repository,
+                "--release-tag",
+                expected_release_tag,
+                "--bundle-identifier",
+                expected_bundle_identifier,
+                "--team-identifier",
+                expected_team_identifier,
+                "--asset-prefix",
+                expected_asset_prefix,
             ],
             cwd=ROOT,
             capture_output=True,
@@ -114,17 +181,18 @@ class VerifyInstallerReleaseEvidenceTests(unittest.TestCase):
             "published_at": "2026-09-09T00:00:00Z",
             "expires_at": "2026-10-09T00:00:00Z",
             "installer": {
-                "version": "0.1.0",
-                "source_revision": SOURCE_SHA,
-                "capabilities": CAPABILITIES,
+                        "version": "0.1.0",
+                        "source_revision": SOURCE_SHA,
+                        "policy_revision": POLICY_REVISION,
+                        "capabilities": CAPABILITIES,
                 "assets": [
                     {
                         "operating_system": "macos",
                         "architecture": "arm64",
-                        "url": "https://github.com/pcvantol/forge-platform/releases/download/forge-platform-installer-v0.1.0/ForgePlatformInstaller-macos-arm64.zip",
+                        "url": "https://github.com/example/forge-platform/releases/download/forge-platform-installer-v0.1.0/ForgePlatformInstaller-macos-arm64.zip",
                         "digest": archive_digest,
-                        "bundle_identifier": "com.pcvantol.forge-platform-installer",
-                        "team_identifier": "ABCDE12345",
+                        "bundle_identifier": IDENTITY.bundle_identifier,
+                        "team_identifier": IDENTITY.team_identifier,
                         "notarization_evidence": "notarization-reference",
                     }
                 ],
@@ -141,6 +209,7 @@ class VerifyInstallerReleaseEvidenceTests(unittest.TestCase):
         descriptor_digest = "sha256:" + sha256(descriptor_path.read_bytes()).hexdigest()
         qualification = InstallerQualificationEvidence(
             source_revision=SOURCE_SHA,
+            policy_revision=POLICY_REVISION,
             descriptor_digest=descriptor_digest,
             archives={"arm64": archive_digest},
             qualification_receipt_reference="receipt:protected-signing-qualification-001",
@@ -150,6 +219,8 @@ class VerifyInstallerReleaseEvidenceTests(unittest.TestCase):
             installer_version="0.1.0",
             channel="stable",
             source_revision=SOURCE_SHA,
+            policy_revision=POLICY_REVISION,
+            release_identity=IDENTITY,
             capabilities=CAPABILITIES,
             archives={"arm64": archive_digest},
             descriptor_digest=descriptor_digest,

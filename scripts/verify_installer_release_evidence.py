@@ -136,13 +136,15 @@ def _descriptor_assets(
 ) -> None:
     installer = _mapping(
         descriptor.get("installer"),
-        frozenset({"version", "source_revision", "capabilities", "assets"}),
+        frozenset({"version", "source_revision", "policy_revision", "capabilities", "assets"}),
         "installer descriptor",
     )
     if installer["version"] != operation.installer_version:
         raise ValueError("descriptor installer version does not bind the operation")
     if installer["source_revision"] != operation.source_revision:
         raise ValueError("descriptor source revision does not bind the operation")
+    if installer["policy_revision"] != operation.policy_revision:
+        raise ValueError("descriptor policy revision does not bind the operation")
     capabilities = installer["capabilities"]
     if not isinstance(capabilities, list) or not capabilities or any(
         not isinstance(item, str) or _CAPABILITY.fullmatch(item) is None for item in capabilities
@@ -154,6 +156,7 @@ def _descriptor_assets(
     if not isinstance(assets, list) or not assets:
         raise ValueError("descriptor assets are required")
     observed: dict[str, str] = {}
+    identity = operation.release_identity
     for asset in assets:
         value = _mapping(
             asset,
@@ -168,13 +171,22 @@ def _descriptor_assets(
         architecture = _string(value["architecture"], "descriptor asset architecture")
         if architecture not in _ARCHITECTURES or architecture in observed:
             raise ValueError("descriptor asset architecture is invalid or duplicated")
-        _https_url(value["url"], "descriptor asset URL")
-        _string(value["bundle_identifier"], "descriptor bundle identifier")
-        _string(value["team_identifier"], "descriptor team identifier")
+        expected_url = (
+            f"https://github.com/{identity.github_repository}/releases/download/"
+            f"{operation.release_tag}/{identity.asset_name(architecture)}"
+        )
+        if _https_url(value["url"], "descriptor asset URL") != expected_url:
+            raise ValueError("descriptor asset URL does not bind the canonical GitHub release identity")
+        if _string(value["bundle_identifier"], "descriptor bundle identifier") != identity.bundle_identifier:
+            raise ValueError("descriptor bundle identifier does not bind the release identity")
+        if _string(value["team_identifier"], "descriptor team identifier") != identity.team_identifier:
+            raise ValueError("descriptor Apple Team identifier does not bind the release identity")
         _string(value["notarization_evidence"], "descriptor notarization evidence")
         observed[architecture] = _digest(value["digest"], "descriptor asset digest")
+    if set(observed) != set(operation.archives):
+        raise ValueError("descriptor asset architectures do not exactly bind the operation archives")
     for architecture, digest in operation.archives.items():
-        if observed.get(architecture) != digest:
+        if observed[architecture] != digest:
             raise ValueError("descriptor asset digest does not bind the operation archive")
 
 
@@ -184,6 +196,15 @@ def verify(
     descriptor_raw: bytes,
     archive_paths: Mapping[str, Path],
     source_revision: str,
+    expected_operation_id: str,
+    expected_version: str,
+    expected_channel: str,
+    expected_policy_revision: str,
+    expected_github_repository: str,
+    expected_release_tag: str,
+    expected_bundle_identifier: str,
+    expected_team_identifier: str,
+    expected_asset_prefix: str,
 ) -> InstallerReleaseOperation:
     if _REVISION.fullmatch(source_revision) is None:
         raise ValueError("candidate source revision is invalid")
@@ -193,6 +214,22 @@ def verify(
         raise ValueError("durable installer release operation is invalid") from error
     if operation.source_revision != source_revision:
         raise ValueError("durable operation source revision does not match the exact candidate")
+    if (
+        operation.operation_id != expected_operation_id
+        or operation.installer_version != expected_version
+        or operation.channel != expected_channel
+        or operation.policy_revision != expected_policy_revision
+    ):
+        raise ValueError("durable operation does not bind the requested installer release context")
+    identity = operation.release_identity
+    if (
+        identity.github_repository != expected_github_repository
+        or operation.release_tag != expected_release_tag
+        or identity.bundle_identifier != expected_bundle_identifier
+        or identity.team_identifier != expected_team_identifier
+        or identity.asset_prefix != expected_asset_prefix
+    ):
+        raise ValueError("durable operation does not bind the reviewed installer release identity")
     if operation.state not in {"QUALIFIED", "PUBLISHED", "CLEANUP_PENDING", "RELEASE_COMPLETE"}:
         raise ValueError("durable installer release operation state is unsupported")
     if set(archive_paths) != set(operation.archives):
@@ -230,8 +267,11 @@ def verify(
     _descriptor_assets(descriptor, operation)
     if _file_digest_bytes(descriptor_raw) != operation.descriptor_digest:
         raise ValueError("descriptor digest does not bind the durable operation")
-    if operation.qualification.source_revision != source_revision:
-        raise ValueError("qualification evidence source revision does not bind the candidate")
+    if (
+        operation.qualification.source_revision != source_revision
+        or operation.qualification.policy_revision != operation.policy_revision
+    ):
+        raise ValueError("qualification evidence does not bind the candidate source revision and policy")
     return operation
 
 
@@ -245,6 +285,15 @@ def main() -> None:
     parser.add_argument("--descriptor", required=True)
     parser.add_argument("--archive", action="append", default=[], metavar="ARCHITECTURE=PATH")
     parser.add_argument("--source-sha", required=True)
+    parser.add_argument("--operation-id", required=True)
+    parser.add_argument("--installer-version", required=True)
+    parser.add_argument("--channel", required=True)
+    parser.add_argument("--policy-revision", required=True)
+    parser.add_argument("--github-repository", required=True)
+    parser.add_argument("--release-tag", required=True)
+    parser.add_argument("--bundle-identifier", required=True)
+    parser.add_argument("--team-identifier", required=True)
+    parser.add_argument("--asset-prefix", required=True)
     args = parser.parse_args()
     try:
         operation_path = Path(args.operation).expanduser().resolve(strict=True)
@@ -254,13 +303,22 @@ def main() -> None:
             descriptor_raw=descriptor_path.read_bytes(),
             archive_paths=_archive_arguments(args.archive),
             source_revision=args.source_sha,
+            expected_operation_id=args.operation_id,
+            expected_version=args.installer_version,
+            expected_channel=args.channel,
+            expected_policy_revision=args.policy_revision,
+            expected_github_repository=args.github_repository,
+            expected_release_tag=args.release_tag,
+            expected_bundle_identifier=args.bundle_identifier,
+            expected_team_identifier=args.team_identifier,
+            expected_asset_prefix=args.asset_prefix,
         )
         print(
-            "INSTALLER_RELEASE_EVIDENCE=PASS"
+            "INSTALLER_RELEASE_EVIDENCE_STRUCTURE=PASS"
             f" version={operation.installer_version}"
             f" tag={operation.release_tag}"
             f" state={operation.state}"
-            " signature_verification=EXTERNAL_REQUIRED"
+            " cryptographic_signature_verification=NOT_PERFORMED"
         )
     except (OSError, ValueError) as error:
         print(f"INSTALLER_RELEASE_EVIDENCE=FAIL reason={error}", file=sys.stderr)

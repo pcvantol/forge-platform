@@ -5,6 +5,7 @@ from __future__ import annotations
 
 from dataclasses import asdict
 from pathlib import Path
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -16,6 +17,7 @@ from forge_platform.installer_release_operation import (  # noqa: E402
     InstallerCleanupEvidence,
     InstallerPublicationEvidence,
     InstallerQualificationEvidence,
+    InstallerReleaseIdentity,
     InstallerReleaseOperation,
     InstallerReleaseOperationError,
     InstallerReleaseOperationStore,
@@ -27,6 +29,27 @@ DESCRIPTOR_DIGEST = "sha256:" + "b" * 64
 ARM64_ARCHIVE_DIGEST = "sha256:" + "c" * 64
 X86_64_ARCHIVE_DIGEST = "sha256:" + "d" * 64
 CAPABILITIES = ("composition/v1", "provider-gate/v1", "system-launchdaemon/v1")
+POLICY_REVISION = "forge-platform-installer-release-v1"
+RELEASE_IDENTITY = InstallerReleaseIdentity(
+    github_repository="example/forge-platform",
+    bundle_identifier="com.example.forge-platform-installer",
+    team_identifier="ABCDE12345",
+    release_tag_prefix="forge-platform-installer-v",
+    asset_prefix="ForgePlatformInstaller-macos-",
+    signature_algorithm="ed25519",
+    signature_key_ids=("release-key-001",),
+    signature_threshold=1,
+)
+ALTERNATE_RELEASE_IDENTITY = InstallerReleaseIdentity(
+    github_repository="example/forge-platform",
+    bundle_identifier="com.example.forge-platform-installer",
+    team_identifier="ZYXWV98765",
+    release_tag_prefix="forge-platform-installer-v",
+    asset_prefix="ForgePlatformInstaller-macos-",
+    signature_algorithm="ed25519",
+    signature_key_ids=("release-key-002",),
+    signature_threshold=1,
+)
 
 
 def archives(*, arm64_digest: str = ARM64_ARCHIVE_DIGEST) -> dict[str, str]:
@@ -36,11 +59,13 @@ def archives(*, arm64_digest: str = ARM64_ARCHIVE_DIGEST) -> dict[str, str]:
 def qualification(
     *,
     source_revision: str = SOURCE_REVISION,
+    policy_revision: str = POLICY_REVISION,
     descriptor_digest: str = DESCRIPTOR_DIGEST,
     archive_digests: dict[str, str] | None = None,
 ) -> InstallerQualificationEvidence:
     return InstallerQualificationEvidence(
         source_revision=source_revision,
+        policy_revision=policy_revision,
         descriptor_digest=descriptor_digest,
         archives=archive_digests or archives(),
         qualification_receipt_reference="receipt:installer-qualification-001",
@@ -53,6 +78,8 @@ def operation(
     version: str = "1.1.0",
     channel: str = "stable",
     source_revision: str = SOURCE_REVISION,
+    policy_revision: str = POLICY_REVISION,
+    release_identity: InstallerReleaseIdentity = RELEASE_IDENTITY,
     capabilities: tuple[str, ...] = CAPABILITIES,
     archive_digests: dict[str, str] | None = None,
     descriptor_digest: str = DESCRIPTOR_DIGEST,
@@ -63,11 +90,14 @@ def operation(
         installer_version=version,
         channel=channel,
         source_revision=source_revision,
+        policy_revision=policy_revision,
+        release_identity=release_identity,
         capabilities=capabilities,
         archives=archive_digests,
         descriptor_digest=descriptor_digest,
         qualification=qualification(
             source_revision=source_revision,
+            policy_revision=policy_revision,
             descriptor_digest=descriptor_digest,
             archive_digests=archive_digests,
         ),
@@ -76,7 +106,9 @@ def operation(
 
 def publication(expected: InstallerReleaseOperation) -> InstallerPublicationEvidence:
     return InstallerPublicationEvidence(
+        github_repository=expected.release_identity.github_repository,
         release_tag=expected.release_tag,
+        policy_revision=expected.policy_revision,
         descriptor_digest=expected.descriptor_digest,
         archives=expected.archives,
         publication_receipt_reference="receipt:installer-publication-001",
@@ -137,11 +169,14 @@ class InstallerReleaseOperationTests(unittest.TestCase):
                     installer_version=expected.installer_version,
                     channel=expected.channel,
                     source_revision=expected.source_revision,
+                    policy_revision=expected.policy_revision,
+                    release_identity=expected.release_identity,
                     capabilities=expected.capabilities,
                     archives=expected.archives,
                     descriptor_digest=expected.descriptor_digest,
                     qualification=InstallerQualificationEvidence(
                         source_revision=expected.source_revision,
+                        policy_revision=expected.policy_revision,
                         descriptor_digest=expected.descriptor_digest,
                         archives=expected.archives,
                         qualification_receipt_reference="receipt:installer-qualification-changed",
@@ -163,6 +198,12 @@ class InstallerReleaseOperationTests(unittest.TestCase):
                 changed_source = operation(source_revision="9" * 40)
                 with self.assertRaisesRegex(InstallerReleaseOperationError, "different immutable identity"):
                     store.prepare_qualified(changed_source)
+                changed_policy = operation(policy_revision="forge-platform-installer-release-v2")
+                with self.assertRaisesRegex(InstallerReleaseOperationError, "different immutable identity"):
+                    store.prepare_qualified(changed_policy)
+                changed_release_identity = operation(release_identity=ALTERNATE_RELEASE_IDENTITY)
+                with self.assertRaisesRegex(InstallerReleaseOperationError, "different immutable identity"):
+                    store.prepare_qualified(changed_release_identity)
             finally:
                 store.release(expected.operation_id)
 
@@ -209,6 +250,48 @@ class InstallerReleaseOperationTests(unittest.TestCase):
             contender.acquire("installer-release-0002")
             contender.release("installer-release-0002")
 
+    def test_release_lock_serializes_an_independent_process_and_recovers_after_exit(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            expected = operation()
+            child_source = (
+                "from pathlib import Path\n"
+                "import sys\n"
+                f"sys.path.insert(0, {str(ROOT)!r})\n"
+                "from forge_platform.installer_release_operation import InstallerReleaseOperationStore\n"
+                "store = InstallerReleaseOperationStore(Path(sys.argv[1]))\n"
+                "store.acquire(sys.argv[2])\n"
+                "print('LOCKED', flush=True)\n"
+                "sys.stdin.read()\n"
+                "store.release(sys.argv[2])\n"
+            )
+            holder = subprocess.Popen(
+                [sys.executable, "-c", child_source, temporary, expected.operation_id],
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+            )
+            try:
+                assert holder.stdout is not None
+                self.assertEqual(holder.stdout.readline().strip(), "LOCKED")
+                contender = InstallerReleaseOperationStore(Path(temporary))
+                with self.assertRaisesRegex(InstallerReleaseOperationError, "another installer release operation"):
+                    contender.acquire("installer-release-0002")
+            finally:
+                assert holder.stdin is not None
+                holder.stdin.close()
+                return_code = holder.wait(timeout=10)
+                stderr = holder.stderr.read() if holder.stderr else ""
+                if holder.stdout is not None:
+                    holder.stdout.close()
+                if holder.stderr is not None:
+                    holder.stderr.close()
+                self.assertEqual(return_code, 0, stderr)
+
+            contender = InstallerReleaseOperationStore(Path(temporary))
+            contender.acquire("installer-release-0002")
+            contender.release("installer-release-0002")
+
     def test_typed_evidence_rejects_secret_like_fields_paths_and_wrong_bindings(self) -> None:
         expected = operation()
         record = asdict(expected)
@@ -228,14 +311,43 @@ class InstallerReleaseOperationTests(unittest.TestCase):
                 target_ids=("/private/tmp/unsafe-path",),
             )
         wrong_publication = InstallerPublicationEvidence(
+            github_repository=expected.release_identity.github_repository,
             release_tag="forge-platform-installer-stable-v9.9.9",
+            policy_revision=expected.policy_revision,
             descriptor_digest=expected.descriptor_digest,
             archives=expected.archives,
             publication_receipt_reference="receipt:publication-001",
             readback_receipt_reference="receipt:readback-001",
         )
-        with self.assertRaisesRegex(InstallerReleaseOperationError, "canonical release tag"):
+        with self.assertRaisesRegex(InstallerReleaseOperationError, "canonical release identity"):
             expected.transition("PUBLISHED", evidence=wrong_publication)
+        wrong_repository_publication = InstallerPublicationEvidence(
+            github_repository="other/forge-platform",
+            release_tag=expected.release_tag,
+            policy_revision=expected.policy_revision,
+            descriptor_digest=expected.descriptor_digest,
+            archives=expected.archives,
+            publication_receipt_reference="receipt:publication-001",
+            readback_receipt_reference="receipt:readback-001",
+        )
+        with self.assertRaisesRegex(InstallerReleaseOperationError, "canonical release identity"):
+            expected.transition("PUBLISHED", evidence=wrong_repository_publication)
+
+    def test_store_rejects_duplicate_key_or_non_finite_recovery_records(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            expected = operation()
+            store = InstallerReleaseOperationStore(Path(temporary))
+            record_path = store._path(expected.operation_id)
+            record_path.parent.mkdir(parents=True)
+            record_path.write_text(
+                '{"operation_id":"first","operation_id":"second"}',
+                encoding="utf-8",
+            )
+            with self.assertRaisesRegex(InstallerReleaseOperationError, "record is unreadable"):
+                store.load(expected.operation_id)
+            record_path.write_text('{"value":NaN}', encoding="utf-8")
+            with self.assertRaisesRegex(InstallerReleaseOperationError, "record is unreadable"):
+                store.load(expected.operation_id)
 
     def test_bad_transitions_and_tampered_recovery_receipt_fail_closed(self) -> None:
         expected = operation()

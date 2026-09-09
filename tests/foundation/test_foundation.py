@@ -54,13 +54,16 @@ REQUIRED = (
     ".github/workflows/macos-installer-validation.yml",
     ".github/workflows/forge-platform-installer-release.yml",
     "installer-version.json",
+    "installer-release-identity.json",
     "scripts/validate_installer_version.py",
+    "scripts/validate_installer_release_identity.py",
     "scripts/advance_installer_version.py",
     "tests/installer/test_installer_version_preparation.py",
     "scripts/package_macos_installer_app.py",
     "scripts/verify_installer_release_evidence.py",
     "forge_platform/installer_release_operation.py",
     "tests/installer/test_installer_release_operation.py",
+    "tests/installer/test_installer_release_identity.py",
     "tests/installer/test_package_macos_installer_app.py",
     "tests/installer/test_verify_installer_release_evidence.py",
     "tests/installer/test_installer_release_workflow.py",
@@ -81,6 +84,8 @@ def main() -> None:
     installer_release = json.loads((ROOT / "schemas/universal-installer-release.schema.json").read_text())
     if installer_release["title"] != "Forge Platform universal installer release descriptor":
         raise SystemExit("universal installer release schema identity is invalid")
+    if "policy_revision" not in installer_release["properties"]["installer"]["required"]:
+        raise SystemExit("universal installer release descriptor must bind its policy revision")
     catalog = json.loads((ROOT / "schemas/universal-installer-composition-catalog.schema.json").read_text())
     if catalog["title"] != "Forge Platform universal installer composition catalog":
         raise SystemExit("universal installer catalog schema identity is invalid")
@@ -127,6 +132,7 @@ def main() -> None:
         "SINGLE_OPERATIONAL_INSTALLATION_VERIFIED",
         "EP-owned resolver/provisioner",
         "Forge Platform must not add a second EP provisioner",
+        "installer-release identity policy",
     ):
         if required_term not in universal_installer:
             raise SystemExit(f"universal installer contract is missing canonical term: {required_term}")

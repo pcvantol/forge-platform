@@ -35,6 +35,13 @@ _SHA256 = re.compile(r"^sha256:[0-9a-f]{64}$")
 _CAPABILITY = re.compile(r"^[a-z0-9][a-z0-9./_-]{0,127}$")
 _RECEIPT_REFERENCE = re.compile(r"^receipt:[a-z0-9][a-z0-9._-]{0,127}$")
 _TARGET_ID = re.compile(r"^[a-z0-9][a-z0-9._-]{0,127}$")
+_BUNDLE_IDENTIFIER = re.compile(r"^[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)+$")
+_TEAM_IDENTIFIER = re.compile(r"^[A-Z0-9]{10}$")
+_GITHUB_REPOSITORY = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
+_RELEASE_TAG_PREFIX = re.compile(r"^[a-z0-9][a-z0-9._-]*$")
+_ASSET_PREFIX = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
+_SIGNING_KEY_ID = re.compile(r"^[a-z0-9][a-z0-9._-]{0,127}$")
+_POLICY_REVISION = re.compile(r"^[a-z0-9][a-z0-9._/-]{0,127}$")
 _ARCHITECTURES = frozenset({"arm64", "x86_64"})
 _CHANNELS = frozenset({"stable", "candidate"})
 _STATES = frozenset({"QUALIFIED", "PUBLISHED", "CLEANUP_PENDING", "RELEASE_COMPLETE"})
@@ -44,6 +51,7 @@ _ALLOWED_TRANSITIONS = {
     "CLEANUP_PENDING": frozenset({"RELEASE_COMPLETE"}),
     "RELEASE_COMPLETE": frozenset(),
 }
+INSTALLER_RELEASE_POLICY_REVISION = "forge-platform-installer-release-v1"
 
 
 class InstallerReleaseOperationError(ValueError):
@@ -70,10 +78,41 @@ def _receipt_reference(value: object, label: str) -> str:
     return result
 
 
+def _policy_revision(value: object, label: str) -> str:
+    result = _required_string(value, label)
+    if _POLICY_REVISION.fullmatch(result) is None:
+        raise InstallerReleaseOperationError(f"installer release {label} is invalid")
+    return result
+
+
 def _strict_mapping(value: object, expected: frozenset[str], label: str) -> Mapping[str, object]:
     if not isinstance(value, Mapping) or set(value) != expected:
         raise InstallerReleaseOperationError(f"installer release {label} has unknown or missing fields")
     return value
+
+
+def _reject_json_constant(value: str) -> None:
+    raise ValueError(f"non-finite JSON value is not permitted: {value}")
+
+
+def _unique_json_pairs(pairs: list[tuple[object, object]]) -> dict[str, object]:
+    result: dict[str, object] = {}
+    for key, value in pairs:
+        if not isinstance(key, str) or key in result:
+            raise ValueError("duplicate or invalid JSON object key")
+        result[key] = value
+    return result
+
+
+def _strict_json_load(raw: str, label: str) -> object:
+    try:
+        return json.loads(
+            raw,
+            object_pairs_hook=_unique_json_pairs,
+            parse_constant=_reject_json_constant,
+        )
+    except (TypeError, ValueError, json.JSONDecodeError) as error:
+        raise InstallerReleaseOperationError(f"installer release {label} is unreadable") from error
 
 
 def _capabilities(value: object) -> tuple[str, ...]:
@@ -111,15 +150,89 @@ def _target_ids(value: object) -> tuple[str, ...]:
     return normalized
 
 
-def _release_tag(_channel: str, version: str) -> str:
-    """Produce the one canonical GitHub Release tag for an installer version.
+@dataclass(frozen=True)
+class InstallerReleaseIdentity:
+    """Reviewed non-secret identity that a released installer must bind.
 
-    The channel remains immutable signed descriptor metadata.  It is not part
-    of the tag, so a candidate and stable operation can never publish different
-    bytes under what GitHub would treat as the same installer version release.
+    This type deliberately excludes certificates, private keys, tokens and
+    notarization credentials.  It gives a protected signer/publisher the exact
+    public identity it must prove: GitHub repository/tag/asset naming, app
+    bundle/team identity, and the rotatable descriptor-signing key policy.
     """
 
-    return f"forge-platform-installer-v{version}"
+    github_repository: str
+    bundle_identifier: str
+    team_identifier: str
+    release_tag_prefix: str
+    asset_prefix: str
+    signature_algorithm: str
+    signature_key_ids: tuple[str, ...]
+    signature_threshold: int
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.github_repository, str) or _GITHUB_REPOSITORY.fullmatch(self.github_repository) is None:
+            raise InstallerReleaseOperationError("installer release GitHub repository is invalid")
+        if not isinstance(self.bundle_identifier, str) or _BUNDLE_IDENTIFIER.fullmatch(self.bundle_identifier) is None:
+            raise InstallerReleaseOperationError("installer release bundle identifier is invalid")
+        if not isinstance(self.team_identifier, str) or _TEAM_IDENTIFIER.fullmatch(self.team_identifier) is None:
+            raise InstallerReleaseOperationError("installer release Apple Team identifier is invalid")
+        if not isinstance(self.release_tag_prefix, str) or _RELEASE_TAG_PREFIX.fullmatch(self.release_tag_prefix) is None:
+            raise InstallerReleaseOperationError("installer release tag prefix is invalid")
+        if not isinstance(self.asset_prefix, str) or _ASSET_PREFIX.fullmatch(self.asset_prefix) is None:
+            raise InstallerReleaseOperationError("installer release asset prefix is invalid")
+        if self.signature_algorithm != "ed25519":
+            raise InstallerReleaseOperationError("installer release signature algorithm is unsupported")
+        if not isinstance(self.signature_key_ids, (tuple, list)):
+            raise InstallerReleaseOperationError("installer release signing key identities must be a list")
+        if any(not isinstance(key_id, str) for key_id in self.signature_key_ids):
+            raise InstallerReleaseOperationError("installer release signing key identity is invalid")
+        key_ids = tuple(sorted(self.signature_key_ids))
+        if not key_ids or any(_SIGNING_KEY_ID.fullmatch(key_id) is None for key_id in key_ids):
+            raise InstallerReleaseOperationError("installer release signing key identity is invalid")
+        if len(set(key_ids)) != len(key_ids):
+            raise InstallerReleaseOperationError("installer release signing key identities must be unique")
+        if (
+            isinstance(self.signature_threshold, bool)
+            or not isinstance(self.signature_threshold, int)
+            or self.signature_threshold <= 0
+            or self.signature_threshold > len(key_ids)
+        ):
+            raise InstallerReleaseOperationError("installer release signature threshold is invalid")
+        object.__setattr__(self, "signature_key_ids", key_ids)
+
+    @classmethod
+    def from_mapping(cls, value: object) -> "InstallerReleaseIdentity":
+        payload = _strict_mapping(
+            value,
+            frozenset({
+                "github_repository", "bundle_identifier", "team_identifier", "release_tag_prefix", "asset_prefix",
+                "signature_algorithm", "signature_key_ids", "signature_threshold",
+            }),
+            "identity",
+        )
+        key_ids = payload["signature_key_ids"]
+        if not isinstance(key_ids, list):
+            raise InstallerReleaseOperationError("installer release signing key identities must be a list")
+        return cls(
+            github_repository=_required_string(payload["github_repository"], "GitHub repository"),
+            bundle_identifier=_required_string(payload["bundle_identifier"], "bundle identifier"),
+            team_identifier=_required_string(payload["team_identifier"], "Apple Team identifier"),
+            release_tag_prefix=_required_string(payload["release_tag_prefix"], "tag prefix"),
+            asset_prefix=_required_string(payload["asset_prefix"], "asset prefix"),
+            signature_algorithm=_required_string(payload["signature_algorithm"], "signature algorithm"),
+            signature_key_ids=tuple(key_ids),
+            signature_threshold=payload["signature_threshold"],
+        )
+
+    def release_tag(self, version: str) -> str:
+        if _SEMVER.fullmatch(version) is None:
+            raise InstallerReleaseOperationError("installer release version is invalid")
+        return f"{self.release_tag_prefix}{version}"
+
+    def asset_name(self, architecture: str) -> str:
+        if architecture not in _ARCHITECTURES:
+            raise InstallerReleaseOperationError("installer release archive architecture is unsupported")
+        return f"{self.asset_prefix}{architecture}.zip"
 
 
 @dataclass(frozen=True)
@@ -127,6 +240,7 @@ class InstallerQualificationEvidence:
     """Typed qualification receipt with no command output, path, or credentials."""
 
     source_revision: str
+    policy_revision: str
     descriptor_digest: str
     archives: Mapping[str, str]
     qualification_receipt_reference: str
@@ -137,6 +251,7 @@ class InstallerQualificationEvidence:
             raise InstallerReleaseOperationError("installer qualification result is invalid")
         if not isinstance(self.source_revision, str) or _REVISION.fullmatch(self.source_revision) is None:
             raise InstallerReleaseOperationError("installer qualification source revision is invalid")
+        _policy_revision(self.policy_revision, "qualification policy revision")
         _digest(self.descriptor_digest, "qualification descriptor digest")
         object.__setattr__(self, "archives", _archives(self.archives))
         _receipt_reference(self.qualification_receipt_reference, "qualification receipt reference")
@@ -145,12 +260,13 @@ class InstallerQualificationEvidence:
     def from_mapping(cls, value: object) -> "InstallerQualificationEvidence":
         payload = _strict_mapping(
             value,
-            frozenset({"result", "source_revision", "descriptor_digest", "archives", "qualification_receipt_reference"}),
+            frozenset({"result", "source_revision", "policy_revision", "descriptor_digest", "archives", "qualification_receipt_reference"}),
             "qualification evidence",
         )
         return cls(
             result=_required_string(payload["result"], "qualification result"),
             source_revision=_required_string(payload["source_revision"], "qualification source revision"),
+            policy_revision=_required_string(payload["policy_revision"], "qualification policy revision"),
             descriptor_digest=_required_string(payload["descriptor_digest"], "qualification descriptor digest"),
             archives=_archives(payload["archives"]),
             qualification_receipt_reference=_required_string(
@@ -163,7 +279,9 @@ class InstallerQualificationEvidence:
 class InstallerPublicationEvidence:
     """Typed GitHub Release publication and immutable readback evidence."""
 
+    github_repository: str
     release_tag: str
+    policy_revision: str
     descriptor_digest: str
     archives: Mapping[str, str]
     publication_receipt_reference: str
@@ -173,7 +291,10 @@ class InstallerPublicationEvidence:
     def __post_init__(self) -> None:
         if self.result != "PUBLISHED":
             raise InstallerReleaseOperationError("installer publication result is invalid")
+        if not isinstance(self.github_repository, str) or _GITHUB_REPOSITORY.fullmatch(self.github_repository) is None:
+            raise InstallerReleaseOperationError("installer publication GitHub repository is invalid")
         _required_string(self.release_tag, "publication release tag")
+        _policy_revision(self.policy_revision, "publication policy revision")
         _digest(self.descriptor_digest, "publication descriptor digest")
         object.__setattr__(self, "archives", _archives(self.archives))
         _receipt_reference(self.publication_receipt_reference, "publication receipt reference")
@@ -184,14 +305,16 @@ class InstallerPublicationEvidence:
         payload = _strict_mapping(
             value,
             frozenset({
-                "result", "release_tag", "descriptor_digest", "archives", "publication_receipt_reference",
+                "result", "github_repository", "release_tag", "policy_revision", "descriptor_digest", "archives", "publication_receipt_reference",
                 "readback_receipt_reference",
             }),
             "publication evidence",
         )
         return cls(
             result=_required_string(payload["result"], "publication result"),
+            github_repository=_required_string(payload["github_repository"], "publication GitHub repository"),
             release_tag=_required_string(payload["release_tag"], "publication release tag"),
+            policy_revision=_required_string(payload["policy_revision"], "publication policy revision"),
             descriptor_digest=_required_string(payload["descriptor_digest"], "publication descriptor digest"),
             archives=_archives(payload["archives"]),
             publication_receipt_reference=_required_string(
@@ -239,6 +362,8 @@ class InstallerReleaseOperation:
     installer_version: str
     channel: str
     source_revision: str
+    policy_revision: str
+    release_identity: InstallerReleaseIdentity
     capabilities: tuple[str, ...]
     archives: Mapping[str, str]
     descriptor_digest: str
@@ -256,6 +381,9 @@ class InstallerReleaseOperation:
             raise InstallerReleaseOperationError("installer release channel is invalid")
         if not isinstance(self.source_revision, str) or _REVISION.fullmatch(self.source_revision) is None:
             raise InstallerReleaseOperationError("installer release source revision is invalid")
+        _policy_revision(self.policy_revision, "policy revision")
+        if not isinstance(self.release_identity, InstallerReleaseIdentity):
+            raise InstallerReleaseOperationError("installer release identity is invalid")
         object.__setattr__(self, "capabilities", _capabilities(self.capabilities))
         object.__setattr__(self, "archives", _archives(self.archives))
         _digest(self.descriptor_digest, "descriptor digest")
@@ -290,6 +418,8 @@ class InstallerReleaseOperation:
         installer_version: str,
         channel: str,
         source_revision: str,
+        policy_revision: str,
+        release_identity: InstallerReleaseIdentity,
         capabilities: tuple[str, ...] | list[str],
         archives: Mapping[str, str],
         descriptor_digest: str,
@@ -302,6 +432,8 @@ class InstallerReleaseOperation:
             installer_version=installer_version,
             channel=channel,
             source_revision=source_revision,
+            policy_revision=policy_revision,
+            release_identity=release_identity,
             capabilities=tuple(capabilities),
             archives=dict(archives),
             descriptor_digest=descriptor_digest,
@@ -314,8 +446,8 @@ class InstallerReleaseOperation:
         payload = _strict_mapping(
             value,
             frozenset({
-                "operation_id", "installer_version", "channel", "source_revision", "capabilities", "archives",
-                "descriptor_digest", "state", "qualification", "publication", "cleanup",
+                "operation_id", "installer_version", "channel", "source_revision", "policy_revision", "capabilities", "archives",
+                "release_identity", "descriptor_digest", "state", "qualification", "publication", "cleanup",
             }),
             "operation record",
         )
@@ -327,6 +459,8 @@ class InstallerReleaseOperation:
             installer_version=_required_string(payload["installer_version"], "version"),
             channel=_required_string(payload["channel"], "channel"),
             source_revision=_required_string(payload["source_revision"], "source revision"),
+            policy_revision=_required_string(payload["policy_revision"], "policy revision"),
+            release_identity=InstallerReleaseIdentity.from_mapping(payload["release_identity"]),
             capabilities=_capabilities(payload["capabilities"]),
             archives=_archives(payload["archives"]),
             descriptor_digest=_required_string(payload["descriptor_digest"], "descriptor digest"),
@@ -338,16 +472,23 @@ class InstallerReleaseOperation:
 
     @property
     def release_tag(self) -> str:
-        return _release_tag(self.channel, self.installer_version)
+        return self.release_identity.release_tag(self.installer_version)
 
     def _require_bound_evidence(self, evidence: InstallerQualificationEvidence | InstallerPublicationEvidence) -> None:
         if evidence.descriptor_digest != self.descriptor_digest or dict(evidence.archives) != dict(self.archives):
             raise InstallerReleaseOperationError("installer release evidence does not bind exact descriptor and archive bytes")
         if isinstance(evidence, InstallerQualificationEvidence):
-            if evidence.source_revision != self.source_revision:
-                raise InstallerReleaseOperationError("installer qualification evidence does not bind exact source revision")
-        elif evidence.release_tag != self.release_tag:
-            raise InstallerReleaseOperationError("installer publication evidence does not bind the canonical release tag")
+            if (
+                evidence.source_revision != self.source_revision
+                or evidence.policy_revision != self.policy_revision
+            ):
+                raise InstallerReleaseOperationError("installer qualification evidence does not bind exact source revision and policy")
+        elif (
+            evidence.github_repository != self.release_identity.github_repository
+            or evidence.release_tag != self.release_tag
+            or evidence.policy_revision != self.policy_revision
+        ):
+            raise InstallerReleaseOperationError("installer publication evidence does not bind the canonical release identity")
 
     def transition(
         self,
@@ -387,6 +528,11 @@ def _atomic_json(path: Path, value: object) -> None:
             os.fsync(stream.fileno())
         os.chmod(temporary_name, 0o600)
         os.replace(temporary_name, path)
+        directory_descriptor = os.open(path.parent, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+        try:
+            os.fsync(directory_descriptor)
+        finally:
+            os.close(directory_descriptor)
     except BaseException:
         Path(temporary_name).unlink(missing_ok=True)
         raise
@@ -454,8 +600,8 @@ class InstallerReleaseOperationStore:
         if not path.exists():
             return None
         try:
-            return InstallerReleaseOperation.parse(json.loads(path.read_text(encoding="utf-8")))
-        except (OSError, json.JSONDecodeError) as error:
+            return InstallerReleaseOperation.parse(_strict_json_load(path.read_text(encoding="utf-8"), "operation record"))
+        except (OSError, InstallerReleaseOperationError) as error:
             raise InstallerReleaseOperationError("installer release operation record is unreadable") from error
 
     def save(self, operation: InstallerReleaseOperation) -> InstallerReleaseOperation:
@@ -477,6 +623,8 @@ class InstallerReleaseOperationStore:
             left.installer_version,
             left.channel,
             left.source_revision,
+            left.policy_revision,
+            left.release_identity,
             left.capabilities,
             dict(left.archives),
             left.descriptor_digest,
@@ -485,6 +633,8 @@ class InstallerReleaseOperationStore:
             right.installer_version,
             right.channel,
             right.source_revision,
+            right.policy_revision,
+            right.release_identity,
             right.capabilities,
             dict(right.archives),
             right.descriptor_digest,
@@ -634,8 +784,8 @@ class InstallerReleaseOperationStore:
         if not path.exists():
             return
         try:
-            existing = json.loads(path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError) as error:
+            existing = _strict_json_load(path.read_text(encoding="utf-8"), "published installer identity")
+        except (OSError, InstallerReleaseOperationError) as error:
             raise InstallerReleaseOperationError("published installer release identity is unreadable") from error
         if existing != identity:
             raise InstallerReleaseOperationError(
@@ -648,11 +798,15 @@ class InstallerReleaseOperationStore:
     ) -> tuple[Path, dict[str, object]]:
         if operation.state not in {"PUBLISHED", "CLEANUP_PENDING", "RELEASE_COMPLETE"}:
             raise InstallerReleaseOperationError("only a published installer release may reserve its immutable identity")
+        release_identity = asdict(operation.release_identity)
+        release_identity["signature_key_ids"] = list(operation.release_identity.signature_key_ids)
         return self.root / "published" / f"{operation.installer_version}.json", {
             "operation_id": operation.operation_id,
             "installer_version": operation.installer_version,
             "channel": operation.channel,
             "source_revision": operation.source_revision,
+            "policy_revision": operation.policy_revision,
+            "release_identity": release_identity,
             "capabilities": list(operation.capabilities),
             "archives": dict(operation.archives),
             "descriptor_digest": operation.descriptor_digest,

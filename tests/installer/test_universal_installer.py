@@ -86,6 +86,7 @@ def release_metadata(
     *,
     version: str = "1.1.0",
     source_revision: str = "b" * 40,
+    policy_revision: str = "forge-platform-installer-release-v1",
     digest: str = NEW_DIGEST,
     sequence: int = 2,
     channel: str = "stable",
@@ -102,13 +103,14 @@ def release_metadata(
         "installer": {
             "version": version,
             "source_revision": source_revision,
+            "policy_revision": policy_revision,
             "capabilities": list(capabilities),
             "assets": [{
                 "operating_system": "macos",
                 "architecture": "arm64",
                 "url": f"https://github.example.invalid/releases/{version}/ForgePlatformInstaller-arm64.dmg",
                 "digest": digest,
-                "bundle_identifier": "com.pcvantol.ForgePlatformInstaller",
+                "bundle_identifier": "com.example.ForgePlatformInstaller",
                 "team_identifier": "TEAMID",
                 "notarization_evidence": f"https://evidence.example.invalid/notarization/{version}/arm64",
             }],
@@ -129,6 +131,7 @@ def installed(
     *,
     version: str = "1.0.0",
     source_revision: str = "a" * 40,
+    policy_revision: str = "forge-platform-installer-release-v1",
     digest: str = OLD_DIGEST,
     channel: str = "stable",
     accepted_sequence: int = 1,
@@ -137,8 +140,9 @@ def installed(
     return InstalledInstallerIdentity(
         SemanticVersion.parse(version),
         source_revision,
+        policy_revision,
         digest,
-        "com.pcvantol.ForgePlatformInstaller",
+        "com.example.ForgePlatformInstaller",
         "TEAMID",
         f"https://evidence.example.invalid/notarization/{version}/arm64",
         channel,
@@ -396,6 +400,9 @@ class UniversalInstallerTests(unittest.TestCase):
         duplicate = trusted_release(version="1.1.0", source_revision="c" * 40, digest="sha256:" + "9" * 64, sequence=3)
         with self.assertRaisesRegex(UniversalInstallerError, "conflicting immutable metadata"):
             select_self_update(installed(), [trusted_release(), duplicate], channel="stable", architecture="arm64", now=NOW, release_feed=fresh_release_feed())
+        policy_changed = trusted_release(version="1.1.0", policy_revision="forge-platform-installer-release-v2", sequence=4)
+        with self.assertRaisesRegex(UniversalInstallerError, "conflicting immutable metadata"):
+            select_self_update(installed(), [trusted_release(), policy_changed], channel="stable", architecture="arm64", now=NOW, release_feed=fresh_release_feed())
 
     def test_self_update_rejects_replayed_sequence_and_higher_unproven_local_version(self) -> None:
         current = trusted_release(version="1.1.0", source_revision="b" * 40, digest=NEW_DIGEST, sequence=2)

@@ -53,6 +53,7 @@ REMOVAL_SUPPORT_STATES = frozenset({"SUPPORTED", "UNSUPPORTED", "UNKNOWN"})
 _SEMVER = re.compile(r"^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$")
 _DIGEST = re.compile(r"^sha256:[0-9a-f]{64}$")
 _CAPABILITY = re.compile(r"^[a-z0-9][a-z0-9./_-]{0,127}$")
+_POLICY_REVISION = re.compile(r"^[a-z0-9][a-z0-9._/-]{0,127}$")
 _SAFE_OPERATION_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
 _JOURNAL_FORBIDDEN_KEY_FRAGMENTS = frozenset({
     "access_token", "authorization", "credential", "cookie", "password", "private_key", "secret", "token",
@@ -253,6 +254,7 @@ class InstallerRelease:
     channel: str
     version: SemanticVersion
     source_revision: str
+    policy_revision: str
     published_at: datetime
     expires_at: datetime
     capabilities: frozenset[str]
@@ -267,6 +269,8 @@ class InstallerRelease:
         if not isinstance(self.version, SemanticVersion):
             raise ValueError("installer version must be semantic")
         _required(self.source_revision, "installer source_revision")
+        if not isinstance(self.policy_revision, str) or _POLICY_REVISION.fullmatch(self.policy_revision) is None:
+            raise ValueError("installer policy_revision is invalid")
         if self.expires_at <= self.published_at:
             raise ValueError("installer metadata must expire after publication")
         if not self.capabilities:
@@ -311,7 +315,7 @@ class InstallerRelease:
             raise UniversalInstallerError("installer release metadata signature verification failed")
         installer = _mapping(
             payload["installer"],
-            frozenset({"version", "source_revision", "capabilities", "assets"}),
+            frozenset({"version", "source_revision", "policy_revision", "capabilities", "assets"}),
             "installer release",
         )
         capabilities = installer["capabilities"]
@@ -333,6 +337,7 @@ class InstallerRelease:
             channel=_required(payload["channel"], "installer channel"),
             version=SemanticVersion.parse(installer["version"], "installer version"),
             source_revision=_required(installer["source_revision"], "installer source_revision"),
+            policy_revision=_required(installer["policy_revision"], "installer policy_revision"),
             published_at=_timestamp(payload["published_at"], "installer published_at"),
             expires_at=_timestamp(payload["expires_at"], "installer expires_at"),
             capabilities=frozenset(parsed_capabilities),
@@ -363,6 +368,7 @@ class InstalledInstallerIdentity:
 
     version: SemanticVersion
     source_revision: str
+    accepted_policy_revision: str
     bundle_digest: str
     bundle_identifier: str
     team_identifier: str
@@ -375,6 +381,11 @@ class InstalledInstallerIdentity:
         if not isinstance(self.version, SemanticVersion):
             raise ValueError("installed installer version must be semantic")
         _required(self.source_revision, "installed installer source_revision")
+        if (
+            not isinstance(self.accepted_policy_revision, str)
+            or _POLICY_REVISION.fullmatch(self.accepted_policy_revision) is None
+        ):
+            raise ValueError("installed installer accepted policy revision is invalid")
         _digest(self.bundle_digest, "installed installer bundle_digest")
         _required(self.bundle_identifier, "installed installer bundle_identifier")
         _required(self.team_identifier, "installed installer team_identifier")
@@ -498,6 +509,7 @@ def select_self_update(
         previous = versions.get(release.version)
         if previous is not None and (
             previous.source_revision != release.source_revision
+            or previous.policy_revision != release.policy_revision
             or previous.assets != release.assets
             or previous.composition_catalog_feed != release.composition_catalog_feed
             or previous.capabilities != release.capabilities
@@ -517,6 +529,7 @@ def select_self_update(
             latest.sequence != installed.accepted_sequence
             or
             installed.source_revision != latest.source_revision
+            or installed.accepted_policy_revision != latest.policy_revision
             or installed.bundle_digest != asset.download.digest
             or installed.bundle_identifier != asset.bundle_identifier
             or installed.team_identifier != asset.team_identifier

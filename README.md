@@ -11,13 +11,15 @@ execute/resume evidence without selecting a runtime itself. A strict Universal
 Installer policy kernel and native macOS SwiftUI wizard shell now exist for
 self-update, signed composition selection, preflight, managed Git/Python
 planning, provider gating, and read-only diffs. A separate installer-release
-framework can deterministically package an unsigned macOS `.app` candidate and
-bind its digest-pinned archive to future signed evidence and a durable installer
-operation, but its protected
-signing/notarization/publication gates deliberately fail closed. A signed and
-notarized installer release, privileged bootstrapper, and concrete product
-adapters remain unimplemented; this repository does not publish producer
-product artifacts or change product runtime behavior.
+framework can produce a source-only unsigned macOS `.app` candidate and bind
+the exact staged archive digest to future signed evidence and a durable
+installer operation. Its release identity policy intentionally starts
+`UNCONFIGURED`, so protected signing/notarization/publication gates fail closed
+until the actual GitHub namespace, bundle/team identity and public-key policy
+are reviewed. A signed and notarized installer release, privileged
+bootstrapper, and concrete product adapters remain unimplemented; this
+repository does not publish producer product artifacts or change product
+runtime behavior.
 
 ## Boundary
 

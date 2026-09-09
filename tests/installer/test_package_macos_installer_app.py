@@ -40,7 +40,7 @@ class PackageMacOSInstallerAppTests(unittest.TestCase):
             with (app_bundle / "Contents" / "Info.plist").open("rb") as stream:
                 info = plistlib.load(stream)
             self.assertEqual(info["CFBundleExecutable"], "ForgePlatformInstaller")
-            self.assertEqual(info["CFBundleIdentifier"], "com.pcvantol.forge-platform-installer")
+            self.assertEqual(info["CFBundleIdentifier"], "com.example.forge-platform-installer")
             self.assertEqual(info["CFBundleShortVersionString"], "0.1.0")
             self.assertEqual(info["CFBundleVersion"], "0.1.0")
             self.assertEqual(info["CFBundlePackageType"], "APPL")
@@ -120,7 +120,7 @@ class PackageMacOSInstallerAppTests(unittest.TestCase):
                 "--output",
                 str(app_bundle),
                 "--bundle-identifier",
-                "com.pcvantol.forge-platform-installer",
+                "com.example.forge-platform-installer",
             ],
             cwd=ROOT,
             capture_output=True,

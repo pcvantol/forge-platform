@@ -104,8 +104,28 @@ class InstallerVersionPreparationTests(unittest.TestCase):
             installer_versioning.verify_operation(root, candidate)
 
             (root / "unrelated.txt").write_text("outside version preparation\n", encoding="utf-8")
-            with self.assertRaisesRegex(RuntimeError, "candidate parent"):
-                installer_versioning.verify_operation(root, self.commit(root, "unrelated"))
+            with self.assertRaisesRegex(RuntimeError, "requires a version-preparation receipt"):
+                installer_versioning.verify_operation(
+                    root, self.commit(root, "unrelated"), require_operation=True
+                )
+
+    def test_historical_receipts_do_not_block_the_next_exact_candidate_receipt(self) -> None:
+        temporary, root, head = self.repo()
+        with temporary:
+            installer_versioning.apply(root, "installer-version-0005", "increment:first", head, "patch", None)
+            first_candidate = self.commit(root, "prepare first installer version")
+            installer_versioning.verify_operation(root, first_candidate, require_operation=True)
+
+            installer_versioning.apply(
+                root,
+                "installer-version-0006",
+                "increment:second",
+                first_candidate,
+                "patch",
+                None,
+            )
+            second_candidate = self.commit(root, "prepare second installer version")
+            installer_versioning.verify_operation(root, second_candidate, require_operation=True)
 
     def test_no_bump_receipt_has_no_phantom_projection_changes(self) -> None:
         temporary, root, head = self.repo()
@@ -113,6 +133,106 @@ class InstallerVersionPreparationTests(unittest.TestCase):
             installer_versioning.apply(root, "installer-version-0004", "increment:documentation", head, "none", None)
             candidate = self.commit(root, "record no-bump installer decision")
             installer_versioning.verify_operation(root, candidate)
+            with self.assertRaisesRegex(RuntimeError, "advancing version-preparation receipt"):
+                installer_versioning.verify_operation(
+                    root,
+                    candidate,
+                    require_version_advance=True,
+                )
+
+    def test_qualification_rejects_dirty_worktree_instead_of_certifying_uncommitted_bytes(self) -> None:
+        temporary, root, head = self.repo()
+        with temporary:
+            installer_versioning.apply(root, "installer-version-0007", "increment:clean", head, "patch", None)
+            candidate = self.commit(root, "prepare clean installer version")
+            (root / "installer-version.json").write_text(
+                (root / "installer-version.json").read_text(encoding="utf-8").replace("0.1.1", "9.9.9"),
+                encoding="utf-8",
+            )
+            with self.assertRaisesRegex(RuntimeError, "requires a clean worktree"):
+                installer_versioning.verify_operation(root, candidate, require_version_advance=True)
+
+    def test_qualification_rejects_forged_baseline_or_release_classification(self) -> None:
+        temporary, root, head = self.repo()
+        with temporary:
+            operation_id = "installer-version-0008"
+            installer_versioning.apply(root, operation_id, "increment:forged", head, "patch", None)
+            receipt_path = root / installer_versioning.OPERATIONS_DIRECTORY / f"{operation_id}.json"
+            receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+            receipt["baseline_version"] = "0.0.1"
+            receipt["requested_bump"] = None
+            receipt["requested_exact_version"] = "0.1.1"
+            receipt["release_class"] = "EXACT"
+            receipt_path.write_text(json.dumps(receipt), encoding="utf-8")
+            candidate = self.commit(root, "forge installer version baseline")
+            with self.assertRaisesRegex(RuntimeError, "baseline does not match"):
+                installer_versioning.verify_operation(root, candidate, require_version_advance=True)
+
+        temporary, root, head = self.repo()
+        with temporary:
+            operation_id = "installer-version-0009"
+            installer_versioning.apply(root, operation_id, "increment:classification", head, "patch", None)
+            receipt_path = root / installer_versioning.OPERATIONS_DIRECTORY / f"{operation_id}.json"
+            receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+            receipt["release_class"] = "NO_BUMP"
+            receipt_path.write_text(json.dumps(receipt), encoding="utf-8")
+            candidate = self.commit(root, "forge installer release class")
+            with self.assertRaisesRegex(RuntimeError, "target or release class is inconsistent"):
+                installer_versioning.verify_operation(root, candidate, require_version_advance=True)
+
+    def test_preparation_lock_serializes_two_processes_and_releases_after_holder_exit(self) -> None:
+        temporary, root, head = self.repo()
+        with temporary:
+            child_source = (
+                "import importlib.util\n"
+                "from pathlib import Path\n"
+                "import sys\n"
+                f"spec = importlib.util.spec_from_file_location('versioning', {str(ROOT / 'scripts' / 'advance_installer_version.py')!r})\n"
+                "module = importlib.util.module_from_spec(spec)\n"
+                "spec.loader.exec_module(module)\n"
+                "with module._preparation_lock(Path(sys.argv[1])):\n"
+                "    print('LOCKED', flush=True)\n"
+                "    sys.stdin.read()\n"
+            )
+            holder = subprocess.Popen(
+                ["python3", "-c", child_source, str(root)],
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+            )
+            try:
+                assert holder.stdout is not None
+                self.assertEqual(holder.stdout.readline().strip(), "LOCKED")
+                with self.assertRaisesRegex(RuntimeError, "another installer version preparation owns the lock"):
+                    installer_versioning.apply(
+                        root,
+                        "installer-version-0010",
+                        "increment:contender",
+                        head,
+                        "patch",
+                        None,
+                    )
+            finally:
+                assert holder.stdin is not None
+                holder.stdin.close()
+                return_code = holder.wait(timeout=10)
+                stderr = holder.stderr.read() if holder.stderr else ""
+                if holder.stdout is not None:
+                    holder.stdout.close()
+                if holder.stderr is not None:
+                    holder.stderr.close()
+                self.assertEqual(return_code, 0, stderr)
+
+            applied = installer_versioning.apply(
+                root,
+                "installer-version-0010",
+                "increment:contender",
+                head,
+                "patch",
+                None,
+            )
+            self.assertEqual(applied["state"], "APPLIED")
 
 
 if __name__ == "__main__":

@@ -17,10 +17,15 @@ There is deliberately **not** one installer package per Forge/EP/Workspace combi
 
 Product version, installer version, composition identity, protocol/schema versions, source revision, and artifact digest remain separate values. `installer-version.json` is the sole source for the native installer version/channel/capability projection; it is deliberately independent of Forge Platform's `product-version.json` composition-release version.
 
-An installer release reserves the distinct GitHub tag
-`forge-platform-installer-vX.Y.Z`. The signed channel remains immutable
-descriptor metadata rather than a tag suffix, so stable and candidate work can
-never publish different bytes under one installer-version identity.
+An installer release reserves the distinct GitHub tag configured by its
+reviewed installer-release identity policy (normally a prefix followed by the
+installer version). The signed channel remains immutable descriptor metadata
+rather than a tag suffix, so stable and candidate work can never publish
+different bytes under one installer-version identity. The committed policy is
+deliberately `UNCONFIGURED` until the actual GitHub namespace, application
+bundle identifier, Apple Team identifier and public descriptor-key threshold
+are approved. An unconfigured policy blocks the release workflow; no source
+literal or test fixture is an implicit production identity.
 
 ## Mandatory self-update
 
@@ -102,7 +107,7 @@ Discovery produces a candidate only. Product APIs verify product, instance, fing
 
 ## Current source and remaining work
 
-Forge Platform now contains strict schemas and a tested policy kernel for signed-release selection, fresh/trusted-clock feed gates, catalog signature/sequence/digest anti-replay, context-bound composition selection, installer capability checks, preflight, Git/Python planning, provider gating, system-service declaration checks, and read-only composition diffs. It also contains a tested native SwiftUI wizard shell, a separate installer release-operation journal, and a source-only release workflow framework. That framework verifies an exact merged `main` candidate, deterministically packages an **unsigned** `.app` candidate, produces a digest-pinned archive, and records the expected signed-descriptor/operation handoff shape. Its signing/notarization and public-GitHub-Release environments deliberately fail closed until a real protected Apple signer, notarization adapter, descriptor trust root, and publisher are configured. The structural handoff verifier does not claim to cryptographically verify an opaque descriptor signature.
+Forge Platform now contains strict schemas and a tested policy kernel for signed-release selection, fresh/trusted-clock feed gates, catalog signature/sequence/digest anti-replay, context-bound composition selection, installer capability checks, preflight, Git/Python planning, provider gating, system-service declaration checks, and read-only composition diffs. It also contains a tested native SwiftUI wizard shell, a separate installer release-operation journal, and a source-only release workflow framework. That framework verifies an exact merged `main` candidate, requires its exact version-preparation receipt, requires a reviewed release-identity policy, packages an **unsigned** `.app` candidate, records the digest of the exact staged archive, and binds the later operation/descriptor handoff to the configured GitHub repository, tag, asset names, bundle identifier and Team identifier. Its signing/notarization and public-GitHub-Release environments deliberately fail closed until a real protected Apple signer, notarization adapter, descriptor trust root, and publisher are configured. The structural handoff verifier intentionally reports that cryptographic signature verification was not performed; it is never a publication authorization.
 
 Next owning increments are: connect the protected signer/notarization/publisher to the installer release framework and qualify an actual GitHub Release; native trusted bootstrap/handoff; EP then Forge/Workspace execute/resume/uninstall adapters; managed-tool/provider coordinators that retain no secrets; and installed-artifact clean-Mac, add/update/remove, migration/rollback, reboot-recovery, pairing, readiness, and summary qualification.
 

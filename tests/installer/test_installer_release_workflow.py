@@ -18,22 +18,32 @@ class InstallerReleaseWorkflowTests(unittest.TestCase):
     def test_uses_a_separate_installer_tag_and_never_reuses_composition_flow_identity(self) -> None:
         self.assertIn("name: Forge Platform installer release framework", self.workflow)
         self.assertIn("group: forge-platform-installer-release", self.workflow)
-        self.assertIn('TAG="forge-platform-installer-v$INSTALLER_VERSION"', self.workflow)
+        self.assertIn('TAG="$TAG_PREFIX$INSTALLER_VERSION"', self.workflow)
         self.assertIn('OPERATION_ID="forge-platform-installer-$INSTALLER_VERSION-$SOURCE_SHA"', self.workflow)
         self.assertNotIn("forge-platform-production-release", self.workflow)
         self.assertNotIn("forge_platform.release_operation", self.workflow)
         self.assertNotIn("composition_manifest", self.workflow)
+        self.assertNotIn("com.pcvantol.forge-platform-installer", self.workflow)
 
     def test_qualifies_only_the_exact_current_main_candidate_and_builds_an_app_archive(self) -> None:
         self.assertIn('test "$SOURCE_SHA" = "$(git rev-parse HEAD)"', self.workflow)
         self.assertIn('test "$SOURCE_SHA" = "$(git rev-parse origin/main)"', self.workflow)
         self.assertIn("scripts/advance_installer_version.py", self.workflow)
-        self.assertIn("--verify-operation --candidate-head \"$SOURCE_SHA\"", self.workflow)
+        self.assertIn(
+            "--verify-operation --require-operation --require-version-advance --candidate-head \"$SOURCE_SHA\"",
+            self.workflow,
+        )
+        self.assertIn("scripts/validate_installer_release_identity.py --require-ready", self.workflow)
+        self.assertIn("INSTALLER_RELEASE_POLICY_REVISION", self.workflow)
+        self.assertIn("git fetch --no-tags origin +refs/heads/main:refs/remotes/origin/main", self.workflow)
+        self.assertIn('test "$GITHUB_REPOSITORY" = "$IDENTITY_REPOSITORY"', self.workflow)
         self.assertIn("runs-on: macos-14", self.workflow)
         self.assertIn("swift test", self.workflow)
         self.assertIn("swift build -c release --show-bin-path", self.workflow)
         self.assertIn("scripts/package_macos_installer_app.py", self.workflow)
+        self.assertIn('--bundle-identifier "$BUNDLE_IDENTIFIER"', self.workflow)
         self.assertIn("release-input/ForgePlatformInstaller.app", self.workflow)
+        self.assertIn('ARCHIVE="$ASSET_PREFIX$ARCHITECTURE.zip"', self.workflow)
         self.assertIn("ditto -c -k --sequesterRsrc --keepParent", self.workflow)
         self.assertIn("shasum -a 256", self.workflow)
         self.assertIn('"packaging": "UNSIGNED_APP_CANDIDATE"', self.workflow)
@@ -55,6 +65,18 @@ class InstallerReleaseWorkflowTests(unittest.TestCase):
         self.assertIn("signed-release-input/installer-release-operation.json", self.workflow)
         self.assertIn("signed-release-input/installer-release-descriptor.json", self.workflow)
         self.assertIn('name: forge-platform-installer-signed-${{ needs.release-context.outputs.installer_version }}-${{ needs.release-context.outputs.source_sha }}', self.workflow)
+        for flag in (
+            '--operation-id "$OPERATION_ID"',
+            '--installer-version "$INSTALLER_VERSION"',
+            '--channel "$CHANNEL"',
+            '--policy-revision "$POLICY_REVISION"',
+            '--github-repository "$IDENTITY_GITHUB_REPOSITORY"',
+            '--release-tag "$RELEASE_TAG"',
+            '--bundle-identifier "$BUNDLE_IDENTIFIER"',
+            '--team-identifier "$TEAM_IDENTIFIER"',
+            '--asset-prefix "$ASSET_PREFIX"',
+        ):
+            self.assertIn(flag, self.workflow)
 
 
 if __name__ == "__main__":
