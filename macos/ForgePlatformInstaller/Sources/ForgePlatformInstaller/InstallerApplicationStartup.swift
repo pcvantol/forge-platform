@@ -1,3 +1,4 @@
+import AppKit
 import Combine
 import SwiftUI
 import ForgePlatformInstallerCore
@@ -18,10 +19,21 @@ final class InstallerApplicationStartupModel: ObservableObject {
     @Published private(set) var state: State = .checking
 
     private let startupBoundary: ReleasedInstallerStartupBoundary
+    /// The core reports `.relaunching` only after the replacement has passed
+    /// its verification/handoff boundary and a durable receipt has been
+    /// persisted.  Keeping termination here prevents the old UI process from
+    /// ever returning to a wizard after it has delegated to a newer installer.
+    private let terminateCurrentProcess: @MainActor @Sendable () -> Void
     private var hasStarted = false
 
-    init(startupBoundary: ReleasedInstallerStartupBoundary = .bundledFailClosed()) {
+    init(
+        startupBoundary: ReleasedInstallerStartupBoundary = .bundledFailClosed(),
+        terminateCurrentProcess: @escaping @MainActor @Sendable () -> Void = {
+            NSApplication.shared.terminate(nil)
+        }
+    ) {
         self.startupBoundary = startupBoundary
+        self.terminateCurrentProcess = terminateCurrentProcess
     }
 
     func start() {
@@ -50,6 +62,18 @@ final class InstallerApplicationStartupModel: ObservableObject {
                 ))
             case .relaunching(let release):
                 state = .relaunching(release)
+                // Yield once so the short status screen can be rendered, then
+                // exit the predecessor. The replacement process owns any
+                // bounded lock-retry; this process must not stay alive and
+                // silently regain wizard authority.
+                Task { @MainActor [weak self] in
+                    await Task.yield()
+                    guard let self,
+                          case .relaunching = self.state else {
+                        return
+                    }
+                    self.terminateCurrentProcess()
+                }
             case .blocked(let reason):
                 state = .blocked(reason)
             }
