@@ -1,0 +1,78 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/pcvantol/forge-platform/schemas/universal-installer-release.schema.json",
+  "title": "Forge Platform universal installer release descriptor",
+  "description": "Signed metadata transported by a GitHub Release. The GitHub latest marker is only a locator; an embedded installer trust root verifies this descriptor before a bundle may run. The catalog URL is a signed feed locator, while every catalog revision is separately signed, expiring, sequenced, and locally anti-replay anchored.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "sequence", "channel", "published_at", "expires_at", "installer", "composition_catalog", "signatures"],
+  "properties": {
+    "schema": {"const": "forge-platform.installer-release/v1"},
+    "sequence": {"type": "integer", "minimum": 1},
+    "channel": {"enum": ["stable", "candidate"]},
+    "published_at": {"type": "string", "format": "date-time"},
+    "expires_at": {"type": "string", "format": "date-time"},
+    "installer": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["version", "source_revision", "capabilities", "assets"],
+      "properties": {
+        "version": {"type": "string", "pattern": "^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)$"},
+        "source_revision": {"type": "string", "minLength": 1},
+        "capabilities": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {"$ref": "#/$defs/capability"}
+        },
+        "assets": {
+          "type": "array",
+          "minItems": 1,
+          "items": {"$ref": "#/$defs/installer_asset"}
+        }
+      }
+    },
+    "composition_catalog": {"$ref": "#/$defs/catalog_feed"},
+    "signatures": {
+      "type": "array",
+      "minItems": 1,
+      "items": {"type": "string", "minLength": 1}
+    }
+  },
+  "$defs": {
+    "sha256": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+    "https_url": {"type": "string", "pattern": "^https://[^\\s@/]+(?:/[^\\s]*)?$"},
+    "capability": {"type": "string", "pattern": "^[a-z0-9][a-z0-9./_-]{0,127}$"},
+    "catalog_feed": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["url"],
+      "properties": {
+        "url": {"$ref": "#/$defs/https_url"}
+      }
+    },
+    "download_identity": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["url", "digest"],
+      "properties": {
+        "url": {"$ref": "#/$defs/https_url"},
+        "digest": {"$ref": "#/$defs/sha256"}
+      }
+    },
+    "installer_asset": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["operating_system", "architecture", "url", "digest", "bundle_identifier", "team_identifier", "notarization_evidence"],
+      "properties": {
+        "operating_system": {"const": "macos"},
+        "architecture": {"enum": ["arm64", "x86_64"]},
+        "url": {"$ref": "#/$defs/https_url"},
+        "digest": {"$ref": "#/$defs/sha256"},
+        "bundle_identifier": {"type": "string", "minLength": 1},
+        "team_identifier": {"type": "string", "minLength": 1},
+        "notarization_evidence": {"type": "string", "minLength": 1}
+      }
+    }
+  }
+}

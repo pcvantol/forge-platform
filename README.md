@@ -7,10 +7,13 @@ Forge Platform is the canonical, first-class repository for cross-product distri
 Repository foundation with bounded source-level component-operation and
 release-composition evidence kernels. The component-operation contract consumes
 product-owned runtime readback, exact-candidate update assessment, and
-execute/resume evidence without selecting a runtime itself. The universal
-installer and concrete product adapters are not yet implemented: this
-repository does not publish producer product artifacts or change product
-runtime behavior.
+execute/resume evidence without selecting a runtime itself. A strict Universal
+Installer policy kernel and native macOS SwiftUI wizard shell now exist for
+self-update, signed composition selection, preflight, managed Git/Python
+planning, provider gating, and read-only diffs. A signed/notarized installer
+release, privileged bootstrapper, and concrete product adapters remain
+unimplemented; this repository does not publish producer product artifacts or
+change product runtime behavior.
 
 ## Boundary
 
@@ -24,6 +27,7 @@ Forge Platform consumes qualified, versioned artifacts published by product repo
 - [Architecture Decision Records](docs/architecture/adr/README.md)
 - [Cross-repository ownership matrix](docs/architecture/OWNERSHIP_MATRIX.md)
 - [Component-operation delegation contract](docs/architecture/COMPONENT_OPERATION_DELEGATION_CONTRACT.md)
+- [Universal macOS Installer contract](docs/architecture/UNIVERSAL_MACOS_INSTALLER_CONTRACT.md)
 - [Roadmap](docs/roadmap/README.md)
 - [MVP 1.0 roadmap](docs/roadmap/MVP_1_0.md)
 - [Development and bootstrap](docs/development/README.md)

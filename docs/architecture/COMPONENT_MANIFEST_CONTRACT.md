@@ -2,6 +2,8 @@
 
 A Forge Platform component manifest declares a tested release composition of independently published product artifacts. It does not build producer artifacts, infer them from source checkouts, or embed production endpoint choices in source control.
 
+The legacy structural component manifest remains release-composition evidence. The Universal Installer consumes the stricter signed catalog and immutable composition schemas in `schemas/universal-installer-*.schema.json`; see the [Universal macOS Installer contract](UNIVERSAL_MACOS_INSTALLER_CONTRACT.md). They add an installer version/capability gate, host and managed-tool requirements, user-scoped provider requirements, product service declarations, and known safe composition upgrade edges. They do not turn an artifact locator into product runtime authority.
+
 ## Evidence-gated manifest finalization
 
 A final manifest entry may be created only after the producing product has published the installable artifact and exposed the evidence required to identify and qualify those exact bytes.

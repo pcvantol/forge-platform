@@ -2,7 +2,7 @@
 
 ## Purpose and status
 
-This is the canonical high-level architecture entrypoint for the Forge Platform ecosystem composition. It records product and trust boundaries needed for later work; it does not implement an installer, service, protocol, scheduler, authentication flow, producer-artifact publication, or Schema 41. Its bounded composition-release evidence flow may retain a verified manifest and receipts, but it never publishes producer bytes or becomes a product runtime.
+This is the canonical high-level architecture entrypoint for the Forge Platform ecosystem composition. It records product and trust boundaries needed for later work. The repository now contains a source-level Universal Installer policy kernel and native macOS wizard shell, but does not yet implement a privileged product provisioner, service mutation, provider credential flow, installer publication, or Schema 41. Its bounded composition-release evidence flow may retain a verified manifest and receipts, but it never publishes producer bytes or becomes a product runtime.
 
 Forge Platform is a first-class product repository, not a canonical project authority repository for a customer's product. A **Canonical Project Authority Repository** is a logical product's durable topology authority; `pcvantol/forge-platform` is the Forge-family distribution and deployment product.
 
@@ -14,7 +14,7 @@ The [Governed Engineering Knowledge Learning Loop](KNOWLEDGE_LEARNING_LOOP.md) r
 
 The accepted target deployment is defined by [ADR-0006](adr/ADR-0006-server-deployment-and-discovery.md) and the shared [instance discovery and pairing contract](INSTANCE_DISCOVERY_AND_PAIRING_CONTRACT.md). Forge Server, EP Server and Workspace Server are headless, independently installed services with separate central runtime roots, product-owned SQL/files and versioned HTTP APIs above their application services. They may share a host but not a database or direct SQL path.
 
-Forge Platform composes verified artifacts, service lifecycle and topology bootstrap for EP-only, Forge+EP, Workspace+EP, all-server and remote-peer configurations. It calls product APIs to create product-owned bindings; it never writes product databases. The installer is not a required runtime dependency after installation.
+Forge Platform composes verified artifacts, service lifecycle and topology bootstrap for EP-only, Forge+EP, Workspace+EP, all-server and remote-peer configurations. It calls product APIs to create product-owned bindings; it never writes product databases. The installer is not a required runtime dependency after installation. Its separately versioned self-updating native macOS artifact and signed composition-catalog boundary are defined in the [Universal macOS Installer contract](UNIVERSAL_MACOS_INSTALLER_CONTRACT.md).
 
 Discovery yields an unauthenticated candidate only. Pairing verifies stable identity and creates a pinned authenticated binding; a later discovery result cannot silently replace it. Workspace Client↔Workspace Server, EP Agent↔EP Server and server-peer credentials remain separate even on localhost.
 

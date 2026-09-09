@@ -27,6 +27,7 @@ REQUIRED = (
     "docs/architecture/adr/ADR-0005-governed-engineering-learning-loop.md",
     "docs/architecture/COMPONENT_MANIFEST_CONTRACT.md",
     "docs/architecture/COMPONENT_OPERATION_DELEGATION_CONTRACT.md",
+    "docs/architecture/UNIVERSAL_MACOS_INSTALLER_CONTRACT.md",
     "docs/architecture/COMPATIBILITY.md",
     "docs/architecture/ROLES_AND_PRESETS.md",
     "docs/roadmap/README.md",
@@ -43,6 +44,9 @@ REQUIRED = (
     "scripts/validate.sh",
     "provenance/FOUNDATION_RECEIPT.md",
     "schemas/component-manifest.schema.json",
+    "schemas/universal-installer-release.schema.json",
+    "schemas/universal-installer-composition-catalog.schema.json",
+    "schemas/universal-installer-composition.schema.json",
 )
 
 
@@ -57,6 +61,15 @@ def main() -> None:
     identities = schema["$defs"]["component"]["properties"]["identity"]["enum"]
     if len(identities) != 5:
         raise SystemExit("component-manifest schema must identify five installable components")
+    installer_release = json.loads((ROOT / "schemas/universal-installer-release.schema.json").read_text())
+    if installer_release["title"] != "Forge Platform universal installer release descriptor":
+        raise SystemExit("universal installer release schema identity is invalid")
+    catalog = json.loads((ROOT / "schemas/universal-installer-composition-catalog.schema.json").read_text())
+    if catalog["title"] != "Forge Platform universal installer composition catalog":
+        raise SystemExit("universal installer catalog schema identity is invalid")
+    installer_composition = json.loads((ROOT / "schemas/universal-installer-composition.schema.json").read_text())
+    if installer_composition["title"] != "Forge Platform universal installer composition":
+        raise SystemExit("universal installer composition schema identity is invalid")
 
     extension = (ROOT / "docs/development/FORGE_PLATFORM_DEVELOPMENT_EXTENSION.md").read_text()
     if "generic branch" not in extension:
@@ -77,6 +90,16 @@ def main() -> None:
     ):
         if required_term not in architecture:
             raise SystemExit(f"architecture is missing EP installation boundary: {required_term}")
+    universal_installer = (ROOT / "docs/architecture/UNIVERSAL_MACOS_INSTALLER_CONTRACT.md").read_text()
+    for required_term in (
+        "One installer can consume many immutable compositions",
+        "Mandatory self-update",
+        "system-domain `LaunchDaemon`",
+        "Codex CLI and GitHub CLI",
+        "SINGLE_OPERATIONAL_INSTALLATION_VERIFIED",
+    ):
+        if required_term not in universal_installer:
+            raise SystemExit(f"universal installer contract is missing canonical term: {required_term}")
     learning_loop = (ROOT / "docs/architecture/KNOWLEDGE_LEARNING_LOOP.md").read_text()
     for required_term in (
         "KB CURRENTLY CLI/REPOSITORY CAPABILITY",

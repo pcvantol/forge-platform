@@ -30,6 +30,12 @@ Installer/component support may be implemented in parallel with producer work, b
 
 The canonical target is defined in [Evidence-gated cross-repository component composition](EVIDENCE_GATED_COMPONENT_COMPOSITION.md) and the [component-manifest contract](COMPONENT_MANIFEST_CONTRACT.md). Manifest entries keep source revision distinct from the digest of the installable artifact bytes.
 
+## Universal macOS installer lifecycle
+
+Forge Platform has a separately versioned native macOS Universal Installer and immutable qualified composition manifests; it does not build a combinatorial installer package for every Forge/Workspace/EP version combination. At every launch, an older installer must verify and hand off to a newer signed/notarized installer release before platform mutation. The signed composition catalog then selects only an installer-capable exact component set. See the [Universal macOS Installer contract](UNIVERSAL_MACOS_INSTALLER_CONTRACT.md).
+
+The source foundation and native SwiftUI shell are present, but the first published installer, privileged bootstrapper, and product-owned execution adapters remain separately qualified work. No current source merge proves a live Mac installation.
+
 ## Lifecycle boundary
 
 The source-level component-operation contract can retain a product-owned
@@ -37,7 +43,7 @@ resolver readback, candidate update assessment, and execute/resume evidence
 for an exact qualified artifact. It does not implement a product adapter or
 select a runtime itself. The future platform manages install, role add/remove,
 upgrade, repair, uninstall, health diagnostics, and deployment receipts;
-privileged installer logic remains intentionally unimplemented in this
-foundation.
+privileged installer logic remains product-bound and is not a replacement
+product provisioner in this foundation.
 
-Read the [system architecture](FORGE_PLATFORM_ARCHITECTURE.md), [evidence-gated composition contract](EVIDENCE_GATED_COMPONENT_COMPOSITION.md), [governed knowledge learning loop](KNOWLEDGE_LEARNING_LOOP.md), [ADRs](adr/README.md), [cross-repository ownership matrix](OWNERSHIP_MATRIX.md), [component-manifest contract](COMPONENT_MANIFEST_CONTRACT.md), [compatibility model](COMPATIBILITY.md), [roles and presets](ROLES_AND_PRESETS.md), and [security boundary](SECURITY.md).
+Read the [system architecture](FORGE_PLATFORM_ARCHITECTURE.md), [universal macOS installer contract](UNIVERSAL_MACOS_INSTALLER_CONTRACT.md), [evidence-gated composition contract](EVIDENCE_GATED_COMPONENT_COMPOSITION.md), [governed knowledge learning loop](KNOWLEDGE_LEARNING_LOOP.md), [ADRs](adr/README.md), [cross-repository ownership matrix](OWNERSHIP_MATRIX.md), [component-manifest contract](COMPONENT_MANIFEST_CONTRACT.md), [compatibility model](COMPATIBILITY.md), [roles and presets](ROLES_AND_PRESETS.md), and [security boundary](SECURITY.md).
