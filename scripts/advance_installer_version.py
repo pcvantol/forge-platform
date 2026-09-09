@@ -13,6 +13,7 @@ import argparse
 from contextlib import contextmanager
 import fcntl
 import hashlib
+import importlib.util
 import json
 import os
 from pathlib import Path
@@ -24,16 +25,21 @@ import tempfile
 from typing import Any
 
 
-SCHEMA = "forge-platform.installer-version-operation/v1"
+SCHEMA = "forge-platform.installer-version-operation/v2"
 PRODUCT = "forge-platform-installer"
+POLICY_REVISION = "forge-platform-installer-version-v2"
 MANIFEST_PATH = "installer-version.json"
-SWIFT_PROJECTION_PATH = "macos/ForgePlatformInstaller/Sources/ForgePlatformInstaller/ForgePlatformInstallerApp.swift"
+PACKAGER_PATH = "scripts/package_macos_installer_app.py"
+VALIDATOR_PATH = "scripts/validate_installer_version.py"
+INFO_PLIST_PATH = "Contents/Info.plist"
+INFO_PLIST_PROJECTION_SCHEMA = "forge-platform-installer-info-plist-version-projection/v1"
 OPERATIONS_DIRECTORY = ".installer-version-operations"
 VERSION = re.compile(r"^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$")
 OPERATION_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{7,127}$")
 GIT_REVISION = re.compile(r"^[0-9a-f]{40}(?:[0-9a-f]{24})?$")
 CAPABILITY = re.compile(r"^[a-z0-9][a-z0-9./_-]{0,127}$")
-SWIFT_VERSION = re.compile(r'(static let currentVersion = try! InstallerVersion\(")([^"]+)("\))')
+SHA256 = re.compile(r"^[0-9a-f]{64}$")
+MAXIMUM_NATIVE_SIGNED_INTEGER = (1 << 63) - 1
 
 
 def _pairs(pairs: list[tuple[object, object]]) -> dict[str, object]:
@@ -49,8 +55,12 @@ def _manifest_path(root: Path) -> Path:
     return root.resolve() / MANIFEST_PATH
 
 
-def _swift_path(root: Path) -> Path:
-    return root.resolve() / SWIFT_PROJECTION_PATH
+def _packager_path(root: Path) -> Path:
+    return root.resolve() / PACKAGER_PATH
+
+
+def _validator_path(root: Path) -> Path:
+    return root.resolve() / VALIDATOR_PATH
 
 
 def _operation_path(root: Path, operation_id: str) -> Path:
@@ -193,7 +203,11 @@ def _validate_manifest(value: object, label: str) -> dict[str, Any]:
         raise RuntimeError(f"{label} fields are invalid")
     if value["schema"] != "forge-platform.installer-version/v1" or value["product"] != PRODUCT:
         raise RuntimeError(f"{label} identity is invalid")
-    if not isinstance(value["version"], str) or VERSION.fullmatch(value["version"]) is None:
+    if (
+        not isinstance(value["version"], str)
+        or VERSION.fullmatch(value["version"]) is None
+        or any(int(component) > MAXIMUM_NATIVE_SIGNED_INTEGER for component in value["version"].split("."))
+    ):
         raise RuntimeError("installer version must be stable X.Y.Z")
     if not isinstance(value["channel"], str) or value["channel"] not in {"stable", "candidate"}:
         raise RuntimeError(f"{label} channel is unsupported")
@@ -226,29 +240,88 @@ def _load_manifest(root: Path) -> dict[str, Any]:
         raise RuntimeError("installer version manifest is unreadable") from error
 
 
-def _swift_version_match(content: str, label: str) -> re.Match[str]:
-    matches = list(SWIFT_VERSION.finditer(content))
-    if len(matches) != 1:
-        raise RuntimeError(f"{label} must contain exactly one currentVersion projection")
-    return matches[0]
+def _regular_source_file(path: Path, label: str) -> Path:
+    if path.is_symlink() or not path.is_file():
+        raise RuntimeError(f"{label} is unreadable")
+    return path
 
 
-def _swift_version(root: Path) -> tuple[Path, str, re.Match[str]]:
-    path = _swift_path(root)
+def _source_sha256(root: Path, relative_path: str, label: str) -> str:
+    path = _regular_source_file(root.resolve() / relative_path, label)
     try:
-        content = path.read_text(encoding="utf-8")
+        return hashlib.sha256(path.read_bytes()).hexdigest()
     except OSError as error:
-        raise RuntimeError("native installer version projection is unreadable") from error
-    return path, content, _swift_version_match(content, "native installer")
+        raise RuntimeError(f"{label} is unreadable") from error
+
+
+def _packager_sha256(root: Path) -> str:
+    return _source_sha256(root, PACKAGER_PATH, "installer app packager")
+
+
+def _load_version_validator(root: Path) -> object:
+    """Load the candidate checkout's behavioural projection verifier.
+
+    Version preparation binds the exact packager bytes separately. Loading the
+    validation entrypoint from the candidate rather than this tool's own
+    checkout proves the candidate's package-time `Info.plist` behaviour and
+    keeps the sole source of truth in ``installer-version.json``.
+    """
+
+    validator_path = _regular_source_file(_validator_path(root), "installer version validator")
+    module_name = "_forge_platform_installer_version_validator"
+    specification = importlib.util.spec_from_file_location(module_name, validator_path)
+    if specification is None or specification.loader is None:
+        raise RuntimeError("installer version validator is unreadable")
+    module = importlib.util.module_from_spec(specification)
+    previous = sys.modules.get(module_name)
+    previous_dont_write_bytecode = sys.dont_write_bytecode
+    sys.modules[module_name] = module
+    sys.dont_write_bytecode = True
+    try:
+        specification.loader.exec_module(module)
+    except (ImportError, OSError, RuntimeError, SyntaxError) as error:
+        raise RuntimeError("installer version validator is unreadable") from error
+    finally:
+        sys.dont_write_bytecode = previous_dont_write_bytecode
+        if previous is None:
+            sys.modules.pop(module_name, None)
+        else:
+            sys.modules[module_name] = previous
+    return module
+
+
+def _runtime_projection(root: Path, expected_version: str) -> dict[str, str]:
+    validator = _load_version_validator(root)
+    validate = getattr(validator, "validate", None)
+    if not callable(validate):
+        raise RuntimeError("installer version validator is unreadable")
+    try:
+        projection = validate(root, expected_version=expected_version)
+    except RuntimeError as error:
+        raise RuntimeError("installer runtime Info.plist projection is invalid") from error
+    if (
+        not isinstance(projection, dict)
+        or set(projection) != {"schema", "info_plist_path", "short_version", "build_version", "sha256"}
+        or projection["schema"] != INFO_PLIST_PROJECTION_SCHEMA
+        or projection["info_plist_path"] != INFO_PLIST_PATH
+        or projection["short_version"] != expected_version
+        or projection["build_version"] != expected_version
+        or not isinstance(projection["sha256"], str)
+        or SHA256.fullmatch(projection["sha256"]) is None
+    ):
+        raise RuntimeError("installer runtime Info.plist projection is invalid")
+    return projection
 
 
 def _target(actual: str, bump: str | None, exact: str | None) -> str:
     if (bump is None) == (exact is None):
         raise RuntimeError("provide exactly one requested bump or exact target version")
     if exact is not None:
-        if VERSION.fullmatch(exact) is None:
-            raise RuntimeError("the requested installer version must be stable X.Y.Z")
-        if _version_parts(exact) <= _version_parts(actual):
+        try:
+            requested_parts = _version_parts(exact)
+        except RuntimeError as error:
+            raise RuntimeError("the requested installer version must be stable X.Y.Z") from error
+        if requested_parts <= _version_parts(actual):
             raise RuntimeError("an exact installer release version must advance the canonical version")
         return exact
     major, minor, patch = (int(part) for part in actual.split("."))
@@ -262,7 +335,10 @@ def _target(actual: str, bump: str | None, exact: str | None) -> str:
 
 
 def _version_parts(value: str) -> tuple[int, int, int]:
-    if VERSION.fullmatch(value) is None:
+    if (
+        VERSION.fullmatch(value) is None
+        or any(int(component) > MAXIMUM_NATIVE_SIGNED_INTEGER for component in value.split("."))
+    ):
         raise RuntimeError("installer version must be stable X.Y.Z")
     major, minor, patch = value.split(".")
     return int(major), int(minor), int(patch)
@@ -292,7 +368,7 @@ def _operation(
         "schema": SCHEMA,
         "operation_id": operation_id,
         "product": PRODUCT,
-        "policy_revision": "forge-platform-installer-version-v1",
+        "policy_revision": POLICY_REVISION,
         "event_lineage": lineage,
         "expected_source_revision": expected_head,
         "baseline_version": baseline,
@@ -300,7 +376,13 @@ def _operation(
         "requested_exact_version": exact,
         "target_version": target,
         "release_class": release_class,
-        "allowed_projection_paths": [MANIFEST_PATH, SWIFT_PROJECTION_PATH],
+        # The manifest remains the one and only mutable source projection. A
+        # candidate binds the exact packager bytes and the resulting semantic
+        # Info.plist projection as evidence, but must not version-source a
+        # Swift literal or generated app bundle.
+        "allowed_projection_paths": [MANIFEST_PATH],
+        "runtime_projection_schema": INFO_PLIST_PROJECTION_SCHEMA,
+        "runtime_info_plist_path": INFO_PLIST_PATH,
     }
 
 
@@ -313,7 +395,11 @@ def _load_operation(root: Path, operation_id: str) -> dict[str, Any] | None:
     if not path.exists():
         return None
     try:
-        existing = json.loads(path.read_text(encoding="utf-8"), object_pairs_hook=_pairs)
+        existing = json.loads(
+            path.read_text(encoding="utf-8"),
+            object_pairs_hook=_pairs,
+            parse_constant=_reject_constant,
+        )
     except (OSError, ValueError, json.JSONDecodeError) as error:
         raise RuntimeError("installer version operation is unreadable") from error
     if not isinstance(existing, dict):
@@ -353,6 +439,7 @@ def plan(
     )
     if not _same(existing, requested):
         raise RuntimeError("operation ID conflict: existing installer version operation has different input")
+    _validate_recoverable_operation(existing, requested)
     return existing
 
 
@@ -379,7 +466,6 @@ def _apply_locked(
 ) -> dict[str, Any]:
     manifest_path = _manifest_path(root)
     manifest = _load_manifest(root)
-    swift_path, swift, match = _swift_version(root)
     path = _operation_path(root, operation_id)
     operation = _load_operation(root, operation_id)
     if operation is not None:
@@ -394,34 +480,84 @@ def _apply_locked(
         )
         if not _same(operation, requested):
             raise RuntimeError("operation ID conflict: existing installer version operation has different input")
+        _validate_recoverable_operation(operation, requested)
         target = operation["target_version"]
         if manifest["version"] not in {operation["baseline_version"], target}:
             raise RuntimeError("installer version recovery conflict: source is neither baseline nor target")
     else:
-        if match.group(2) != manifest["version"]:
-            raise RuntimeError("installer source version and native projection differ before preparation")
         if _head(root) != expected_head:
             raise RuntimeError("stale source head: refresh and requalify the installer version candidate")
         target = _target(manifest["version"], bump, exact)
+        projection = _runtime_projection(root, manifest["version"])
         operation = _operation(operation_id, lineage, expected_head, manifest["version"], bump, exact, target)
         operation["state"] = "PREPARED"
         operation["manifest_sha256_before"] = hashlib.sha256(manifest_path.read_bytes()).hexdigest()
-        operation["swift_sha256_before"] = hashlib.sha256(swift_path.read_bytes()).hexdigest()
+        operation["packager_sha256_before"] = _packager_sha256(root)
+        operation["runtime_projection_sha256_before"] = projection["sha256"]
         path.parent.mkdir(mode=0o755, exist_ok=True)
         _atomic_write(path, json.dumps(operation, indent=2, sort_keys=True) + "\n")
+    if _packager_sha256(root) != operation["packager_sha256_before"]:
+        raise RuntimeError("installer version recovery conflict: app packager changed after preparation")
+    if operation["state"] == "APPLIED":
+        if (
+            manifest["version"] != target
+            or hashlib.sha256(manifest_path.read_bytes()).hexdigest() != operation["manifest_sha256_after"]
+            or _packager_sha256(root) != operation["packager_sha256_after"]
+            or _runtime_projection(root, target)["sha256"] != operation["runtime_projection_sha256_after"]
+        ):
+            raise RuntimeError("installer version recovery conflict: applied source no longer matches its exact evidence")
+        return operation
     if manifest["version"] != target:
         manifest["version"] = target
         _atomic_write(manifest_path, json.dumps(manifest, indent=2, sort_keys=True) + "\n")
-    if match.group(2) != target:
-        updated_swift, replacements = SWIFT_VERSION.subn(rf"\g<1>{target}\g<3>", swift)
-        if replacements != 1:
-            raise RuntimeError("native installer version projection could not be updated safely")
-        _atomic_write(swift_path, updated_swift)
+    projection = _runtime_projection(root, target)
     operation["state"] = "APPLIED"
     operation["manifest_sha256_after"] = hashlib.sha256(manifest_path.read_bytes()).hexdigest()
-    operation["swift_sha256_after"] = hashlib.sha256(swift_path.read_bytes()).hexdigest()
+    operation["packager_sha256_after"] = _packager_sha256(root)
+    operation["runtime_projection_sha256_after"] = projection["sha256"]
     _atomic_write(path, json.dumps(operation, indent=2, sort_keys=True) + "\n")
     return operation
+
+
+def _validate_recoverable_operation(operation: dict[str, Any], requested: dict[str, Any]) -> None:
+    """Reject a partial/forged receipt before a retry mutates source again."""
+
+    state = operation.get("state")
+    prepared = set(requested) | {
+        "state",
+        "manifest_sha256_before",
+        "packager_sha256_before",
+        "runtime_projection_sha256_before",
+    }
+    applied = prepared | {
+        "manifest_sha256_after",
+        "packager_sha256_after",
+        "runtime_projection_sha256_after",
+    }
+    required = prepared if state == "PREPARED" else applied if state == "APPLIED" else None
+    if required is None or set(operation) != required:
+        raise RuntimeError("installer version operation is invalid")
+    if (
+        operation["runtime_projection_schema"] != INFO_PLIST_PROJECTION_SCHEMA
+        or operation["runtime_info_plist_path"] != INFO_PLIST_PATH
+        or operation["allowed_projection_paths"] != [MANIFEST_PATH]
+    ):
+        raise RuntimeError("installer version operation has invalid runtime projection contract")
+    evidence_fields = [
+        "manifest_sha256_before",
+        "packager_sha256_before",
+        "runtime_projection_sha256_before",
+    ]
+    if state == "APPLIED":
+        evidence_fields.extend(
+            [
+                "manifest_sha256_after",
+                "packager_sha256_after",
+                "runtime_projection_sha256_after",
+            ]
+        )
+    if any(not isinstance(operation[field], str) or SHA256.fullmatch(operation[field]) is None for field in evidence_fields):
+        raise RuntimeError("installer version operation has invalid exact projection evidence")
 
 
 def verify_operation(
@@ -477,42 +613,24 @@ def verify_operation(
         raise RuntimeError("installer version operation is unreadable") from error
     if not isinstance(operation, dict) or operation.get("state") != "APPLIED":
         raise RuntimeError("installer version operation is not applied")
-    required = {
-        "schema", "operation_id", "product", "policy_revision", "event_lineage", "expected_source_revision",
-        "baseline_version", "requested_bump", "requested_exact_version", "target_version", "release_class",
-        "allowed_projection_paths", "state", "manifest_sha256_before",
-        "manifest_sha256_after", "swift_sha256_before", "swift_sha256_after",
-    }
-    if set(operation) != required:
-        raise RuntimeError("installer version operation has unknown or missing fields")
-    if (
-        operation["schema"] != SCHEMA
-        or operation["product"] != PRODUCT
-        or operation["policy_revision"] != "forge-platform-installer-version-v1"
-        or operation["allowed_projection_paths"] != [MANIFEST_PATH, SWIFT_PROJECTION_PATH]
-    ):
-        raise RuntimeError("installer version operation has invalid identity or projections")
-    if (
-        not isinstance(operation["operation_id"], str)
-        or OPERATION_ID.fullmatch(operation["operation_id"]) is None
-        or not isinstance(operation["event_lineage"], str)
-        or not operation["event_lineage"].strip()
-        or not isinstance(operation["expected_source_revision"], str)
-        or GIT_REVISION.fullmatch(operation["expected_source_revision"]) is None
-        or not isinstance(operation["baseline_version"], str)
-        or VERSION.fullmatch(operation["baseline_version"]) is None
-        or not isinstance(operation["target_version"], str)
-        or VERSION.fullmatch(operation["target_version"]) is None
-        or (operation["requested_bump"] is not None and (
-            not isinstance(operation["requested_bump"], str)
-            or operation["requested_bump"] not in {"none", "patch", "minor"}
-        ))
-        or (operation["requested_exact_version"] is not None and (
-            not isinstance(operation["requested_exact_version"], str)
-            or VERSION.fullmatch(operation["requested_exact_version"]) is None
-        ))
-    ):
-        raise RuntimeError("installer version operation has invalid requested release semantics")
+    try:
+        requested = _operation(
+            operation["operation_id"],
+            operation["event_lineage"],
+            operation["expected_source_revision"],
+            operation["baseline_version"],
+            operation["requested_bump"],
+            operation["requested_exact_version"],
+            operation["target_version"],
+        )
+    except (KeyError, TypeError, AttributeError, RuntimeError) as error:
+        raise RuntimeError("installer version operation has invalid requested release semantics") from error
+    if not _same(operation, requested):
+        raise RuntimeError("installer version operation has invalid identity or requested release semantics")
+    try:
+        _validate_recoverable_operation(operation, requested)
+    except RuntimeError as error:
+        raise RuntimeError("installer version operation has invalid exact projection evidence") from error
     try:
         expected_target = _target(
             operation["baseline_version"],
@@ -521,12 +639,7 @@ def verify_operation(
         )
     except RuntimeError as error:
         raise RuntimeError("installer version operation has invalid requested release semantics") from error
-    expected_release_class = (
-        "EXACT"
-        if operation["requested_exact_version"] is not None
-        else {"none": "NO_BUMP", "patch": "PATCH", "minor": "MINOR"}[operation["requested_bump"]]
-    )
-    if operation["target_version"] != expected_target or operation["release_class"] != expected_release_class:
+    if operation["target_version"] != expected_target:
         raise RuntimeError("installer version operation target or release class is inconsistent")
     expected_operation_path = f"{OPERATIONS_DIRECTORY}/{operation['operation_id']}.json"
     if operation_relative_path != expected_operation_path:
@@ -535,40 +648,31 @@ def verify_operation(
         raise RuntimeError("installer version candidate parent differs from its expected source revision")
     if _blob_sha256(root, parent, MANIFEST_PATH) != operation["manifest_sha256_before"]:
         raise RuntimeError("installer version manifest before-digest does not match the candidate parent")
-    if _blob_sha256(root, parent, SWIFT_PROJECTION_PATH) != operation["swift_sha256_before"]:
-        raise RuntimeError("installer version Swift projection before-digest does not match the candidate parent")
+    if _blob_sha256(root, parent, PACKAGER_PATH) != operation["packager_sha256_before"]:
+        raise RuntimeError("installer app packager before-digest does not match the candidate parent")
     parent_manifest = _manifest_from_bytes(
         _blob_bytes(root, parent, MANIFEST_PATH),
         "installer version candidate parent manifest",
     )
-    try:
-        parent_swift = _blob_bytes(root, parent, SWIFT_PROJECTION_PATH).decode("utf-8")
-    except UnicodeDecodeError as error:
-        raise RuntimeError("installer version candidate parent Swift projection is unreadable") from error
-    parent_match = _swift_version_match(parent_swift, "installer version candidate parent")
-    if (
-        parent_manifest["version"] != operation["baseline_version"]
-        or parent_match.group(2) != operation["baseline_version"]
-    ):
-        raise RuntimeError("installer version operation baseline does not match every candidate-parent projection")
+    if parent_manifest["version"] != operation["baseline_version"]:
+        raise RuntimeError("installer version operation baseline does not match the candidate-parent version authority")
     manifest = _manifest_from_bytes(
         _blob_bytes(root, candidate_head, MANIFEST_PATH),
         "installer version candidate manifest",
     )
-    try:
-        candidate_swift = _blob_bytes(root, candidate_head, SWIFT_PROJECTION_PATH).decode("utf-8")
-    except UnicodeDecodeError as error:
-        raise RuntimeError("installer version candidate Swift projection is unreadable") from error
-    match = _swift_version_match(candidate_swift, "installer version candidate")
-    if manifest["version"] != operation["target_version"] or match.group(2) != operation["target_version"]:
-        raise RuntimeError("installer version operation target does not match every projection")
+    if manifest["version"] != operation["target_version"]:
+        raise RuntimeError("installer version operation target does not match the version authority")
     if hashlib.sha256(_blob_bytes(root, candidate_head, MANIFEST_PATH)).hexdigest() != operation["manifest_sha256_after"]:
         raise RuntimeError("installer version manifest digest does not match the operation")
-    if hashlib.sha256(_blob_bytes(root, candidate_head, SWIFT_PROJECTION_PATH)).hexdigest() != operation["swift_sha256_after"]:
-        raise RuntimeError("installer version Swift projection digest does not match the operation")
+    if _blob_sha256(root, candidate_head, PACKAGER_PATH) != operation["packager_sha256_after"]:
+        raise RuntimeError("installer app packager digest does not match the operation")
+    if operation["packager_sha256_before"] != operation["packager_sha256_after"]:
+        raise RuntimeError("installer version preparation must not change the app packager")
+    if _runtime_projection(root, operation["target_version"])["sha256"] != operation["runtime_projection_sha256_after"]:
+        raise RuntimeError("installer runtime Info.plist projection does not match the operation")
     expected = {f"{OPERATIONS_DIRECTORY}/{operation['operation_id']}.json"}
     if operation["baseline_version"] != operation["target_version"]:
-        expected.update({MANIFEST_PATH, SWIFT_PROJECTION_PATH})
+        expected.add(MANIFEST_PATH)
     if set(changed) != expected:
         raise RuntimeError("installer version candidate changes paths outside its declared projections")
     if require_version_advance and _version_parts(operation["target_version"]) <= _version_parts(operation["baseline_version"]):
@@ -597,10 +701,14 @@ def main(argv: list[str] | None = None) -> int:
     try:
         if args.check:
             manifest = _load_manifest(args.source_root)
-            _, _, match = _swift_version(args.source_root)
-            if match.group(2) != manifest["version"]:
-                raise RuntimeError("native installer version projection does not match installer-version.json")
-            print(f"INSTALLER_VERSION=PASS version={manifest['version']} channel={manifest['channel']}")
+            projection = _runtime_projection(args.source_root, manifest["version"])
+            print(
+                "INSTALLER_VERSION=PASS"
+                f" version={manifest['version']}"
+                f" channel={manifest['channel']}"
+                f" info_plist_projection={projection['schema']}"
+                f" info_plist_projection_sha256={projection['sha256']}"
+            )
             return 0
         if args.verify_operation:
             if not args.candidate_head:

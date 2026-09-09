@@ -5,9 +5,11 @@ from __future__ import annotations
 import importlib.util
 import json
 from pathlib import Path
+import shutil
 import subprocess
 import tempfile
 import unittest
+from unittest.mock import patch
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -17,6 +19,13 @@ SPEC = importlib.util.spec_from_file_location(
 assert SPEC and SPEC.loader
 installer_versioning = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(installer_versioning)
+
+VALIDATION_SPEC = importlib.util.spec_from_file_location(
+    "installer_version_validation", ROOT / "scripts/validate_installer_version.py"
+)
+assert VALIDATION_SPEC and VALIDATION_SPEC.loader
+installer_version_validation = importlib.util.module_from_spec(VALIDATION_SPEC)
+VALIDATION_SPEC.loader.exec_module(installer_version_validation)
 
 
 class InstallerVersionPreparationTests(unittest.TestCase):
@@ -36,14 +45,7 @@ class InstallerVersionPreparationTests(unittest.TestCase):
             + "\n",
             encoding="utf-8",
         )
-        projection = root / installer_versioning.SWIFT_PROJECTION_PATH
-        projection.parent.mkdir(parents=True)
-        projection.write_text(
-            "enum InstallerBuild {\n"
-            '    static let currentVersion = try! InstallerVersion("0.1.0")\n'
-            "}\n",
-            encoding="utf-8",
-        )
+        self._write_package_projection_helper(root)
         subprocess.run(["git", "init", "-q", str(root)], check=True)
         subprocess.run(["git", "-C", str(root), "add", "."], check=True)
         subprocess.run(
@@ -54,6 +56,49 @@ class InstallerVersionPreparationTests(unittest.TestCase):
             check=True,
         )
         return temporary, root, installer_versioning._head(root)
+
+    @staticmethod
+    def _write_package_projection_helper(root: Path, *, version_override: str | None = None) -> None:
+        """Create a hermetic package helper for operation-journal tests.
+
+        The real package-time mapping is exercised separately below. These
+        temporary Git repositories only need a deliberately small CLI that
+        fulfils the validator/packager boundary, so the durable-operation tests
+        never depend on an unrelated checkout or global import path.
+        """
+
+        scripts = root / "scripts"
+        scripts.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(ROOT / "scripts" / "validate_installer_version.py", scripts / "validate_installer_version.py")
+        assigned_version = repr(version_override)
+        (scripts / "package_macos_installer_app.py").write_text(
+            "import argparse\n"
+            "import json\n"
+            "from pathlib import Path\n"
+            "import plistlib\n"
+            "parser = argparse.ArgumentParser()\n"
+            "parser.add_argument('--executable', required=True)\n"
+            "parser.add_argument('--output', required=True)\n"
+            "parser.add_argument('--bundle-identifier', required=True)\n"
+            "args = parser.parse_args()\n"
+            "root = Path(__file__).resolve().parents[1]\n"
+            "version = json.loads((root / 'installer-version.json').read_text(encoding='utf-8'))['version']\n"
+            f"override = {assigned_version}\n"
+            "if override is not None:\n"
+            "    version = override\n"
+            "output = Path(args.output)\n"
+            "contents = output / 'Contents'\n"
+            "(contents / 'MacOS').mkdir(parents=True)\n"
+            "(contents / 'MacOS' / 'ForgePlatformInstaller').write_bytes(Path(args.executable).read_bytes())\n"
+            "with (contents / 'Info.plist').open('wb') as stream:\n"
+            "    plistlib.dump({\n"
+            "        'CFBundleExecutable': 'ForgePlatformInstaller',\n"
+            "        'CFBundleIdentifier': args.bundle_identifier,\n"
+            "        'CFBundleShortVersionString': version,\n"
+            "        'CFBundleVersion': version,\n"
+            "    }, stream)\n",
+            encoding="utf-8",
+        )
 
     @staticmethod
     def commit(root: Path, subject: str) -> str:
@@ -67,7 +112,7 @@ class InstallerVersionPreparationTests(unittest.TestCase):
         )
         return installer_versioning._head(root)
 
-    def test_plan_is_read_only_and_retry_repairs_partial_projection(self) -> None:
+    def test_plan_is_read_only_and_retry_completes_a_crash_after_manifest_projection(self) -> None:
         temporary, root, head = self.repo()
         with temporary:
             operation_id = "installer-version-0001"
@@ -75,17 +120,74 @@ class InstallerVersionPreparationTests(unittest.TestCase):
             self.assertEqual(planned["target_version"], "0.1.1")
             self.assertFalse((root / installer_versioning.OPERATIONS_DIRECTORY).exists())
 
-            applied = installer_versioning.apply(root, operation_id, "increment:self-update", head, "patch", None)
-            self.assertEqual(applied["state"], "APPLIED")
-            self.assertEqual(installer_versioning.plan(root, operation_id, "increment:self-update", head, "patch", None)["target_version"], "0.1.1")
+            original_projection = installer_versioning._runtime_projection
 
-            projection = root / installer_versioning.SWIFT_PROJECTION_PATH
-            projection.write_text(
-                'static let currentVersion = try! InstallerVersion("0.1.0")\n', encoding="utf-8"
+            def interrupted_projection(source_root: Path, version: str) -> dict[str, str]:
+                if version == "0.1.1":
+                    raise RuntimeError("simulated interruption after manifest write")
+                return original_projection(source_root, version)
+
+            with patch.object(installer_versioning, "_runtime_projection", side_effect=interrupted_projection):
+                with self.assertRaisesRegex(RuntimeError, "simulated interruption"):
+                    installer_versioning.apply(root, operation_id, "increment:self-update", head, "patch", None)
+            self.assertEqual(json.loads((root / "installer-version.json").read_text())["version"], "0.1.1")
+            receipt = json.loads(
+                (root / installer_versioning.OPERATIONS_DIRECTORY / f"{operation_id}.json").read_text()
             )
+            self.assertEqual(receipt["state"], "PREPARED")
+
             recovered = installer_versioning.apply(root, operation_id, "increment:self-update", head, "patch", None)
             self.assertEqual(recovered["target_version"], "0.1.1")
-            self.assertIn('InstallerVersion("0.1.1")', projection.read_text(encoding="utf-8"))
+            self.assertEqual(recovered["state"], "APPLIED")
+            self.assertEqual(
+                installer_versioning.plan(root, operation_id, "increment:self-update", head, "patch", None)["target_version"],
+                "0.1.1",
+            )
+
+    def test_receipt_binds_the_packager_and_its_info_plist_runtime_projection(self) -> None:
+        temporary, root, head = self.repo()
+        with temporary:
+            operation = installer_versioning.apply(
+                root,
+                "installer-version-0011",
+                "increment:package-time-projection",
+                head,
+                "patch",
+                None,
+            )
+            self.assertEqual(operation["schema"], "forge-platform.installer-version-operation/v2")
+            self.assertEqual(operation["allowed_projection_paths"], ["installer-version.json"])
+            self.assertEqual(
+                operation["runtime_projection_schema"],
+                "forge-platform-installer-info-plist-version-projection/v1",
+            )
+            self.assertEqual(operation["runtime_info_plist_path"], "Contents/Info.plist")
+            self.assertEqual(operation["packager_sha256_before"], operation["packager_sha256_after"])
+            self.assertNotEqual(
+                operation["runtime_projection_sha256_before"],
+                operation["runtime_projection_sha256_after"],
+            )
+            self.assertNotIn("Swift", json.dumps(operation, sort_keys=True))
+            self.assertFalse((root / "scripts" / "__pycache__").exists())
+
+    def test_recovery_rejects_a_packager_change_after_preparation(self) -> None:
+        temporary, root, head = self.repo()
+        with temporary:
+            operation_id = "installer-version-0012"
+            original_projection = installer_versioning._runtime_projection
+
+            def interrupted_projection(source_root: Path, version: str) -> dict[str, str]:
+                if version == "0.1.1":
+                    raise RuntimeError("simulated interruption after manifest write")
+                return original_projection(source_root, version)
+
+            with patch.object(installer_versioning, "_runtime_projection", side_effect=interrupted_projection):
+                with self.assertRaisesRegex(RuntimeError, "simulated interruption"):
+                    installer_versioning.apply(root, operation_id, "increment:package-drift", head, "patch", None)
+            packager = root / installer_versioning.PACKAGER_PATH
+            packager.write_text(packager.read_text(encoding="utf-8") + "\n# changed after preparation\n", encoding="utf-8")
+            with self.assertRaisesRegex(RuntimeError, "app packager changed after preparation"):
+                installer_versioning.apply(root, operation_id, "increment:package-drift", head, "patch", None)
 
     def test_stale_or_conflicting_preparation_fails_closed(self) -> None:
         temporary, root, head = self.repo()
@@ -177,7 +279,7 @@ class InstallerVersionPreparationTests(unittest.TestCase):
             receipt["release_class"] = "NO_BUMP"
             receipt_path.write_text(json.dumps(receipt), encoding="utf-8")
             candidate = self.commit(root, "forge installer release class")
-            with self.assertRaisesRegex(RuntimeError, "target or release class is inconsistent"):
+            with self.assertRaisesRegex(RuntimeError, "invalid identity or requested release semantics"):
                 installer_versioning.verify_operation(root, candidate, require_version_advance=True)
 
     def test_preparation_lock_serializes_two_processes_and_releases_after_holder_exit(self) -> None:
@@ -233,6 +335,42 @@ class InstallerVersionPreparationTests(unittest.TestCase):
                 None,
             )
             self.assertEqual(applied["state"], "APPLIED")
+
+
+class InstallerVersionProjectionValidationTests(unittest.TestCase):
+    def test_real_packager_projects_the_sole_manifest_version_into_info_plist(self) -> None:
+        manifest = installer_version_validation.load_manifest(ROOT)
+        projection = installer_version_validation.validate(ROOT, expected_version=manifest["version"])
+        self.assertEqual(projection["short_version"], manifest["version"])
+        self.assertEqual(projection["build_version"], manifest["version"])
+        self.assertEqual(projection["info_plist_path"], "Contents/Info.plist")
+        self.assertRegex(projection["sha256"], r"^[0-9a-f]{64}$")
+
+    def test_validation_rejects_a_packager_that_writes_a_different_runtime_version(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            (root / "installer-version.json").write_text(
+                json.dumps(
+                    {
+                        "schema": "forge-platform.installer-version/v1",
+                        "product": "forge-platform-installer",
+                        "version": "2.4.6",
+                        "channel": "stable",
+                        "capabilities": ["composition/v1"],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            InstallerVersionPreparationTests._write_package_projection_helper(
+                root,
+                version_override="9.9.9",
+            )
+            with self.assertRaisesRegex(RuntimeError, "does not project installer-version.json"):
+                installer_version_validation.validate(root, expected_version="2.4.6")
+
+    def test_validation_rejects_a_manifest_that_differs_from_a_durable_expected_target(self) -> None:
+        with self.assertRaisesRegex(RuntimeError, "does not match the expected version"):
+            installer_version_validation.validate(ROOT, expected_version="9.9.9")
 
 
 if __name__ == "__main__":
