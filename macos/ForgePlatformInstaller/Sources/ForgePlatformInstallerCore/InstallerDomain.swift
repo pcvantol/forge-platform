@@ -128,11 +128,61 @@ public struct ProviderRequirement: Equatable, Sendable, Identifiable {
         self.provider = provider
         self.isRequired = isRequired
     }
+}
 
-    public static let defaultRequiredProviders: [ProviderRequirement] = [
-        ProviderRequirement(provider: .codex, isRequired: true),
-        ProviderRequirement(provider: .githubCLI, isRequired: true),
-    ]
+/// A trusted coordinator must explicitly project provider requirements from the
+/// selected qualified composition.  The pure domain intentionally has no
+/// implicit Codex or GitHub CLI defaults: an unresolved or rejected projection
+/// blocks the provider gate rather than inventing a profile.
+public enum ProviderRequirementsProjectionState: Equatable, Sendable {
+    case pending
+    case projected
+    case rejected
+
+    public var isProjected: Bool {
+        self == .projected
+    }
+}
+
+/// Closed, non-secret classifications for a provider action failure.  A
+/// coordinator may retain detailed diagnostics in its own bounded context, but
+/// neither a credential, path, command, URL, nor arbitrary output crosses into
+/// the wizard state or its UI.
+public enum ProviderFailureCode: String, CaseIterable, Codable, Equatable, Sendable {
+    case coordinatorUnavailable = "coordinator-unavailable"
+    case installationFailed = "installation-failed"
+    case authenticationFailed = "authentication-failed"
+    case verificationFailed = "verification-failed"
+    case unexpectedActionResult = "unexpected-action-result"
+
+    /// The UI receives only this fixed Dutch message, never coordinator output.
+    public var userFacingMessage: String {
+        switch self {
+        case .coordinatorUnavailable:
+            return "Providercoördinatie is niet beschikbaar."
+        case .installationFailed:
+            return "Installatie van de provider is mislukt."
+        case .authenticationFailed:
+            return "Aanmelding bij de provider is mislukt."
+        case .verificationFailed:
+            return "Verificatie van de provider is mislukt."
+        case .unexpectedActionResult:
+            return "De provider gaf een ongeldige uitkomst terug."
+        }
+    }
+
+    fileprivate func isValid(for action: ProviderAction) -> Bool {
+        switch (self, action) {
+        case (.coordinatorUnavailable, _):
+            return true
+        case (.installationFailed, .install),
+             (.authenticationFailed, .authenticate),
+             (.verificationFailed, .verify):
+            return true
+        default:
+            return false
+        }
+    }
 }
 
 public enum ProviderState: Equatable, Sendable {
@@ -142,7 +192,7 @@ public enum ProviderState: Equatable, Sendable {
     case authenticationRequired
     case authenticating
     case verified
-    case failed(String)
+    case failed(ProviderFailureCode)
 
     public var isVerified: Bool {
         if case .verified = self {
@@ -169,6 +219,13 @@ public enum ProviderState: Equatable, Sendable {
             return "Mislukt"
         }
     }
+
+    public var failureCode: ProviderFailureCode? {
+        guard case .failed(let failure) = self else {
+            return nil
+        }
+        return failure
+    }
 }
 
 public enum ProviderAction: Equatable, Sendable {
@@ -183,13 +240,22 @@ public enum ProviderActionResult: Equatable, Sendable {
     case installationReady
     case authenticationRequired
     case verified
-    case failed(String)
+    case failed(ProviderFailureCode)
+
+    /// Compatibility bridge for older non-provider coordinator seams.  It
+    /// deliberately drops the supplied text so it can never become installer
+    /// state, UI text, a receipt, or a log field.  New provider coordinators
+    /// must return the typed `failed(ProviderFailureCode)` case instead.
+    static func failed(_ unsafeDiagnostic: String) -> Self {
+        _ = unsafeDiagnostic
+        return .failed(.coordinatorUnavailable)
+    }
 }
 
 public struct ProviderProgress: Equatable, Sendable, Identifiable {
     public let requirement: ProviderRequirement
-    public var isSelected: Bool
-    public var state: ProviderState
+    public internal(set) var isSelected: Bool
+    public internal(set) var state: ProviderState
 
     public var id: ProviderID { requirement.provider }
 
@@ -199,8 +265,16 @@ public struct ProviderProgress: Equatable, Sendable, Identifiable {
         self.state = requirement.isRequired ? .selected : .notSelected
     }
 
+    /// A provider is enabled when it is composition-required, or when the
+    /// operator explicitly selected a composition-permitted optional provider.
+    /// Required remains enabled even if an in-memory caller attempts to alter
+    /// its selection flag, so that flag can never bypass the gate.
+    public var isEnabled: Bool {
+        requirement.isRequired || isSelected
+    }
+
     public var isVerified: Bool {
-        isSelected && state.isVerified
+        isEnabled && state.isVerified
     }
 }
 
@@ -492,27 +566,63 @@ public struct InstallerWizardState: Equatable, Sendable {
     public var step: WizardStep
     public private(set) var selfUpdate: SelfUpdateGate
     public var preflight: HostPreflight
-    public var providers: [ProviderProgress]
+    public private(set) var providerRequirementsProjection: ProviderRequirementsProjectionState
+    /// The accepted projection is domain-owned and write-once.  Consumers may
+    /// render provider progress but cannot replace or clear it to bypass the
+    /// provider gate.
+    public private(set) var providers: [ProviderProgress]
     public var composition: CompositionReview
     public var executionStages: [ExecutionStage]
     public var summaryItems: [InstallationSummaryItem]
 
     public init(
         currentInstallerVersion: InstallerVersion,
-        providerRequirements: [ProviderRequirement] = ProviderRequirement.defaultRequiredProviders
+        providerRequirements: [ProviderRequirement]? = nil
     ) {
         self.currentInstallerVersion = currentInstallerVersion
         self.step = .selfUpdate
         self.selfUpdate = .checking
         self.preflight = HostPreflight()
-        self.providers = providerRequirements.map(ProviderProgress.init(requirement:))
+        if let providerRequirements {
+            if Self.hasUniqueProviderIDs(providerRequirements) {
+                self.providerRequirementsProjection = .projected
+                self.providers = providerRequirements.map(ProviderProgress.init(requirement:))
+            } else {
+                self.providerRequirementsProjection = .rejected
+                self.providers = []
+            }
+        } else {
+            self.providerRequirementsProjection = .pending
+            self.providers = []
+        }
         self.composition = CompositionReview()
         self.executionStages = []
         self.summaryItems = []
     }
 
+    /// Returns whether a trusted coordinator has explicitly supplied a valid
+    /// provider projection.  An explicit empty projection is valid only for a
+    /// qualified profile that needs no user-scoped provider.
+    public var providerRequirementsAreProjected: Bool {
+        providerRequirementsProjection.isProjected
+    }
+
+    public var enabledProviders: [ProviderProgress] {
+        providers.filter(\.isEnabled)
+    }
+
+    /// Every enabled provider, including a selected optional provider, must be
+    /// verified before this gate may advance.  An unprojected requirement set
+    /// fails closed even though it currently has no provider rows.
+    public var enabledProvidersVerified: Bool {
+        providerRequirementsAreProjected && enabledProviders.allSatisfy(\.isVerified)
+    }
+
+    /// Kept as a source-compatible read-only projection for the current shell.
+    /// It deliberately has the stronger enabled-provider semantics above; a
+    /// future UI can use `enabledProvidersVerified` by name.
     public var requiredProvidersVerified: Bool {
-        providers.filter(\.requirement.isRequired).allSatisfy(\.isVerified)
+        enabledProvidersVerified
     }
 
     public var canAdvance: Bool {
@@ -522,7 +632,7 @@ public struct InstallerWizardState: Equatable, Sendable {
         case .preflight:
             return preflight.isPassed
         case .providers:
-            return requiredProvidersVerified
+            return enabledProvidersVerified
         case .composition:
             return composition.isReadyForExecution
         case .execution:
@@ -566,9 +676,32 @@ public struct InstallerWizardState: Equatable, Sendable {
         }
     }
 
+    /// Applies the non-secret provider requirement projection supplied by the
+    /// trusted composition coordinator.  The pure state machine cannot prove
+    /// that trust itself; it only refuses to advance until such a projection is
+    /// present and structurally unambiguous.  Projection is write-once: a
+    /// later request cannot replace an unverified required provider with an
+    /// empty or weaker set.
+    @discardableResult
+    public mutating func applyProviderRequirementsProjection(_ requirements: [ProviderRequirement]) -> Bool {
+        guard providerRequirementsProjection == .pending,
+              step.rawValue <= WizardStep.providers.rawValue else {
+            return false
+        }
+        guard Self.hasUniqueProviderIDs(requirements) else {
+            providerRequirementsProjection = .rejected
+            providers = []
+            return false
+        }
+        providerRequirementsProjection = .projected
+        providers = requirements.map(ProviderProgress.init(requirement:))
+        return true
+    }
+
     @discardableResult
     public mutating func setProviderSelected(_ providerID: ProviderID, isSelected: Bool) -> Bool {
-        guard let index = providers.firstIndex(where: { $0.id == providerID }) else {
+        guard providerRequirementsAreProjected,
+              let index = providers.firstIndex(where: { $0.id == providerID }) else {
             return false
         }
         guard !providers[index].requirement.isRequired || isSelected else {
@@ -581,7 +714,9 @@ public struct InstallerWizardState: Equatable, Sendable {
 
     @discardableResult
     public mutating func requestProviderAction(_ action: ProviderAction, for providerID: ProviderID) -> Bool {
-        guard let index = providers.firstIndex(where: { $0.id == providerID }), providers[index].isSelected else {
+        guard providerRequirementsAreProjected,
+              let index = providers.firstIndex(where: { $0.id == providerID }),
+              providers[index].isEnabled else {
             return false
         }
 
@@ -603,7 +738,13 @@ public struct InstallerWizardState: Equatable, Sendable {
         for providerID: ProviderID,
         action: ProviderAction
     ) {
-        guard let index = providers.firstIndex(where: { $0.id == providerID }), providers[index].isSelected else {
+        guard providerRequirementsAreProjected,
+              let index = providers.firstIndex(where: { $0.id == providerID }),
+              providers[index].isEnabled else {
+            return
+        }
+        guard Self.isAwaitingProviderActionResult(providers[index].state, for: action) else {
+            providers[index].state = .failed(.unexpectedActionResult)
             return
         }
 
@@ -612,10 +753,10 @@ public struct InstallerWizardState: Equatable, Sendable {
             providers[index].state = .authenticationRequired
         case (.authenticate, .verified), (.verify, .verified):
             providers[index].state = .verified
-        case (_, .failed(let reason)):
-            providers[index].state = .failed(reason)
+        case (let action, .failed(let failure)) where failure.isValid(for: action):
+            providers[index].state = .failed(failure)
         default:
-            providers[index].state = .failed("Ongeldige provider-uitkomst voor deze stap.")
+            providers[index].state = .failed(.unexpectedActionResult)
         }
     }
 
@@ -635,6 +776,24 @@ public struct InstallerWizardState: Equatable, Sendable {
         }
         step = previous
         return true
+    }
+
+    private static func hasUniqueProviderIDs(_ requirements: [ProviderRequirement]) -> Bool {
+        Set(requirements.map(\.provider)).count == requirements.count
+    }
+
+    private static func isAwaitingProviderActionResult(
+        _ state: ProviderState,
+        for action: ProviderAction
+    ) -> Bool {
+        switch (state, action) {
+        case (.installing, .install),
+             (.authenticating, .authenticate),
+             (.authenticating, .verify):
+            return true
+        default:
+            return false
+        }
     }
 }
 
@@ -662,6 +821,6 @@ public struct UnavailableInstallerWizardCoordinator: InstallerWizardCoordinator 
     }
 
     public func performProviderAction(_ action: ProviderAction, for provider: ProviderID) async -> ProviderActionResult {
-        .failed("Geen vertrouwde provider-coördinator gekoppeld voor \(provider.displayName).")
+        .failed(.coordinatorUnavailable)
     }
 }

@@ -40,23 +40,29 @@ final class InstallerDomainTests: XCTestCase {
     }
 
     func testBothRequiredProvidersMustBeInstalledAuthenticatedAndVerified() throws {
-        var state = InstallerWizardState(currentInstallerVersion: try InstallerVersion("1.2.3"))
+        var state = InstallerWizardState(
+            currentInstallerVersion: try InstallerVersion("1.2.3"),
+            providerRequirements: [
+                ProviderRequirement(provider: .codex, isRequired: true),
+                ProviderRequirement(provider: .githubCLI, isRequired: true),
+            ]
+        )
         state.step = .providers
 
-        XCTAssertFalse(state.requiredProvidersVerified)
+        XCTAssertFalse(state.enabledProvidersVerified)
         XCTAssertFalse(state.canAdvance)
         let requiredCodexBefore = state.providers.first(where: { $0.id == .codex })
         XCTAssertFalse(state.setProviderSelected(.codex, isSelected: false))
         XCTAssertEqual(state.providers.first(where: { $0.id == .codex }), requiredCodexBefore)
-        XCTAssertFalse(state.requiredProvidersVerified)
+        XCTAssertFalse(state.enabledProvidersVerified)
         XCTAssertFalse(state.canAdvance)
 
         verifyRequiredProvider(.codex, state: &state)
-        XCTAssertFalse(state.requiredProvidersVerified)
+        XCTAssertFalse(state.enabledProvidersVerified)
         XCTAssertFalse(state.canAdvance)
 
         verifyRequiredProvider(.githubCLI, state: &state)
-        XCTAssertTrue(state.requiredProvidersVerified)
+        XCTAssertTrue(state.enabledProvidersVerified)
         XCTAssertTrue(state.canAdvance)
         XCTAssertTrue(state.advance())
         XCTAssertEqual(state.step, .composition)
@@ -74,7 +80,7 @@ final class InstallerDomainTests: XCTestCase {
 
         verifyRequiredProvider(.codex, state: &state)
 
-        XCTAssertTrue(state.requiredProvidersVerified)
+        XCTAssertTrue(state.enabledProvidersVerified)
         XCTAssertTrue(state.canAdvance)
         XCTAssertEqual(
             state.providers.first(where: { $0.id == .githubCLI })?.state,
