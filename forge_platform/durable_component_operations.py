@@ -14,6 +14,7 @@ import tempfile
 from typing import Any, Iterator, Mapping
 
 from .component_operations import (
+    ArtifactCorrelation,
     ComponentOperationCoordinator,
     ComponentOperationRecord,
     ComponentOperationRequest,
@@ -27,7 +28,8 @@ from .component_operations import (
 
 
 _SAFE_OPERATION_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
-_ARTIFACT_FIELDS = frozenset({"version", "source_revision", "source", "digest", "qualification"})
+_QUALIFIED_ARTIFACT_FIELDS = frozenset({"version", "source_revision", "source", "digest", "qualification"})
+_ARTIFACT_CORRELATION_FIELDS = frozenset({"version", "source_revision", "digest"})
 _READBACK_FIELDS = frozenset({
     "component", "installation_identity", "state", "selected_runtime_identity",
     "selected_executable_identity", "selected_server_identity", "selected_instance_identity",
@@ -42,6 +44,10 @@ _RECEIPT_FIELDS = frozenset({
     "evidence_reference", "cleanup_evidence_reference",
 })
 _RECORD_FIELDS = frozenset({
+    "operation_id", "request_fingerprint", "artifact", "update_assessment", "preflight", "product_receipt",
+    "postflight", "prior_product_receipts",
+})
+_LEGACY_RECORD_FIELDS = frozenset({
     "operation_id", "request_fingerprint", "update_assessment", "preflight", "product_receipt",
     "postflight", "prior_product_receipts",
 })
@@ -73,6 +79,8 @@ class DurableComponentOperationCoordinator(ComponentOperationCoordinator):
                 if existing:
                     if existing.request_fingerprint != fingerprint:
                         raise RuntimeError("operation ID already binds a different component selection")
+                    if existing.artifact != request.artifact:
+                        raise RuntimeError("operation record artifact does not match the requested qualified artifact")
                     if existing.product_receipt.state in RESUMABLE_PRODUCT_STATES:
                         record = self._resume_once(request, existing, adapter)
                         self._write(operation_directory / "record.json", record)
@@ -133,19 +141,21 @@ class DurableComponentOperationCoordinator(ComponentOperationCoordinator):
         if not path.exists():
             return None
         try:
-            payload = cls._mapping(
-                json.loads(path.read_text(encoding="utf-8"), parse_constant=cls._reject_nonfinite_json),
-                _RECORD_FIELDS,
-            )
+            payload = json.loads(path.read_text(encoding="utf-8"), parse_constant=cls._reject_nonfinite_json)
+            if not isinstance(payload, dict) or frozenset(payload) not in {_RECORD_FIELDS, _LEGACY_RECORD_FIELDS}:
+                raise ValueError("record object fields are invalid")
             operation_id = payload["operation_id"]
             if expected_operation_id is not None and operation_id != expected_operation_id:
                 raise ValueError("record operation ID does not match its directory")
             prior_payloads = payload["prior_product_receipts"]
             if not isinstance(prior_payloads, list):
                 raise ValueError("prior_product_receipts must be a list")
+            if frozenset(payload) == _LEGACY_RECORD_FIELDS:
+                return cls._read_legacy_record(payload)
             return ComponentOperationRecord(
                 operation_id,
                 payload["request_fingerprint"],
+                cls._read_qualified_artifact(payload["artifact"]),
                 cls._read_update_assessment(payload["update_assessment"]),
                 cls._read_installation_readback(payload["preflight"]),
                 cls._read_receipt(payload["product_receipt"]),
@@ -166,14 +176,18 @@ class DurableComponentOperationCoordinator(ComponentOperationCoordinator):
         return value
 
     @classmethod
-    def _read_artifact(cls, value: object) -> QualifiedArtifact:
-        return QualifiedArtifact(**cls._mapping(value, _ARTIFACT_FIELDS))
+    def _read_qualified_artifact(cls, value: object) -> QualifiedArtifact:
+        return QualifiedArtifact(**cls._mapping(value, _QUALIFIED_ARTIFACT_FIELDS))
+
+    @classmethod
+    def _read_artifact_correlation(cls, value: object) -> ArtifactCorrelation:
+        return ArtifactCorrelation(**cls._mapping(value, _ARTIFACT_CORRELATION_FIELDS))
 
     @classmethod
     def _read_installation_readback(cls, value: object) -> ProductInstallationReadback:
         payload = dict(cls._mapping(value, _READBACK_FIELDS))
         artifact = payload["artifact"]
-        payload["artifact"] = None if artifact is None else cls._read_artifact(artifact)
+        payload["artifact"] = None if artifact is None else cls._read_artifact_correlation(artifact)
         return ProductInstallationReadback(**payload)
 
     @classmethod
@@ -181,20 +195,86 @@ class DurableComponentOperationCoordinator(ComponentOperationCoordinator):
         if value is None:
             return None
         payload = dict(cls._mapping(value, _UPDATE_ASSESSMENT_FIELDS))
-        payload["candidate_artifact"] = cls._read_artifact(payload["candidate_artifact"])
+        payload["candidate_artifact"] = cls._read_artifact_correlation(payload["candidate_artifact"])
         return ProductUpdateAssessment(**payload)
 
     @classmethod
     def _read_receipt(cls, value: object) -> ProductOperationReceipt:
         payload = dict(cls._mapping(value, _RECEIPT_FIELDS))
-        payload["artifact"] = cls._read_artifact(payload["artifact"])
+        payload["artifact"] = cls._read_artifact_correlation(payload["artifact"])
         return ProductOperationReceipt(**payload)
+
+    @classmethod
+    def _read_legacy_installation_readback(cls, value: object) -> ProductInstallationReadback:
+        """Read a pre-correlation product observation without retaining its locator."""
+        payload = dict(cls._mapping(value, _READBACK_FIELDS))
+        artifact = payload["artifact"]
+        payload["artifact"] = None if artifact is None else cls._read_qualified_artifact(artifact).correlation
+        return ProductInstallationReadback(**payload)
+
+    @classmethod
+    def _read_legacy_update_assessment(cls, value: object) -> ProductUpdateAssessment | None:
+        if value is None:
+            return None
+        payload = dict(cls._mapping(value, _UPDATE_ASSESSMENT_FIELDS))
+        payload["candidate_artifact"] = cls._read_qualified_artifact(payload["candidate_artifact"]).correlation
+        return ProductUpdateAssessment(**payload)
+
+    @classmethod
+    def _read_legacy_receipt(cls, value: object) -> ProductOperationReceipt:
+        payload = dict(cls._mapping(value, _RECEIPT_FIELDS))
+        payload["artifact"] = cls._read_qualified_artifact(payload["artifact"]).correlation
+        return ProductOperationReceipt(**payload)
+
+    @classmethod
+    def _legacy_receipt_artifact(cls, value: object) -> QualifiedArtifact:
+        payload = cls._mapping(value, _RECEIPT_FIELDS)
+        return cls._read_qualified_artifact(payload["artifact"])
+
+    @classmethod
+    def _legacy_assessment_artifact(cls, value: object) -> QualifiedArtifact | None:
+        if value is None:
+            return None
+        payload = cls._mapping(value, _UPDATE_ASSESSMENT_FIELDS)
+        return cls._read_qualified_artifact(payload["candidate_artifact"])
+
+    @classmethod
+    def _read_legacy_record(cls, payload: Mapping[str, Any]) -> ComponentOperationRecord:
+        """Migrate an old record during read so a pending operation can resume.
+
+        The old wire format put the complete qualified artifact in product-owned
+        fields.  Its fingerprint already binds the caller's full request.  Keep
+        one exact qualified target in the new Forge Platform record, reduce the
+        product observations to correlations, and preserve the old stricter
+        full-artifact equality checks before accepting the record.
+        """
+        prior_payloads = payload["prior_product_receipts"]
+        if not isinstance(prior_payloads, list):
+            raise ValueError("prior_product_receipts must be a list")
+        artifact = cls._legacy_receipt_artifact(payload["product_receipt"])
+        assessment_artifact = cls._legacy_assessment_artifact(payload["update_assessment"])
+        if assessment_artifact is not None and assessment_artifact != artifact:
+            raise ValueError("legacy update assessment artifact does not match receipt artifact")
+        for prior in prior_payloads:
+            if cls._legacy_receipt_artifact(prior) != artifact:
+                raise ValueError("legacy prior receipt artifact does not match receipt artifact")
+        return ComponentOperationRecord(
+            payload["operation_id"],
+            payload["request_fingerprint"],
+            artifact,
+            cls._read_legacy_update_assessment(payload["update_assessment"]),
+            cls._read_legacy_installation_readback(payload["preflight"]),
+            cls._read_legacy_receipt(payload["product_receipt"]),
+            cls._read_legacy_installation_readback(payload["postflight"]),
+            tuple(cls._read_legacy_receipt(item) for item in prior_payloads),
+        )
 
     @staticmethod
     def _write(path: Path, record: ComponentOperationRecord) -> None:
         payload = {
             "operation_id": record.operation_id,
             "request_fingerprint": record.request_fingerprint,
+            "artifact": asdict(record.artifact),
             "update_assessment": None if record.update_assessment is None else asdict(record.update_assessment),
             "preflight": asdict(record.preflight),
             "product_receipt": asdict(record.product_receipt),

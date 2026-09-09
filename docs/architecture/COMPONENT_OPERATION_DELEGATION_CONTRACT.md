@@ -11,14 +11,25 @@ A request binds one coordinator operation ID to all of the following:
 
 - component identity, requested role, operation kind, and opaque
   product-owned installation identity;
-- the complete qualified artifact identity: version, source revision, source
-  locator, SHA-256 digest, and qualification reference; and
+- the Forge Platform-owned complete qualified artifact identity: version,
+  source revision, source locator, SHA-256 digest, and qualification
+  reference; and
 - a small product-extension selection mapping whose contents are canonicalized
   into the retry fingerprint.
 
 Changing any of those values under an existing operation ID fails closed. In
 particular, a new source locator is not accepted merely because its digest or
 version happens to match a prior request.
+
+Product-originated results use only an exact `ArtifactCorrelation` triple:
+`version`, `source_revision`, and `digest`. A product resolver may correlate
+the bytes it selected with its source revision, but it does not reissue,
+select, or revise the Forge Platform artifact locator or qualification
+reference. Forge Platform retains the full `QualifiedArtifact` in its request
+and durable composition record, and compares every product correlation against
+that record. The full locator and qualification remain in the retry fingerprint,
+so a changed locator or qualification fails closed even when the product
+correlation triple is unchanged.
 
 The opaque installation identity is the only target selector accepted by the
 coordinator. The extension mapping rejects direct or nested runtime,
@@ -34,9 +45,9 @@ small:
 
 | Product-owned method | Result consumed by Forge Platform | Product-owned meaning |
 | --- | --- | --- |
-| `readback(request)` | component/install correlation; opaque selected runtime, executable, server and instance identities; observed artifact; identity-aware health evidence; inventory coverage and conflict evidence | Resolves the official runtime and verifies the actual interface/instance. It decides whether the machine-wide inventory is sufficient to assert one operational installation. |
-| `assess_update(request)` | `UPDATE_AVAILABLE`, `UP_TO_DATE`, `INCOMPATIBLE`, or `UNKNOWN` for the exact candidate plus evidence | Determines compatibility and whether a candidate update may run. |
-| `execute(request)` | product operation ID, exact component/install/artifact correlation, state, operation evidence, and cleanup evidence where pending | Performs product-owned provisioning with the product's authoritative installation lock. |
+| `readback(request)` | component/install correlation; opaque selected runtime, executable, server and instance identities; observed `ArtifactCorrelation`; identity-aware health evidence; inventory coverage and conflict evidence | Resolves the official runtime and verifies the actual interface/instance. It decides whether the machine-wide inventory is sufficient to assert one operational installation. |
+| `assess_update(request)` | `UPDATE_AVAILABLE`, `UP_TO_DATE`, `INCOMPATIBLE`, or `UNKNOWN` for the exact candidate `ArtifactCorrelation` plus evidence | Determines compatibility and whether a candidate update may run. |
+| `execute(request)` | product operation ID, exact component/install/`ArtifactCorrelation`, state, operation evidence, and cleanup evidence where pending | Performs product-owned provisioning with the product's authoritative installation lock. |
 | `resume(request, prior_receipt)` | the same product operation identity and a new correlated receipt | Resumes a `CLEANUP_PENDING` or `RECOVERY_PENDING` product operation after crash or reboot. |
 
 For Engineering Platform, the adapter must be backed by the EP-owned
@@ -64,11 +75,20 @@ product-operation ID fails closed.
 ## Durable coordination only
 
 The durable coordinator stores one atomic, mode-`0600` coordination record per
-safe operation ID. It retains the preflight/postflight product readbacks, the
-candidate update assessment, current receipt, and any prior pending receipts;
-it never stores the product request extension mapping or credentials. It
-rejects malformed/non-finite JSON and a record whose operation ID does not
-match its directory.
+safe operation ID. It retains the full Forge Platform `QualifiedArtifact`, plus
+the preflight/postflight product readbacks, candidate update assessment, current
+receipt, and any prior pending receipts. Product-originated slots persist only
+their correlation triples; it never stores the product request extension mapping
+or credentials. It rejects malformed/non-finite JSON and a record whose
+operation ID does not match its directory.
+
+The reader accepts a pre-correlation legacy record only to preserve its existing
+operation identity and recovery path. It verifies the legacy full-artifact
+receipt/assessment history, derives the retained Forge Platform target from the
+receipt, reduces product slots to correlations, and rewrites the current format
+when the pending operation resumes. A mismatch remains fail-closed; legacy
+compatibility does not permit a new locator, qualification, artifact, or
+operation identity to be substituted.
 
 Within one Forge Platform operations root, a hashed component/install target
 lock prevents two different coordinator IDs from dispatching concurrently. A

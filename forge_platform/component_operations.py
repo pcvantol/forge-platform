@@ -85,8 +85,32 @@ def _canonical_delegation(value: Mapping[str, object]) -> str:
 
 
 @dataclass(frozen=True)
+class ArtifactCorrelation:
+    """Exact product-issued correlation to an artifact's bytes and source revision.
+
+    A product resolver can prove which released bytes it selected without
+    becoming the authority for the Forge Platform-owned download locator or
+    qualification evidence.  Those two values deliberately do not appear in
+    this product-facing type.
+    """
+
+    version: str
+    source_revision: str
+    digest: str
+
+    def __post_init__(self) -> None:
+        for label in ("version", "source_revision"):
+            _require(getattr(self, label), label)
+        if not isinstance(self.digest, str) or not self.digest.startswith("sha256:"):
+            raise ValueError("artifact digest must be a sha256 identity")
+        digest_hex = self.digest.removeprefix("sha256:")
+        if len(digest_hex) != 64 or any(character not in "0123456789abcdef" for character in digest_hex):
+            raise ValueError("artifact sha256 digest must contain 64 lowercase hexadecimal bytes")
+
+
+@dataclass(frozen=True)
 class QualifiedArtifact:
-    """Artifact identity independently qualified by its producing product."""
+    """Forge Platform's complete, independently qualified artifact evidence."""
 
     version: str
     source_revision: str
@@ -95,13 +119,14 @@ class QualifiedArtifact:
     qualification: str
 
     def __post_init__(self) -> None:
-        for label in ("version", "source_revision", "source", "qualification"):
+        ArtifactCorrelation(self.version, self.source_revision, self.digest)
+        for label in ("source", "qualification"):
             _require(getattr(self, label), label)
-        if not isinstance(self.digest, str) or not self.digest.startswith("sha256:"):
-            raise ValueError("artifact digest must be a sha256 identity")
-        digest_hex = self.digest.removeprefix("sha256:")
-        if len(digest_hex) != 64 or any(character not in "0123456789abcdef" for character in digest_hex):
-            raise ValueError("artifact sha256 digest must contain 64 lowercase hexadecimal bytes")
+
+    @property
+    def correlation(self) -> ArtifactCorrelation:
+        """The exact product-visible subset of this Forge Platform evidence."""
+        return ArtifactCorrelation(self.version, self.source_revision, self.digest)
 
 
 @dataclass(frozen=True)
@@ -152,7 +177,9 @@ class ProductInstallationReadback:
 
     Runtime, executable, server, and instance values are opaque identities
     issued by the product.  They are observations, never Forge Platform input
-    or a PATH/filesystem lookup.  ``inventory_coverage`` and
+    or a PATH/filesystem lookup. ``artifact`` is only an
+    :class:`ArtifactCorrelation`; its locator and qualification stay in Forge
+    Platform's request/record evidence. ``inventory_coverage`` and
     ``conflict_state`` make an asserted single operational installation
     explicitly dependent on machine-wide product evidence.
     """
@@ -164,7 +191,7 @@ class ProductInstallationReadback:
     selected_executable_identity: str | None
     selected_server_identity: str | None
     selected_instance_identity: str | None
-    artifact: QualifiedArtifact | None
+    artifact: ArtifactCorrelation | None
     health_state: str
     inventory_coverage: str
     conflict_state: str
@@ -206,8 +233,8 @@ class ProductInstallationReadback:
             _require(self.selected_runtime_identity or "", "selected_runtime_identity")
             _require(self.selected_executable_identity or "", "selected_executable_identity")
             _require(self.selected_instance_identity or "", "selected_instance_identity")
-            if not isinstance(self.artifact, QualifiedArtifact):
-                raise ValueError("selected installation readback requires a qualified artifact identity")
+            if not isinstance(self.artifact, ArtifactCorrelation):
+                raise ValueError("selected installation readback requires an artifact correlation")
             _require(self.health_evidence_reference or "", "health_evidence_reference")
             expected_health = "HEALTHY" if self.state == "ACTIVE" else "UNHEALTHY"
             if self.health_state != expected_health:
@@ -239,11 +266,11 @@ class ProductInstallationReadback:
 
 @dataclass(frozen=True)
 class ProductUpdateAssessment:
-    """The product-owned compatibility decision for one exact update candidate."""
+    """The product-owned compatibility decision for one exact correlation."""
 
     component: str
     installation_identity: str
-    candidate_artifact: QualifiedArtifact
+    candidate_artifact: ArtifactCorrelation
     state: str
     evidence_reference: str
 
@@ -251,8 +278,8 @@ class ProductUpdateAssessment:
         if self.component not in COMPONENT_IDENTITIES:
             raise ValueError(f"unknown component identity: {self.component}")
         _require(self.installation_identity, "installation_identity")
-        if not isinstance(self.candidate_artifact, QualifiedArtifact):
-            raise ValueError("candidate_artifact must be a qualified artifact")
+        if not isinstance(self.candidate_artifact, ArtifactCorrelation):
+            raise ValueError("candidate_artifact must be an artifact correlation")
         if self.state not in UPDATE_AVAILABILITY:
             raise ValueError(f"unsupported update availability: {self.state}")
         _require(self.evidence_reference, "evidence_reference")
@@ -260,12 +287,12 @@ class ProductUpdateAssessment:
 
 @dataclass(frozen=True)
 class ProductOperationReceipt:
-    """Product-owned operation state, retained rather than reinterpreted."""
+    """Product-owned operation state correlated without FP provenance fields."""
 
     product_operation_id: str
     component: str
     installation_identity: str
-    artifact: QualifiedArtifact
+    artifact: ArtifactCorrelation
     state: str
     evidence_reference: str
     cleanup_evidence_reference: str | None = None
@@ -275,8 +302,8 @@ class ProductOperationReceipt:
         if self.component not in COMPONENT_IDENTITIES:
             raise ValueError(f"unknown component identity: {self.component}")
         _require(self.installation_identity, "installation_identity")
-        if not isinstance(self.artifact, QualifiedArtifact):
-            raise ValueError("receipt artifact must be a qualified artifact")
+        if not isinstance(self.artifact, ArtifactCorrelation):
+            raise ValueError("receipt artifact must be an artifact correlation")
         if self.state not in PRODUCT_OPERATION_STATES:
             raise ValueError(f"unsupported product operation state: {self.state}")
         _require(self.evidence_reference, "evidence_reference")
@@ -308,10 +335,11 @@ class ProductOperationAdapter(Protocol):
 
 @dataclass(frozen=True)
 class ComponentOperationRecord:
-    """Forge Platform's coordination view, not a product installation record."""
+    """Forge Platform's coordination view, including its qualified artifact evidence."""
 
     operation_id: str
     request_fingerprint: str
+    artifact: QualifiedArtifact
     update_assessment: ProductUpdateAssessment | None
     preflight: ProductInstallationReadback
     product_receipt: ProductOperationReceipt
@@ -321,6 +349,8 @@ class ComponentOperationRecord:
     def __post_init__(self) -> None:
         _require(self.operation_id, "operation_id")
         _require(self.request_fingerprint, "request_fingerprint")
+        if not isinstance(self.artifact, QualifiedArtifact):
+            raise ValueError("artifact must be Forge Platform qualified artifact evidence")
         if not isinstance(self.preflight, ProductInstallationReadback):
             raise ValueError("preflight must be a product installation readback")
         if self.update_assessment is not None and not isinstance(self.update_assessment, ProductUpdateAssessment):
@@ -338,9 +368,11 @@ class ComponentOperationRecord:
         if self.update_assessment is not None and (
             self.update_assessment.component != self.product_receipt.component
             or self.update_assessment.installation_identity != self.product_receipt.installation_identity
-            or self.update_assessment.candidate_artifact != self.product_receipt.artifact
+            or self.update_assessment.candidate_artifact != self.artifact.correlation
         ):
             raise ValueError("update assessment must describe the receipt target and artifact")
+        if self.product_receipt.artifact != self.artifact.correlation:
+            raise ValueError("product receipt must correlate to Forge Platform artifact evidence")
         if not isinstance(self.prior_product_receipts, tuple):
             raise ValueError("prior_product_receipts must be a tuple")
         for prior in self.prior_product_receipts:
@@ -350,7 +382,7 @@ class ComponentOperationRecord:
                 prior.product_operation_id != self.product_receipt.product_operation_id
                 or prior.component != self.product_receipt.component
                 or prior.installation_identity != self.product_receipt.installation_identity
-                or prior.artifact != self.product_receipt.artifact
+                or prior.artifact != self.artifact.correlation
             ):
                 raise ValueError("prior product receipts must describe the same product operation")
 
@@ -389,8 +421,8 @@ class ComponentOperationCoordinator:
             raise RuntimeError("product update assessment does not describe the requested component")
         if assessment.installation_identity != request.installation_identity:
             raise RuntimeError("product update assessment does not describe the requested installation identity")
-        if assessment.candidate_artifact != request.artifact:
-            raise RuntimeError("product update assessment does not describe the requested qualified artifact")
+        if assessment.candidate_artifact != request.artifact.correlation:
+            raise RuntimeError("product update assessment does not correlate to the requested artifact")
         return assessment
 
     @staticmethod
@@ -401,15 +433,15 @@ class ComponentOperationCoordinator:
             raise RuntimeError("product receipt does not describe the requested component")
         if receipt.installation_identity != request.installation_identity:
             raise RuntimeError("product receipt does not describe the requested installation identity")
-        if receipt.artifact != request.artifact:
-            raise RuntimeError("product receipt does not describe the requested qualified artifact")
+        if receipt.artifact != request.artifact.correlation:
+            raise RuntimeError("product receipt does not correlate to the requested artifact")
 
     @staticmethod
     def _verify_completed(request: ComponentOperationRequest, observation: ProductInstallationReadback) -> None:
         if observation.state != "ACTIVE" or observation.health_state != "HEALTHY":
             raise RuntimeError("completed product operation did not report a healthy selected runtime")
-        if observation.artifact != request.artifact:
-            raise RuntimeError("completed product operation did not select the requested qualified artifact")
+        if observation.artifact != request.artifact.correlation:
+            raise RuntimeError("completed product operation did not select the requested artifact correlation")
 
     def observe(self, request: ComponentOperationRequest, adapter: ProductOperationAdapter) -> ProductInstallationReadback:
         """Ask the product resolver which runtime it selected.
@@ -438,6 +470,7 @@ class ComponentOperationCoordinator:
         return ComponentOperationRecord(
             request.operation_id,
             request.fingerprint(),
+            request.artifact,
             assessment,
             preflight,
             receipt,
@@ -461,6 +494,7 @@ class ComponentOperationCoordinator:
         return ComponentOperationRecord(
             request.operation_id,
             request.fingerprint(),
+            request.artifact,
             existing.update_assessment,
             preflight,
             receipt,
@@ -491,6 +525,8 @@ class ComponentOperationCoordinator:
         if existing:
             if existing.request_fingerprint != fingerprint:
                 raise RuntimeError("operation ID already binds a different component artifact or action")
+            if existing.artifact != request.artifact:
+                raise RuntimeError("operation record artifact does not match the requested qualified artifact")
             if existing.product_receipt.state in RESUMABLE_PRODUCT_STATES:
                 record = self._resume_once(request, existing, adapter)
                 self._records[request.operation_id] = record
