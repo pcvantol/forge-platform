@@ -49,9 +49,13 @@ signature_threshold
 ed25519_public_keys = [{ key_id, public_key_base64 }, ...]
 ```
 
-`repository` matches `^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$` and
+`repository` matches
+`^[A-Za-z0-9][A-Za-z0-9._-]{0,99}/[A-Za-z0-9][A-Za-z0-9._-]{0,99}$` (so neither
+path segment can be `.` or `..`) and
 `release_descriptor_asset_name` matches
-`^[A-Za-z0-9._-]{1,123}\.json$`; it is therefore bounded and slash-free.
+`^[A-Za-z0-9][A-Za-z0-9._-]{0,122}\.json$` (at most 128 bytes including
+`.json`); it is therefore bounded,
+slash-free, and cannot begin with a dot segment.
 `expected_bundle_identifier` matches
 `^[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)+$` and `expected_team_identifier` matches
 `^[A-Z0-9]{10}$`. Each `key_id` matches
@@ -83,8 +87,100 @@ non-integer JSON numbers, malformed UTF-8, noncanonical Base64 and any private
 or operational input are rejected. A resource is limited to 32 KiB. The bundle
 packager reads a caller-supplied resource only from a regular non-symlink file,
 validates this exact contract, and copies its captured bytes into the unsigned
-candidate. It does not fetch, publish, sign, stage, hand off, or activate an
-installer.
+candidate. Before a protected qualification can accept an archive, it reads
+the in-archive V2 resource without extraction and binds its configuration
+digest, repository, descriptor asset name, bundle/team identity, threshold and
+ordered key-ID set to the reviewed durable release identity. It does not fetch,
+publish, sign, stage, hand off, or activate an installer.
+
+## Sealed installer release provenance V1
+
+`ForgePlatformInstallerReleaseProvenance.json` is a second, public,
+code-signed bundle resource. It records the exact immutable release facts that
+the final signed descriptor must repeat, without introducing a signing cycle:
+the final descriptor/archive digests and CodeDirectory digest are deliberately
+not fields of this resource. The strict public contract is
+[`universal-installer-release-provenance.schema.json`](../../schemas/universal-installer-release-provenance.schema.json).
+A source build has no provenance resource and remains fail-closed; the source
+packager never manufactures one.
+
+The object is at most 32 KiB, has exactly these fields, and contains no URL,
+credential, private key, final archive digest, or notarization material:
+
+```text
+schema_version = 1
+provenance_sha256
+installer_version
+channel = stable | candidate
+release_sequence > 0
+source_revision
+policy_revision
+capabilities = strictly sorted unique identifiers
+release_trust_configuration_sha256
+```
+
+`release_sequence` is a positive unsigned 64-bit integer. Installer-version
+components are stable decimal values that fit the native signed 64-bit
+`InstallerVersion` representation; parser limits prevent a Python release
+candidate that the native installer could not represent.
+
+`provenance_sha256` is lower-case SHA-256 of NUL-delimited UTF-8 tokens in this
+exact order:
+
+```text
+forge-platform-installer-release-provenance-v1
+schema_version=1
+installer_version=<installer_version>
+channel=<channel>
+release_sequence=<release_sequence>
+source_revision=<source_revision>
+policy_revision=<policy_revision>
+release_trust_configuration_sha256=<configuration_sha256>
+capability_count=<count>
+capability=<capability>  (one per ascending capability)
+```
+
+The packager captures one regular, non-symlink input file before it creates the
+bundle, validates strict UTF-8 JSON (including duplicate-key and non-finite
+value rejection), and copies those captured bytes verbatim. A later protected
+signer must prove that the signed app carries this exact semantic provenance;
+it must not replace or infer it from a filename, version, or `PATH` result.
+When release resources are supplied, the packager accepts the V2 trust resource
+and V1 provenance resource only as a matched pair: their configuration digests
+must agree, the trust resource's expected bundle identifier must equal the
+packaged app, and provenance version/channel/capabilities must equal the
+installer-version projection. A partial or mismatched pair fails before an
+output bundle is written.
+
+## Canonical GitHub Release descriptor identity
+
+The signed `forge-platform.installer-release/v1` descriptor now contains one
+strict `github_release` object: repository, tag, and descriptor asset name.
+Every macOS asset contains a safe `.zip` asset name, archive
+`sha256:<lowercase-hex>`, strict bundle and Apple Team identity, full raw
+`code_directory_sha256`, and a typed opaque
+`notarization_receipt_reference`. It contains no installer asset URL. The only
+permitted archive URL is derived from the signed repository/tag/asset name as
+the canonical GitHub Releases download location; a supplied URL or unsafe tag
+or asset name fails closed. The separately signed composition catalog retains
+its explicit HTTPS feed URL.
+
+The descriptor also binds the raw V2
+`release_trust_configuration_sha256` and the V1 `provenance_sha256`. The
+durable installer-release identity, preparation, qualification and publication
+evidence repeat those facts. A positive release sequence is reserved in the
+durable release store while the candidate is `PREPARED`; a retry can reuse it
+only for exactly the same operation, candidate bytes, source, policy, trust
+configuration, provenance, identity and capabilities. This is source-level
+collision protection, not a claim that a GitHub Release was created.
+Publication evidence separately records the configured descriptor asset name,
+the exact descriptor digest read back from that asset, and an opaque readback
+receipt; a local generic descriptor filename is not upload or readback proof.
+The current sealed V2 resource fixes the GitHub repository/descriptor locator
+and app bundle/team identity used to admit a descriptor. Its configuration
+digest identifies the currently running bundle; the descriptor's distinct
+trust-configuration digest identifies the target bundle and may rotate only
+through the verified staged-target path.
 
 ## Mandatory self-update
 
@@ -99,7 +195,7 @@ verify own installed bundle identity
   → only the newer installer may inspect a composition or mutate a platform
 ```
 
-GitHub Releases transport bytes, but `latest`, a tag, title, filename, or HTTP success is not a trust root. The bootstrapper accepts only a signed `forge-platform.installer-release/v1` descriptor under its rotatable embedded public-key/threshold policy. The descriptor binds sequence, channel, expiry, installer version/source revision, exact SHA-256, code-signing team/bundle identity, notarization evidence, capabilities, and the signed **catalog-feed locator**. A same installer version with different source, bytes, capability declaration, feed locator, or signing identity fails closed rather than being overwritten.
+GitHub Releases transport bytes, but `latest`, a tag, title, filename, or HTTP success is not a trust root. The bootstrapper accepts only a signed `forge-platform.installer-release/v1` descriptor under its rotatable embedded public-key/threshold policy. The descriptor binds canonical GitHub repository/tag/descriptor-asset identity, sequence, channel, expiry, installer version/source revision, exact archive SHA-256, full CodeDirectory SHA-256, code-signing team/bundle identity, typed notarization receipt reference, capabilities, V2 trust-configuration digest, V1 provenance digest, and the signed **catalog-feed locator**. A same installer version with different source, bytes, capability declaration, feed locator, trust configuration, provenance, or signing identity fails closed rather than being overwritten.
 
 Both the installer descriptor and composition catalog use only an explicit
 public signature envelope: `{ "algorithm": "ed25519", "key_id": "…",
@@ -120,11 +216,20 @@ The release-side counterpart is equally restartable: the unsigned candidate
 first becomes a durable, immutable `PREPARED` record under one operation ID,
 including its candidate manifest and per-architecture digests. A later
 qualification record must bind that exact prepared input as well as the signed
-descriptor and release archives. Retrying with changed source, policy,
-identity, capability, candidate bytes, or signed bytes under the same
-operation ID fails closed. `PREPARED`, `QUALIFIED`, `PUBLISHED`,
+descriptor, release archives, CodeDirectory digests, typed notarization
+receipts, sequence, trust configuration and provenance. Retrying with changed
+source, policy, identity, capability, candidate bytes, signed bytes, sequence
+or provenance under the same operation ID fails closed. `PREPARED`, `QUALIFIED`, `PUBLISHED`,
 `CLEANUP_PENDING`, and `RELEASE_COMPLETE` are distinct evidence states; no
 public side effect is inferred from an unsigned candidate or a lost response.
+
+The checked-in GitHub Actions framework deliberately creates this journal only
+inside its run artifact. It is useful for an individual candidate and remains
+blocked before signing/publication, but it is not a protected cross-run durable
+reservation store. Enabling protected publication requires a reviewed durable
+shared operation/sequence store and GitHub Release readback reconciliation; a
+new workflow dispatch must never treat a fresh artifact directory as proof
+that an earlier sequence or operation did not exist.
 
 ### Component-combination selection index
 
@@ -232,7 +337,11 @@ Discovery produces a candidate only. Product APIs verify product, instance, fing
 
 ## Current source and remaining work
 
-Forge Platform now contains strict schemas and a tested policy kernel for signed-release selection, structured public signature envelopes and key-ID/threshold gating, fresh/trusted-clock feed gates, catalog signature/sequence/digest anti-replay, context-bound composition selection, installer capability checks, preflight, Git/Python planning, provider gating, system-service declaration checks, and read-only composition diffs. It also contains a tested native SwiftUI wizard shell, a separate installer release-operation journal with an immutable `PREPARED` candidate precursor, and a source-only release workflow framework. That framework verifies an exact merged `main` candidate, requires its exact version-preparation receipt, requires a reviewed release-identity policy, packages an **unsigned** `.app` candidate, records the digest of the exact staged archive, and binds the later operation/descriptor handoff to the configured GitHub repository, tag, asset names, bundle identifier and Team identifier. Its signing/notarization and public-GitHub-Release environments deliberately fail closed until a real protected Apple signer, notarization adapter, descriptor trust root, and publisher are configured. The structural handoff verifier enforces the public envelope shape and reviewed key-ID/threshold binding, but intentionally reports that cryptographic signature verification was not performed; it is never a publication authorization.
+Forge Platform now contains strict schemas and a tested policy kernel for signed-release selection, canonical GitHub Release identity, structured public signature envelopes and key-ID/threshold gating, sealed V2 trust-configuration and V1 provenance identities, fresh/trusted-clock feed gates, catalog signature/sequence/digest anti-replay, context-bound composition selection, installer capability checks, preflight, Git/Python planning, provider gating, system-service declaration checks, and read-only composition diffs. It also contains a tested native SwiftUI wizard shell, a separate installer release-operation journal with an immutable `PREPARED` candidate precursor and durable sequence reservation, and a source-only release workflow framework. That framework verifies an exact merged `main` candidate, requires its exact version-preparation receipt, requires a reviewed release-identity policy, records required public sequence/provenance inputs, packages an **unsigned** `.app` candidate without manufacturing sealed resources, records the digest of the exact staged archive, and binds the later operation/descriptor handoff to the configured GitHub repository, tag, descriptor asset name, archive asset names, bundle identifier, Team identifier, CodeDirectory digest and typed notarization receipt. Its signing/notarization and public-GitHub-Release environments deliberately fail closed until a real protected Apple signer, notarization adapter, native trust/provenance loader, descriptor verifier and publisher are configured. The structural handoff verifier enforces the public envelope shape and reviewed identity binding, but intentionally reports that cryptographic signature verification was not performed; it is never a publication authorization.
+
+The structural verifier also reads V2 trust and V1 provenance resources directly
+from every supplied archive and binds their semantic identities to the durable
+reviewed release identity; it still does not authorize signing or publication.
 
 Next owning increments are: connect the protected signer/notarization/publisher to the installer release framework and qualify an actual GitHub Release; native trusted bootstrap/handoff; EP then Forge/Workspace execute/resume/uninstall adapters; managed-tool/provider coordinators that retain no secrets; and installed-artifact clean-Mac, add/update/remove, migration/rollback, reboot-recovery, pairing, readiness, and summary qualification.
 

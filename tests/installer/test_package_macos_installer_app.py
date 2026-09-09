@@ -17,7 +17,14 @@ import unittest
 
 ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = ROOT / "scripts" / "package_macos_installer_app.py"
+sys.path.insert(0, str(ROOT / "scripts"))
+from package_macos_installer_app import (  # noqa: E402
+    SealedReleaseProvenanceResource,
+    SealedReleaseTrustResource,
+    package,
+)
 _PUBLIC_V2_DIGEST = "5988f1dd473caef0a2963f3a6cec06099007e740eced84e3a03fc0e04f343b19"
+_PUBLIC_PROVENANCE_DIGEST = "63f31be5ec852a399f1df8ae785dbf1bb6e06cbdba86abc1ac54e7a7f87b4a44"
 
 
 class PackageMacOSInstallerAppTests(unittest.TestCase):
@@ -32,6 +39,7 @@ class PackageMacOSInstallerAppTests(unittest.TestCase):
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertIn("INSTALLER_APP_BUNDLE=PASS", result.stdout)
             self.assertIn("sealed_release_trust=ABSENT_FAIL_CLOSED", result.stdout)
+            self.assertIn("sealed_release_provenance=ABSENT_FAIL_CLOSED", result.stdout)
             self.assertEqual(
                 (app_bundle / "Contents" / "MacOS" / "ForgePlatformInstaller").read_bytes(),
                 executable.read_bytes(),
@@ -50,15 +58,27 @@ class PackageMacOSInstallerAppTests(unittest.TestCase):
             self.assertFalse(
                 (app_bundle / "Contents" / "Resources" / "ForgePlatformInstallerReleaseTrust.json").exists()
             )
+            self.assertFalse(
+                (app_bundle / "Contents" / "Resources" / "ForgePlatformInstallerReleaseProvenance.json").exists()
+            )
 
     def test_copies_an_explicit_validated_v2_resource_verbatim_from_paths_with_spaces(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             workspace = Path(temporary)
             executable = self._executable(workspace)
             trust_resource, trust_bytes = self._release_trust_resource(workspace)
+            provenance_resource, _ = self._release_provenance_resource(
+                workspace,
+                release_trust_configuration_sha256=_PUBLIC_V2_DIGEST,
+            )
             app_bundle = workspace / "Forge Platform Installer.app"
 
-            result = self._run(executable, app_bundle, trust_resource=trust_resource)
+            result = self._run(
+                executable,
+                app_bundle,
+                trust_resource=trust_resource,
+                provenance_resource=provenance_resource,
+            )
 
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertIn("sealed_release_trust=PACKAGED_V2", result.stdout)
@@ -67,10 +87,41 @@ class PackageMacOSInstallerAppTests(unittest.TestCase):
                 trust_bytes,
             )
 
+    def test_copies_an_explicit_validated_v1_provenance_verbatim_from_paths_with_spaces(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            workspace = Path(temporary)
+            executable = self._executable(workspace)
+            trust_resource, _ = self._release_trust_resource(workspace)
+            provenance_resource, provenance_bytes = self._release_provenance_resource(
+                workspace,
+                release_trust_configuration_sha256=_PUBLIC_V2_DIGEST,
+            )
+            app_bundle = workspace / "Forge Platform Installer.app"
+
+            result = self._run(
+                executable,
+                app_bundle,
+                trust_resource=trust_resource,
+                provenance_resource=provenance_resource,
+            )
+
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIn("sealed_release_provenance=PACKAGED_V1", result.stdout)
+            self.assertEqual(
+                (app_bundle / "Contents" / "Resources" / "ForgePlatformInstallerReleaseProvenance.json").read_bytes(),
+                provenance_bytes,
+            )
+
     def test_v2_canonical_digest_matches_the_public_cross_language_vector(self) -> None:
         self.assertEqual(
             self._release_trust_digest(self._public_keys(), signature_threshold=2),
             _PUBLIC_V2_DIGEST,
+        )
+
+    def test_v1_provenance_canonical_digest_matches_the_public_vector(self) -> None:
+        self.assertEqual(
+            self._release_provenance_digest(self._release_provenance_payload()),
+            _PUBLIC_PROVENANCE_DIGEST,
         )
 
     def test_rejects_missing_malformed_duplicate_or_nonfinite_resources_before_writing_output(self) -> None:
@@ -155,6 +206,216 @@ class PackageMacOSInstallerAppTests(unittest.TestCase):
             self.assertIn("must not be selected through a symlink", symlink_result.stderr)
             self.assertFalse(symlink_output.exists())
 
+    def test_rejects_noncanonical_provenance_bytes_before_writing_output(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            workspace = Path(temporary)
+            executable = self._executable(workspace)
+            valid_resource, _ = self._release_provenance_resource(workspace)
+
+            duplicate = workspace / "duplicate provenance.json"
+            duplicate.write_text(
+                self._duplicate_field_json(self._release_provenance_payload(), field="provenance_sha256"),
+                encoding="utf-8",
+            )
+            result = self._run(executable, workspace / "duplicate.app", provenance_resource=duplicate)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("strict UTF-8 JSON", result.stderr)
+
+            malformed = workspace / "malformed provenance.json"
+            payload = self._release_provenance_payload()
+            payload["capabilities"] = ["provider-gate/v1", "composition/v1", "system-launchdaemon/v1"]
+            self._write_payload(malformed, payload)
+            result = self._run(executable, workspace / "unsorted.app", provenance_resource=malformed)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("sorted, unique", result.stderr)
+
+            mismatched = workspace / "mismatched provenance.json"
+            payload = self._release_provenance_payload()
+            payload["provenance_sha256"] = "f" * 64
+            self._write_payload(mismatched, payload)
+            result = self._run(executable, workspace / "mismatched.app", provenance_resource=mismatched)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("does not match its fields", result.stderr)
+
+            private = workspace / "private provenance.json"
+            payload = self._release_provenance_payload()
+            payload["url"] = "https://never-accepted.example.invalid/"
+            self._write_payload(private, payload)
+            result = self._run(executable, workspace / "private.app", provenance_resource=private)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("unsupported or missing fields", result.stderr)
+
+            linked = workspace / "linked provenance.json"
+            linked.symlink_to(valid_resource)
+            result = self._run(executable, workspace / "linked.app", provenance_resource=linked)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("must not be selected through a symlink", result.stderr)
+
+            overflow = workspace / "overflow provenance.json"
+            self._write_payload(
+                overflow,
+                self._release_provenance_payload(release_sequence=(1 << 64)),
+            )
+            result = self._run(executable, workspace / "overflow.app", provenance_resource=overflow)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("sequence is invalid", result.stderr)
+
+            trust_resource, _ = self._release_trust_resource(workspace)
+            result = self._run(executable, workspace / "partial.app", trust_resource=trust_resource)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("requires both sealed release trust and provenance", result.stderr)
+
+            result = self._run(
+                executable,
+                workspace / "mismatched-trust.app",
+                trust_resource=trust_resource,
+                provenance_resource=valid_resource,
+            )
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("does not match the bundled release trust resource", result.stderr)
+
+            result = self._run(
+                executable,
+                workspace / "provenance-only.app",
+                provenance_resource=valid_resource,
+            )
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("requires both sealed release trust and provenance", result.stderr)
+
+    def test_rejects_release_resources_that_do_not_bind_the_packaged_app_projection(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            workspace = Path(temporary)
+            executable = self._executable(workspace)
+            trust_resource, _ = self._release_trust_resource(workspace)
+
+            wrong_version, _ = self._release_provenance_resource(
+                workspace,
+                installer_version="1.2.3",
+                release_trust_configuration_sha256=_PUBLIC_V2_DIGEST,
+            )
+            result = self._run(
+                executable,
+                workspace / "wrong-version.app",
+                trust_resource=trust_resource,
+                provenance_resource=wrong_version,
+            )
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("installer version does not match", result.stderr)
+
+            wrong_channel, _ = self._release_provenance_resource(
+                workspace,
+                channel="candidate",
+                release_trust_configuration_sha256=_PUBLIC_V2_DIGEST,
+            )
+            result = self._run(
+                executable,
+                workspace / "wrong-channel.app",
+                trust_resource=trust_resource,
+                provenance_resource=wrong_channel,
+            )
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("channel does not match", result.stderr)
+
+            wrong_capabilities, _ = self._release_provenance_resource(
+                workspace,
+                capabilities=["composition/v1"],
+                release_trust_configuration_sha256=_PUBLIC_V2_DIGEST,
+            )
+            result = self._run(
+                executable,
+                workspace / "wrong-capabilities.app",
+                trust_resource=trust_resource,
+                provenance_resource=wrong_capabilities,
+            )
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("capabilities do not match", result.stderr)
+
+            mismatched_bundle_trust, _ = self._release_trust_resource(
+                workspace,
+                bundle_identifier="com.example.other-installer",
+            )
+            other_bundle_configuration = self._release_trust_payload(
+                bundle_identifier="com.example.other-installer"
+            )["configuration_sha256"]
+            assert isinstance(other_bundle_configuration, str)
+            other_bundle_provenance, _ = self._release_provenance_resource(
+                workspace,
+                release_trust_configuration_sha256=other_bundle_configuration,
+            )
+            result = self._run(
+                executable,
+                workspace / "wrong-bundle.app",
+                trust_resource=mismatched_bundle_trust,
+                provenance_resource=other_bundle_provenance,
+            )
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("bundle identifier does not match", result.stderr)
+
+    def test_public_packager_api_revalidates_manually_constructed_resources_before_writing(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            workspace = Path(temporary)
+            executable = self._executable(workspace)
+            output = workspace / "direct-api.app"
+            forged_trust = SealedReleaseTrustResource(
+                source=workspace / "not-a-real-trust.json",
+                contents=b"not-json-trust",
+                configuration_sha256="a" * 64,
+                repository="example-owner/example-installer",
+                release_descriptor_locator="github-release-asset-v1",
+                release_descriptor_asset_name="ForgePlatformInstallerReleaseDescriptor.json",
+                expected_bundle_identifier="com.example.forge-platform-installer",
+                expected_team_identifier="AB12CD34EF",
+                signature_threshold=1,
+                signature_key_ids=("release-key-001",),
+            )
+            forged_provenance = SealedReleaseProvenanceResource(
+                source=workspace / "not-a-real-provenance.json",
+                contents=b"not-json-provenance",
+                provenance_sha256="b" * 64,
+                installer_version="0.1.0",
+                channel="stable",
+                release_sequence=1,
+                source_revision="a" * 40,
+                policy_revision="forge-platform-installer-release-v1",
+                capabilities=("composition/v1",),
+                release_trust_configuration_sha256="a" * 64,
+            )
+
+            with self.assertRaisesRegex(ValueError, "strict UTF-8 JSON"):
+                package(
+                    executable=executable,
+                    output=output,
+                    bundle_identifier="com.example.forge-platform-installer",
+                    sealed_release_trust=forged_trust,
+                    sealed_release_provenance=forged_provenance,
+                )
+            self.assertFalse(output.exists())
+
+    def test_public_packager_api_revalidates_executable_output_and_bundle_identifier(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            workspace = Path(temporary)
+            executable = self._executable(workspace)
+            symlinked_executable = workspace / "symlinked-installer"
+            symlinked_executable.symlink_to(executable)
+            symlink_output = workspace / "symlink-rejected.app"
+
+            with self.assertRaisesRegex(ValueError, "must not be selected through a symlink"):
+                package(
+                    executable=symlinked_executable,
+                    output=symlink_output,
+                    bundle_identifier="com.example.forge-platform-installer",
+                )
+            self.assertFalse(symlink_output.exists())
+
+            invalid_identifier_output = workspace / "invalid-identifier.app"
+            with self.assertRaisesRegex(ValueError, "bundle identifier is invalid"):
+                package(
+                    executable=executable,
+                    output=invalid_identifier_output,
+                    bundle_identifier="not a bundle identifier",
+                )
+            self.assertFalse(invalid_identifier_output.exists())
+
     def test_rejects_noncanonical_key_ids_public_keys_order_and_threshold(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             workspace = Path(temporary)
@@ -206,12 +467,21 @@ class PackageMacOSInstallerAppTests(unittest.TestCase):
             workspace = Path(temporary)
             executable = self._executable(workspace)
             trust_resource, _ = self._release_trust_resource(workspace)
+            provenance_resource, _ = self._release_provenance_resource(
+                workspace,
+                release_trust_configuration_sha256=_PUBLIC_V2_DIGEST,
+            )
             app_bundle = workspace / "ForgePlatformInstaller.app"
             app_bundle.mkdir()
             sentinel = app_bundle / "must-not-change"
             sentinel.write_bytes(b"existing output must be preserved")
 
-            result = self._run(executable, app_bundle, trust_resource=trust_resource)
+            result = self._run(
+                executable,
+                app_bundle,
+                trust_resource=trust_resource,
+                provenance_resource=provenance_resource,
+            )
 
             self.assertNotEqual(result.returncode, 0)
             self.assertIn("must not already exist", result.stderr)
@@ -283,6 +553,7 @@ class PackageMacOSInstallerAppTests(unittest.TestCase):
         *,
         keys: list[tuple[str, str]] | None = None,
         signature_threshold: int = 2,
+        bundle_identifier: str = "com.example.forge-platform-installer",
     ) -> dict[str, object]:
         selected_keys = keys if keys is not None else cls._public_keys()
         return {
@@ -290,11 +561,12 @@ class PackageMacOSInstallerAppTests(unittest.TestCase):
             "configuration_sha256": cls._release_trust_digest(
                 selected_keys,
                 signature_threshold=signature_threshold,
+                bundle_identifier=bundle_identifier,
             ),
             "repository": "example-owner/example-installer",
             "release_descriptor_locator": "github-release-asset-v1",
             "release_descriptor_asset_name": "ForgePlatformInstallerReleaseDescriptor.json",
-            "expected_bundle_identifier": "com.example.forge-platform-installer",
+            "expected_bundle_identifier": bundle_identifier,
             "expected_team_identifier": "AB12CD34EF",
             "signature_threshold": signature_threshold,
             "ed25519_public_keys": [
@@ -304,10 +576,90 @@ class PackageMacOSInstallerAppTests(unittest.TestCase):
         }
 
     @classmethod
-    def _release_trust_resource(cls, workspace: Path) -> tuple[Path, bytes]:
-        contents = (json.dumps(cls._release_trust_payload(), sort_keys=True, indent=2) + "\n").encode("utf-8")
-        resource = workspace / "caller supplied trust" / "release trust.json"
-        resource.parent.mkdir()
+    def _release_trust_resource(
+        cls,
+        workspace: Path,
+        *,
+        bundle_identifier: str = "com.example.forge-platform-installer",
+    ) -> tuple[Path, bytes]:
+        contents = (
+            json.dumps(
+                cls._release_trust_payload(bundle_identifier=bundle_identifier),
+                sort_keys=True,
+                indent=2,
+            )
+            + "\n"
+        ).encode("utf-8")
+        resource = workspace / "caller supplied trust" / (
+            "release-trust-" + hashlib.sha256(contents).hexdigest()[:16] + ".json"
+        )
+        resource.parent.mkdir(exist_ok=True)
+        resource.write_bytes(contents)
+        return resource, contents
+
+    @staticmethod
+    def _release_provenance_payload(
+        *,
+        installer_version: str = "1.2.3",
+        channel: str = "stable",
+        capabilities: list[str] | None = None,
+        release_sequence: int = 42,
+        release_trust_configuration_sha256: str = "b" * 64,
+    ) -> dict[str, object]:
+        selected_capabilities = (
+            ["composition/v1", "provider-gate/v1", "system-launchdaemon/v1"]
+            if capabilities is None
+            else capabilities
+        )
+        return {
+            "schema_version": 1,
+            "provenance_sha256": PackageMacOSInstallerAppTests._release_provenance_digest({
+                "installer_version": installer_version,
+                "channel": channel,
+                "release_sequence": release_sequence,
+                "source_revision": "a" * 40,
+                "policy_revision": "forge-platform-installer-release-v1",
+                "release_trust_configuration_sha256": release_trust_configuration_sha256,
+                "capabilities": selected_capabilities,
+            }),
+            "installer_version": installer_version,
+            "channel": channel,
+            "release_sequence": release_sequence,
+            "source_revision": "a" * 40,
+            "policy_revision": "forge-platform-installer-release-v1",
+            "capabilities": selected_capabilities,
+            "release_trust_configuration_sha256": release_trust_configuration_sha256,
+        }
+
+    @classmethod
+    def _release_provenance_resource(
+        cls,
+        workspace: Path,
+        *,
+        installer_version: str = "0.1.0",
+        channel: str = "stable",
+        capabilities: list[str] | None = None,
+        release_sequence: int = 42,
+        release_trust_configuration_sha256: str = "b" * 64,
+    ) -> tuple[Path, bytes]:
+        contents = (
+            json.dumps(
+                cls._release_provenance_payload(
+                    installer_version=installer_version,
+                    channel=channel,
+                    capabilities=capabilities,
+                    release_sequence=release_sequence,
+                    release_trust_configuration_sha256=release_trust_configuration_sha256
+                ),
+                sort_keys=True,
+                indent=2,
+            )
+            + "\n"
+        ).encode("utf-8")
+        resource = workspace / "caller supplied provenance" / (
+            "release-provenance-" + hashlib.sha256(contents).hexdigest()[:16] + ".json"
+        )
+        resource.parent.mkdir(exist_ok=True)
         resource.write_bytes(contents)
         return resource, contents
 
@@ -316,15 +668,16 @@ class PackageMacOSInstallerAppTests(unittest.TestCase):
         resource.write_text(json.dumps(payload, sort_keys=True), encoding="utf-8")
 
     @staticmethod
-    def _duplicate_field_json(payload: dict[str, object]) -> str:
+    def _duplicate_field_json(payload: dict[str, object], *, field: str = "repository") -> str:
         canonical = json.dumps(payload, separators=(",", ":"))
-        return canonical[:-1] + ',"repository":"example-owner/example-installer"}'
+        return canonical[:-1] + f',"{field}":{json.dumps(payload[field], separators=(",", ":"))}' + "}"
 
     @staticmethod
     def _release_trust_digest(
         keys: list[tuple[str, str]],
         *,
         signature_threshold: int,
+        bundle_identifier: str = "com.example.forge-platform-installer",
     ) -> str:
         fields = [
             "forge-platform-installer-release-trust-v2",
@@ -332,7 +685,7 @@ class PackageMacOSInstallerAppTests(unittest.TestCase):
             "repository=example-owner/example-installer",
             "release_descriptor_locator=github-release-asset-v1",
             "release_descriptor_asset_name=ForgePlatformInstallerReleaseDescriptor.json",
-            "expected_bundle_identifier=com.example.forge-platform-installer",
+            f"expected_bundle_identifier={bundle_identifier}",
             "expected_team_identifier=AB12CD34EF",
             f"signature_threshold={signature_threshold}",
             f"ed25519_public_key_count={len(keys)}",
@@ -343,11 +696,30 @@ class PackageMacOSInstallerAppTests(unittest.TestCase):
         return hashlib.sha256("\0".join(fields).encode("utf-8")).hexdigest()
 
     @staticmethod
+    def _release_provenance_digest(payload: dict[str, object]) -> str:
+        capabilities = payload["capabilities"]
+        assert isinstance(capabilities, list)
+        fields = [
+            "forge-platform-installer-release-provenance-v1",
+            "schema_version=1",
+            f"installer_version={payload['installer_version']}",
+            f"channel={payload['channel']}",
+            f"release_sequence={payload['release_sequence']}",
+            f"source_revision={payload['source_revision']}",
+            f"policy_revision={payload['policy_revision']}",
+            f"release_trust_configuration_sha256={payload['release_trust_configuration_sha256']}",
+            f"capability_count={len(capabilities)}",
+        ]
+        fields.extend(f"capability={capability}" for capability in capabilities)
+        return hashlib.sha256("\0".join(fields).encode("utf-8")).hexdigest()
+
+    @staticmethod
     def _run(
         executable: Path,
         app_bundle: Path,
         *,
         trust_resource: Path | None = None,
+        provenance_resource: Path | None = None,
     ) -> subprocess.CompletedProcess[str]:
         command = [
             sys.executable,
@@ -361,6 +733,8 @@ class PackageMacOSInstallerAppTests(unittest.TestCase):
         ]
         if trust_resource is not None:
             command.extend(("--sealed-release-trust-resource", str(trust_resource)))
+        if provenance_resource is not None:
+            command.extend(("--sealed-release-provenance-resource", str(provenance_resource)))
         return subprocess.run(
             command,
             cwd=ROOT,

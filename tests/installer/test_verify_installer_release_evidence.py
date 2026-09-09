@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import base64
 from dataclasses import asdict
 from hashlib import sha256
 import json
@@ -11,6 +12,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+import zipfile
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -22,12 +24,33 @@ from forge_platform.installer_release_operation import (  # noqa: E402
     InstallerReleaseIdentity,
     InstallerReleaseOperation,
 )
+from forge_platform.installer_release_provenance import (  # noqa: E402
+    canonical_release_provenance_sha256,
+)
+from forge_platform.installer_release_trust import (  # noqa: E402
+    canonical_release_trust_configuration_sha256,
+)
 
 
 SCRIPT = ROOT / "scripts" / "verify_installer_release_evidence.py"
 SOURCE_SHA = "a" * 40
 CAPABILITIES = ["composition/v1", "provider-gate/v1", "system-launchdaemon/v1"]
 POLICY_REVISION = "forge-platform-installer-release-v1"
+RELEASE_SEQUENCE = 7
+TRUST_PUBLIC_KEYS = (
+    ("release-key-001", base64.b64encode(bytes(range(32))).decode("ascii")),
+)
+RELEASE_TRUST_CONFIGURATION_SHA256 = canonical_release_trust_configuration_sha256(
+    repository="example/forge-platform",
+    release_descriptor_locator="github-release-asset-v1",
+    release_descriptor_asset_name="ForgePlatformInstallerReleaseDescriptor.json",
+    expected_bundle_identifier="com.example.forge-platform-installer",
+    expected_team_identifier="ABCDE12345",
+    signature_threshold=1,
+    ed25519_public_keys=TRUST_PUBLIC_KEYS,
+)
+CODE_DIRECTORY_SHA256 = "e" * 64
+NOTARIZATION_RECEIPT_REFERENCE = "receipt:protected-notarization-arm64-001"
 CANDIDATE_MANIFEST_DIGEST = "sha256:" + "b" * 64
 SIGNATURE_ENVELOPE = {
     "algorithm": "ed25519",
@@ -40,9 +63,20 @@ IDENTITY = InstallerReleaseIdentity(
     team_identifier="ABCDE12345",
     release_tag_prefix="forge-platform-installer-v",
     asset_prefix="ForgePlatformInstaller-macos-",
+    release_descriptor_asset_name="ForgePlatformInstallerReleaseDescriptor.json",
+    release_trust_configuration_sha256=RELEASE_TRUST_CONFIGURATION_SHA256,
     signature_algorithm="ed25519",
     signature_key_ids=("release-key-001",),
     signature_threshold=1,
+)
+PROVENANCE_SHA256 = canonical_release_provenance_sha256(
+    installer_version="0.1.0",
+    channel="stable",
+    release_sequence=RELEASE_SEQUENCE,
+    source_revision=SOURCE_SHA,
+    policy_revision=POLICY_REVISION,
+    release_trust_configuration_sha256=RELEASE_TRUST_CONFIGURATION_SHA256,
+    capabilities=tuple(CAPABILITIES),
 )
 
 
@@ -115,6 +149,157 @@ class VerifyInstallerReleaseEvidenceTests(unittest.TestCase):
             self.assertNotEqual(result.returncode, 0)
             self.assertIn("requested installer release context", result.stderr)
 
+    def test_rejects_github_release_and_asset_name_injection(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            workspace = Path(temporary)
+            operation_path, descriptor_path, archive = self._write_release_inputs(workspace)
+            descriptor = json.loads(descriptor_path.read_text(encoding="utf-8"))
+            descriptor["github_release"]["tag"] = "other-release"
+            descriptor_path.write_text(json.dumps(descriptor), encoding="utf-8")
+
+            result = self._run(operation_path, descriptor_path, archive)
+
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("GitHub release identity", result.stderr)
+
+            descriptor["github_release"]["tag"] = "forge-platform-installer-v0.1.0"
+            descriptor["installer"]["assets"][0]["asset_name"] = "../untrusted.zip"
+            descriptor_path.write_text(json.dumps(descriptor), encoding="utf-8")
+            result = self._run(operation_path, descriptor_path, archive)
+
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("asset name", result.stderr)
+
+    def test_rejects_a_descriptor_file_not_named_as_its_canonical_github_asset(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            workspace = Path(temporary)
+            operation_path, descriptor_path, archive = self._write_release_inputs(workspace)
+            wrong_name = workspace / "installer-release-descriptor.json"
+            descriptor_path.rename(wrong_name)
+
+            result = self._run(operation_path, wrong_name, archive)
+
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("canonical GitHub descriptor asset name", result.stderr)
+
+    def test_rejects_oversized_or_irregular_cli_evidence_before_parsing(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            workspace = Path(temporary)
+            operation_path, descriptor_path, archive = self._write_release_inputs(workspace)
+            descriptor_path.write_bytes(b"x" * ((128 * 1024) + 1))
+
+            result = self._run(operation_path, descriptor_path, archive)
+
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("installer release descriptor has an unsupported size", result.stderr)
+
+            operation_path, descriptor_path, archive = self._write_release_inputs(workspace / "irregular")
+            operation_path.unlink()
+            operation_path.mkdir()
+            result = self._run(operation_path, descriptor_path, archive)
+
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("installer release operation must be a regular file", result.stderr)
+
+    def test_rejects_trust_provenance_and_qualified_code_directory_mismatch(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            workspace = Path(temporary)
+            operation_path, descriptor_path, archive = self._write_release_inputs(workspace)
+            descriptor = json.loads(descriptor_path.read_text(encoding="utf-8"))
+            descriptor["installer"]["release_trust_configuration_sha256"] = "f" * 64
+            descriptor_path.write_text(json.dumps(descriptor), encoding="utf-8")
+
+            result = self._run(operation_path, descriptor_path, archive)
+
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("release trust configuration", result.stderr)
+
+            descriptor["installer"]["release_trust_configuration_sha256"] = RELEASE_TRUST_CONFIGURATION_SHA256
+            descriptor["installer"]["provenance_sha256"] = "f" * 64
+            descriptor_path.write_text(json.dumps(descriptor), encoding="utf-8")
+            result = self._run(operation_path, descriptor_path, archive)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("provenance digest", result.stderr)
+
+            descriptor["installer"]["provenance_sha256"] = PROVENANCE_SHA256
+            descriptor["installer"]["assets"][0]["code_directory_sha256"] = "f" * 64
+            descriptor_path.write_text(json.dumps(descriptor), encoding="utf-8")
+            result = self._run(operation_path, descriptor_path, archive)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("CodeDirectory", result.stderr)
+
+    def test_rejects_a_self_consistent_bundled_v2_trust_for_another_repository(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            workspace = Path(temporary)
+            operation_path, descriptor_path, archive = self._write_release_inputs(workspace)
+            self._replace_archive_provenance_and_rebind_archive_digest(
+                operation_path,
+                descriptor_path,
+                archive,
+                self._provenance_payload(),
+                trust=self._trust_payload(repository="other/forge-platform"),
+            )
+
+            result = self._run(operation_path, descriptor_path, archive)
+
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("archive trust configuration", result.stderr)
+
+    def test_rejects_a_self_consistent_bundled_provenance_for_other_source_sequence_or_policy(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            workspace = Path(temporary)
+            operation_path, descriptor_path, archive = self._write_release_inputs(workspace)
+            self._replace_archive_provenance_and_rebind_archive_digest(
+                operation_path,
+                descriptor_path,
+                archive,
+                self._provenance_payload(source_revision="b" * 40),
+            )
+
+            result = self._run(operation_path, descriptor_path, archive)
+
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("archive provenance digest", result.stderr)
+
+    def test_rejects_a_symlinked_app_root_before_reading_bundled_provenance(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            workspace = Path(temporary)
+            operation_path, descriptor_path, archive = self._write_release_inputs(workspace)
+            self._replace_archive_provenance_and_rebind_archive_digest(
+                operation_path,
+                descriptor_path,
+                archive,
+                self._provenance_payload(),
+                symlinked_app_root=True,
+            )
+
+            result = self._run(operation_path, descriptor_path, archive)
+
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("ancestor must be a directory, never a symlink", result.stderr)
+
+            operation_path, descriptor_path, archive = self._write_release_inputs(workspace / "other-sequence")
+            self._replace_archive_provenance_and_rebind_archive_digest(
+                operation_path,
+                descriptor_path,
+                archive,
+                self._provenance_payload(release_sequence=RELEASE_SEQUENCE + 1),
+            )
+            result = self._run(operation_path, descriptor_path, archive)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("archive provenance digest", result.stderr)
+
+            operation_path, descriptor_path, archive = self._write_release_inputs(workspace / "other-policy")
+            self._replace_archive_provenance_and_rebind_archive_digest(
+                operation_path,
+                descriptor_path,
+                archive,
+                self._provenance_payload(policy_revision="forge-platform-installer-release-v2"),
+            )
+            result = self._run(operation_path, descriptor_path, archive)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("archive provenance digest", result.stderr)
+
     def test_rejects_opaque_or_untrusted_descriptor_signature_envelopes(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             workspace = Path(temporary)
@@ -170,12 +355,20 @@ class VerifyInstallerReleaseEvidenceTests(unittest.TestCase):
                 "0.1.0",
                 "--channel",
                 "stable",
+                "--release-sequence",
+                str(RELEASE_SEQUENCE),
                 "--policy-revision",
                 expected_policy_revision,
+                "--provenance-sha256",
+                PROVENANCE_SHA256,
+                "--release-trust-configuration-sha256",
+                RELEASE_TRUST_CONFIGURATION_SHA256,
                 "--github-repository",
                 expected_github_repository,
                 "--release-tag",
                 expected_release_tag,
+                "--descriptor-asset-name",
+                IDENTITY.release_descriptor_asset_name,
                 "--bundle-identifier",
                 expected_bundle_identifier,
                 "--team-identifier",
@@ -190,30 +383,171 @@ class VerifyInstallerReleaseEvidenceTests(unittest.TestCase):
         )
 
     @staticmethod
+    def _provenance_payload(
+        *,
+        installer_version: str = "0.1.0",
+        channel: str = "stable",
+        release_sequence: int = RELEASE_SEQUENCE,
+        source_revision: str = SOURCE_SHA,
+        policy_revision: str = POLICY_REVISION,
+        release_trust_configuration_sha256: str = RELEASE_TRUST_CONFIGURATION_SHA256,
+        capabilities: list[str] | None = None,
+    ) -> dict[str, object]:
+        selected_capabilities = CAPABILITIES if capabilities is None else capabilities
+        return {
+            "schema_version": 1,
+            "provenance_sha256": canonical_release_provenance_sha256(
+                installer_version=installer_version,
+                channel=channel,
+                release_sequence=release_sequence,
+                source_revision=source_revision,
+                policy_revision=policy_revision,
+                release_trust_configuration_sha256=release_trust_configuration_sha256,
+                capabilities=tuple(selected_capabilities),
+            ),
+            "installer_version": installer_version,
+            "channel": channel,
+            "release_sequence": release_sequence,
+            "source_revision": source_revision,
+            "policy_revision": policy_revision,
+            "capabilities": selected_capabilities,
+            "release_trust_configuration_sha256": release_trust_configuration_sha256,
+        }
+
+    @staticmethod
+    def _trust_payload(
+        *,
+        repository: str = IDENTITY.github_repository,
+        release_descriptor_asset_name: str = IDENTITY.release_descriptor_asset_name,
+        expected_bundle_identifier: str = IDENTITY.bundle_identifier,
+        expected_team_identifier: str = IDENTITY.team_identifier,
+        signature_threshold: int = IDENTITY.signature_threshold,
+        ed25519_public_keys: tuple[tuple[str, str], ...] = TRUST_PUBLIC_KEYS,
+    ) -> dict[str, object]:
+        return {
+            "schema_version": 2,
+            "configuration_sha256": canonical_release_trust_configuration_sha256(
+                repository=repository,
+                release_descriptor_locator="github-release-asset-v1",
+                release_descriptor_asset_name=release_descriptor_asset_name,
+                expected_bundle_identifier=expected_bundle_identifier,
+                expected_team_identifier=expected_team_identifier,
+                signature_threshold=signature_threshold,
+                ed25519_public_keys=ed25519_public_keys,
+            ),
+            "repository": repository,
+            "release_descriptor_locator": "github-release-asset-v1",
+            "release_descriptor_asset_name": release_descriptor_asset_name,
+            "expected_bundle_identifier": expected_bundle_identifier,
+            "expected_team_identifier": expected_team_identifier,
+            "signature_threshold": signature_threshold,
+            "ed25519_public_keys": [
+                {"key_id": key_id, "public_key_base64": public_key_base64}
+                for key_id, public_key_base64 in ed25519_public_keys
+            ],
+        }
+
+    @staticmethod
+    def _write_archive(
+        archive: Path,
+        provenance: dict[str, object],
+        *,
+        trust: dict[str, object] | None = None,
+        symlinked_app_root: bool = False,
+    ) -> None:
+        archive.parent.mkdir(parents=True, exist_ok=True)
+        with zipfile.ZipFile(archive, "w", compression=zipfile.ZIP_DEFLATED) as bundle:
+            if symlinked_app_root:
+                app_root = zipfile.ZipInfo("ForgePlatformInstaller.app")
+                app_root.create_system = 3
+                app_root.external_attr = (0o120777 << 16)
+                bundle.writestr(app_root, b"outside-app-root")
+            bundle.writestr(
+                "ForgePlatformInstaller.app/Contents/Resources/ForgePlatformInstallerReleaseTrust.json",
+                json.dumps(
+                    VerifyInstallerReleaseEvidenceTests._trust_payload() if trust is None else trust,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                    allow_nan=False,
+                ).encode("utf-8"),
+            )
+            bundle.writestr(
+                "ForgePlatformInstaller.app/Contents/Resources/ForgePlatformInstallerReleaseProvenance.json",
+                json.dumps(provenance, sort_keys=True, separators=(",", ":"), allow_nan=False).encode("utf-8"),
+            )
+
+    @staticmethod
+    def _replace_archive_provenance_and_rebind_archive_digest(
+        operation_path: Path,
+        descriptor_path: Path,
+        archive: Path,
+        provenance: dict[str, object],
+        *,
+        trust: dict[str, object] | None = None,
+        symlinked_app_root: bool = False,
+    ) -> None:
+        """Keep archive bytes/evidence self-consistent except for V1 binding."""
+
+        VerifyInstallerReleaseEvidenceTests._write_archive(
+            archive,
+            provenance,
+            trust=trust,
+            symlinked_app_root=symlinked_app_root,
+        )
+        archive_digest = "sha256:" + sha256(archive.read_bytes()).hexdigest()
+        descriptor = json.loads(descriptor_path.read_text(encoding="utf-8"))
+        descriptor["installer"]["assets"][0]["digest"] = archive_digest
+        descriptor_raw = json.dumps(descriptor, sort_keys=True, separators=(",", ":"), allow_nan=False).encode("utf-8")
+        descriptor_path.write_bytes(descriptor_raw)
+        descriptor_digest = "sha256:" + sha256(descriptor_raw).hexdigest()
+        operation = json.loads(operation_path.read_text(encoding="utf-8"))
+        operation["preparation"]["candidate_archives"]["arm64"] = archive_digest
+        operation["archives"]["arm64"] = archive_digest
+        operation["descriptor_digest"] = descriptor_digest
+        operation["qualification"]["candidate_archives"]["arm64"] = archive_digest
+        operation["qualification"]["archives"]["arm64"] = archive_digest
+        operation["qualification"]["descriptor_digest"] = descriptor_digest
+        operation_path.write_text(
+            json.dumps(operation, sort_keys=True, separators=(",", ":"), allow_nan=False),
+            encoding="utf-8",
+        )
+
+    @staticmethod
     def _write_release_inputs(workspace: Path) -> tuple[Path, Path, Path]:
         archive = workspace / "ForgePlatformInstaller-macos-arm64.zip"
-        archive.write_bytes(b"exact macOS installer app archive")
+        VerifyInstallerReleaseEvidenceTests._write_archive(
+            archive,
+            VerifyInstallerReleaseEvidenceTests._provenance_payload(),
+        )
         archive_digest = "sha256:" + sha256(archive.read_bytes()).hexdigest()
         descriptor = {
             "schema": "forge-platform.installer-release/v1",
-            "sequence": 1,
+            "sequence": RELEASE_SEQUENCE,
             "channel": "stable",
             "published_at": "2026-09-09T00:00:00Z",
             "expires_at": "2026-10-09T00:00:00Z",
+            "github_release": {
+                "repository": IDENTITY.github_repository,
+                "tag": "forge-platform-installer-v0.1.0",
+                "descriptor_asset_name": IDENTITY.release_descriptor_asset_name,
+            },
             "installer": {
                         "version": "0.1.0",
                         "source_revision": SOURCE_SHA,
                         "policy_revision": POLICY_REVISION,
+                        "release_trust_configuration_sha256": RELEASE_TRUST_CONFIGURATION_SHA256,
+                        "provenance_sha256": PROVENANCE_SHA256,
                         "capabilities": CAPABILITIES,
                 "assets": [
                     {
                         "operating_system": "macos",
                         "architecture": "arm64",
-                        "url": "https://github.com/example/forge-platform/releases/download/forge-platform-installer-v0.1.0/ForgePlatformInstaller-macos-arm64.zip",
+                        "asset_name": "ForgePlatformInstaller-macos-arm64.zip",
                         "digest": archive_digest,
                         "bundle_identifier": IDENTITY.bundle_identifier,
                         "team_identifier": IDENTITY.team_identifier,
-                        "notarization_evidence": "notarization-reference",
+                        "code_directory_sha256": CODE_DIRECTORY_SHA256,
+                        "notarization_receipt_reference": NOTARIZATION_RECEIPT_REFERENCE,
                     }
                 ],
             },
@@ -222,7 +556,7 @@ class VerifyInstallerReleaseEvidenceTests(unittest.TestCase):
             },
             "signatures": [dict(SIGNATURE_ENVELOPE)],
         }
-        descriptor_path = workspace / "installer-release-descriptor.json"
+        descriptor_path = workspace / IDENTITY.release_descriptor_asset_name
         descriptor_path.write_bytes(
             json.dumps(descriptor, sort_keys=True, separators=(",", ":"), allow_nan=False).encode("utf-8")
         )
@@ -230,18 +564,25 @@ class VerifyInstallerReleaseEvidenceTests(unittest.TestCase):
         qualification = InstallerQualificationEvidence(
             source_revision=SOURCE_SHA,
             policy_revision=POLICY_REVISION,
+            release_sequence=RELEASE_SEQUENCE,
+            provenance_sha256=PROVENANCE_SHA256,
+            release_trust_configuration_sha256=RELEASE_TRUST_CONFIGURATION_SHA256,
             candidate_manifest_digest=CANDIDATE_MANIFEST_DIGEST,
             candidate_archives={"arm64": archive_digest},
             descriptor_digest=descriptor_digest,
             archives={"arm64": archive_digest},
+            archive_code_directory_sha256={"arm64": CODE_DIRECTORY_SHA256},
+            archive_notarization_receipt_references={"arm64": NOTARIZATION_RECEIPT_REFERENCE},
             qualification_receipt_reference="receipt:protected-signing-qualification-001",
         )
         operation = InstallerReleaseOperation.create(
             operation_id="installer-release-0001",
             installer_version="0.1.0",
             channel="stable",
+            release_sequence=RELEASE_SEQUENCE,
             source_revision=SOURCE_SHA,
             policy_revision=POLICY_REVISION,
+            provenance_sha256=PROVENANCE_SHA256,
             release_identity=IDENTITY,
             capabilities=CAPABILITIES,
             preparation=InstallerPreparationEvidence(

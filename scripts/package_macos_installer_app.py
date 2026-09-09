@@ -11,10 +11,7 @@ distributed.
 from __future__ import annotations
 
 import argparse
-import base64
 from dataclasses import dataclass
-import hashlib
-import json
 import os
 from pathlib import Path
 import plistlib
@@ -23,21 +20,26 @@ import shutil
 import stat
 import sys
 
+
+ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
 from validate_installer_version import load_manifest
+from forge_platform.installer_release_provenance import (
+    INSTALLER_RELEASE_PROVENANCE_MAXIMUM_BYTES,
+    INSTALLER_RELEASE_PROVENANCE_RESOURCE_NAME,
+    parse_installer_release_provenance_bytes,
+)
+from forge_platform.installer_release_trust import (
+    INSTALLER_RELEASE_TRUST_MAXIMUM_BYTES,
+    INSTALLER_RELEASE_TRUST_RESOURCE_NAME,
+    parse_installer_release_trust_bytes,
+)
 
 
 _BUNDLE_IDENTIFIER = re.compile(r"^[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)+$")
-_GITHUB_REPOSITORY = re.compile(r"^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$")
-_TRUST_KEY_ID = re.compile(r"^[a-z0-9][a-z0-9._-]{0,127}$")
-_DESCRIPTOR_ASSET_NAME = re.compile(r"^[A-Za-z0-9._-]{1,123}\.json$")
-_TEAM_IDENTIFIER = re.compile(r"^[A-Z0-9]{10}$")
-_SHA256 = re.compile(r"^[0-9a-f]{64}$")
 _MINIMUM_MACOS = "14.0"
-_SEALED_RELEASE_TRUST_RESOURCE_NAME = "ForgePlatformInstallerReleaseTrust.json"
-_SEALED_RELEASE_TRUST_MAXIMUM_BYTES = 32 * 1024
-_SEALED_RELEASE_TRUST_SCHEMA_VERSION = 2
-_GITHUB_RELEASE_ASSET_LOCATOR = "github-release-asset-v1"
-_MAXIMUM_ED25519_PUBLIC_KEYS = 16
 
 
 @dataclass(frozen=True)
@@ -51,53 +53,37 @@ class SealedReleaseTrustResource:
 
     source: Path
     contents: bytes
+    configuration_sha256: str
+    repository: str
+    release_descriptor_locator: str
+    release_descriptor_asset_name: str
+    expected_bundle_identifier: str
+    expected_team_identifier: str
+    signature_threshold: int
+    signature_key_ids: tuple[str, ...]
 
 
-def _strict_json_object(pairs: list[tuple[object, object]]) -> dict[str, object]:
-    value: dict[str, object] = {}
-    for key, member in pairs:
-        if not isinstance(key, str) or key in value:
-            raise ValueError("sealed release trust resource has duplicate or invalid JSON keys")
-        value[key] = member
-    return value
+@dataclass(frozen=True)
+class SealedReleaseProvenanceResource:
+    """Validated, non-secret bytes for the app's immutable release provenance.
 
-
-def _reject_json_constant(value: str) -> None:
-    raise ValueError(f"sealed release trust resource contains unsupported JSON constant {value}")
-
-
-def _canonical_release_trust_digest(
-    *,
-    repository: str,
-    release_descriptor_locator: str,
-    release_descriptor_asset_name: str,
-    expected_bundle_identifier: str,
-    expected_team_identifier: str,
-    signature_threshold: int,
-    ed25519_public_keys: list[tuple[str, str]],
-) -> str:
-    """Return the public V2 NUL-delimited canonical configuration digest.
-
-    This order exactly matches
-    ``SealedInstallerReleaseTrustConfiguration.canonicalSHA256`` in Swift.
-    Callers establish strict key-ID ordering before requesting a digest.
+    The provenance file is packaged before code signing and deliberately does
+    not contain a final descriptor digest: that descriptor is created only
+    after the signed archive has an exact digest.  The later signed descriptor
+    binds this resource's semantic digest instead, avoiding a code-signing
+    circularity while preserving exact current-bundle provenance.
     """
 
-    canonical_fields = [
-        "forge-platform-installer-release-trust-v2",
-        "schema_version=2",
-        f"repository={repository}",
-        f"release_descriptor_locator={release_descriptor_locator}",
-        f"release_descriptor_asset_name={release_descriptor_asset_name}",
-        f"expected_bundle_identifier={expected_bundle_identifier}",
-        f"expected_team_identifier={expected_team_identifier}",
-        f"signature_threshold={signature_threshold}",
-        f"ed25519_public_key_count={len(ed25519_public_keys)}",
-    ]
-    for key_id, public_key_base64 in ed25519_public_keys:
-        canonical_fields.append(f"ed25519_public_key_id={key_id}")
-        canonical_fields.append(f"ed25519_public_key_base64={public_key_base64}")
-    return hashlib.sha256("\0".join(canonical_fields).encode("utf-8")).hexdigest()
+    source: Path
+    contents: bytes
+    provenance_sha256: str
+    installer_version: str
+    channel: str
+    release_sequence: int
+    source_revision: str
+    policy_revision: str
+    capabilities: tuple[str, ...]
+    release_trust_configuration_sha256: str
 
 
 def _read_regular_non_symlink_file(value: str, *, description: str, maximum_bytes: int) -> tuple[Path, bytes]:
@@ -108,13 +94,7 @@ def _read_regular_non_symlink_file(value: str, *, description: str, maximum_byte
     symlink and retaining the exact bytes that were validated.
     """
 
-    supplied = Path(value).expanduser()
-    if supplied.is_symlink():
-        raise ValueError(f"{description} must not be selected through a symlink")
-    try:
-        source = supplied.resolve(strict=True)
-    except FileNotFoundError as error:
-        raise ValueError(f"{description} does not exist") from error
+    source = _normalized_non_symlink_leaf(value, description=description)
     flags = os.O_RDONLY
     if hasattr(os, "O_NOFOLLOW"):
         flags |= os.O_NOFOLLOW
@@ -151,34 +131,34 @@ def _read_regular_non_symlink_file(value: str, *, description: str, maximum_byte
             os.close(descriptor)
 
 
-def _source_executable(value: str) -> Path:
+def _normalized_non_symlink_leaf(value: str, *, description: str) -> Path:
+    """Resolve only ancestors, leaving the selected leaf for ``O_NOFOLLOW``.
+
+    Resolving the complete path would follow a leaf swapped to a symlink in
+    the small interval between the initial check and the open. This form still
+    normalizes macOS ancestor aliases such as ``/tmp`` and ``/private/tmp``.
+    """
+
     supplied = Path(value).expanduser()
     if supplied.is_symlink():
-        raise ValueError("installer executable must not be selected through a symlink")
-    candidate = supplied.resolve(strict=True)
+        raise ValueError(f"{description} must not be selected through a symlink")
+    try:
+        parent = supplied.parent.resolve(strict=True)
+    except FileNotFoundError as error:
+        raise ValueError(f"{description} does not exist") from error
+    source = parent / supplied.name
+    if source.is_symlink():
+        raise ValueError(f"{description} must not be selected through a symlink")
+    return source
+
+
+def _source_executable(value: str) -> Path:
+    candidate = _normalized_non_symlink_leaf(value, description="installer executable")
     if not candidate.is_file():
         raise ValueError("installer executable must be a regular non-symlink file")
     if not os.access(candidate, os.X_OK):
         raise ValueError("installer executable must be executable")
     return candidate
-
-
-def _validated_ed25519_public_key(value: object) -> tuple[str, str]:
-    if not isinstance(value, dict) or set(value) != {"key_id", "public_key_base64"}:
-        raise ValueError("sealed release trust resource has invalid public key fields")
-    key_id = value["key_id"]
-    public_key_base64 = value["public_key_base64"]
-    if not isinstance(key_id, str) or _TRUST_KEY_ID.fullmatch(key_id) is None:
-        raise ValueError("sealed release trust resource public key ID is invalid")
-    if not isinstance(public_key_base64, str):
-        raise ValueError("sealed release trust resource public key is invalid")
-    try:
-        raw_public_key = base64.b64decode(public_key_base64, validate=True)
-    except (ValueError, UnicodeEncodeError) as error:
-        raise ValueError("sealed release trust resource public key is invalid") from error
-    if len(raw_public_key) != 32 or base64.b64encode(raw_public_key).decode("ascii") != public_key_base64:
-        raise ValueError("sealed release trust resource public key is invalid")
-    return key_id, public_key_base64
 
 
 def _sealed_release_trust_resource(value: str) -> SealedReleaseTrustResource:
@@ -190,93 +170,83 @@ def _sealed_release_trust_resource(value: str) -> SealedReleaseTrustResource:
     source, contents = _read_regular_non_symlink_file(
         value,
         description="sealed release trust resource",
-        maximum_bytes=_SEALED_RELEASE_TRUST_MAXIMUM_BYTES,
+        maximum_bytes=INSTALLER_RELEASE_TRUST_MAXIMUM_BYTES,
     )
-    try:
-        parsed = json.loads(
-            contents.decode("utf-8"),
-            object_pairs_hook=_strict_json_object,
-            parse_constant=_reject_json_constant,
-        )
-    except (UnicodeDecodeError, ValueError, json.JSONDecodeError) as error:
-        raise ValueError("sealed release trust resource is not strict UTF-8 JSON") from error
+    return _validated_sealed_release_trust_resource(source, contents)
 
-    expected_fields = {
-        "schema_version",
-        "configuration_sha256",
-        "repository",
-        "release_descriptor_locator",
-        "release_descriptor_asset_name",
-        "expected_bundle_identifier",
-        "expected_team_identifier",
-        "signature_threshold",
-        "ed25519_public_keys",
-    }
-    if not isinstance(parsed, dict) or set(parsed) != expected_fields:
-        # Exact fields deliberately reject private keys, credentials, URLs,
-        # transport configuration, product authority and every implicit trust
-        # input. The descriptor remains public policy only.
-        raise ValueError("sealed release trust resource has unsupported or missing fields")
 
-    schema_version = parsed["schema_version"]
-    configuration_sha256 = parsed["configuration_sha256"]
-    repository = parsed["repository"]
-    release_descriptor_locator = parsed["release_descriptor_locator"]
-    release_descriptor_asset_name = parsed["release_descriptor_asset_name"]
-    expected_bundle_identifier = parsed["expected_bundle_identifier"]
-    expected_team_identifier = parsed["expected_team_identifier"]
-    signature_threshold = parsed["signature_threshold"]
-    public_key_values = parsed["ed25519_public_keys"]
+def _validated_sealed_release_trust_resource(
+    source: Path,
+    contents: bytes,
+) -> SealedReleaseTrustResource:
+    """Revalidate captured V2 bytes before they become a bundle resource.
 
-    if type(schema_version) is not int or schema_version != _SEALED_RELEASE_TRUST_SCHEMA_VERSION:
-        raise ValueError("sealed release trust resource schema version is unsupported")
-    if not isinstance(configuration_sha256, str) or _SHA256.fullmatch(configuration_sha256) is None:
-        raise ValueError("sealed release trust resource configuration digest is invalid")
-    if not isinstance(repository, str) or _GITHUB_REPOSITORY.fullmatch(repository) is None:
-        raise ValueError("sealed release trust resource repository is invalid")
-    if release_descriptor_locator != _GITHUB_RELEASE_ASSET_LOCATOR:
-        raise ValueError("sealed release trust resource descriptor locator is unsupported")
-    if (
-        not isinstance(release_descriptor_asset_name, str)
-        or _DESCRIPTOR_ASSET_NAME.fullmatch(release_descriptor_asset_name) is None
-    ):
-        raise ValueError("sealed release trust resource descriptor asset name is invalid")
-    if (
-        not isinstance(expected_bundle_identifier, str)
-        or _BUNDLE_IDENTIFIER.fullmatch(expected_bundle_identifier) is None
-    ):
-        raise ValueError("sealed release trust resource expected bundle identifier is invalid")
-    if not isinstance(expected_team_identifier, str) or _TEAM_IDENTIFIER.fullmatch(expected_team_identifier) is None:
-        raise ValueError("sealed release trust resource expected team identifier is invalid")
-    if type(signature_threshold) is not int or signature_threshold <= 0:
-        raise ValueError("sealed release trust resource signature threshold is invalid")
-    if not isinstance(public_key_values, list) or not public_key_values:
-        raise ValueError("sealed release trust resource must contain public keys")
-    if len(public_key_values) > _MAXIMUM_ED25519_PUBLIC_KEYS:
-        raise ValueError("sealed release trust resource contains too many public keys")
+    ``package`` is also a library API.  Its public dataclass parameter must
+    not turn a manually constructed object into a way around the strict CLI
+    parser; therefore the bytes are always parsed again at the final write
+    boundary.
+    """
 
-    public_keys = [_validated_ed25519_public_key(public_key) for public_key in public_key_values]
-    key_ids = [key_id for key_id, _ in public_keys]
-    public_key_bytes = [public_key_base64 for _, public_key_base64 in public_keys]
-    if len(set(key_ids)) != len(key_ids) or len(set(public_key_bytes)) != len(public_key_bytes):
-        raise ValueError("sealed release trust resource public keys must be unique")
-    if key_ids != sorted(key_ids):
-        raise ValueError("sealed release trust resource public keys must be strictly ordered by key ID")
-    if signature_threshold > len(public_keys):
-        raise ValueError("sealed release trust resource signature threshold exceeds public keys")
-
-    expected_digest = _canonical_release_trust_digest(
-        repository=repository,
-        release_descriptor_locator=release_descriptor_locator,
-        release_descriptor_asset_name=release_descriptor_asset_name,
-        expected_bundle_identifier=expected_bundle_identifier,
-        expected_team_identifier=expected_team_identifier,
-        signature_threshold=signature_threshold,
-        ed25519_public_keys=public_keys,
+    trust = parse_installer_release_trust_bytes(
+        contents,
+        label="sealed release trust resource",
     )
-    if configuration_sha256 != expected_digest:
-        raise ValueError("sealed release trust resource configuration digest does not match its fields")
-    return SealedReleaseTrustResource(source=source, contents=contents)
+    return SealedReleaseTrustResource(
+        source=source,
+        contents=contents,
+        configuration_sha256=trust.configuration_sha256,
+        repository=trust.repository,
+        release_descriptor_locator=trust.release_descriptor_locator,
+        release_descriptor_asset_name=trust.release_descriptor_asset_name,
+        expected_bundle_identifier=trust.expected_bundle_identifier,
+        expected_team_identifier=trust.expected_team_identifier,
+        signature_threshold=trust.signature_threshold,
+        signature_key_ids=trust.signature_key_ids,
+    )
+
+
+def _sealed_release_provenance_resource(value: str) -> SealedReleaseProvenanceResource:
+    """Validate the exact public V1 provenance resource copied into the app.
+
+    It intentionally has no URL, private key, credential, raw descriptor
+    bytes, final archive digest, or post-signing CodeDirectory hash.  Those
+    facts are supplied only by the later protected qualification path and bind
+    this resource's stable semantic digest.
+    """
+
+    supplied = Path(value).expanduser()
+    if supplied.suffix != ".json":
+        raise ValueError("sealed release provenance resource must have a .json filename")
+    source, contents = _read_regular_non_symlink_file(
+        value,
+        description="sealed release provenance resource",
+        maximum_bytes=INSTALLER_RELEASE_PROVENANCE_MAXIMUM_BYTES,
+    )
+    return _validated_sealed_release_provenance_resource(source, contents)
+
+
+def _validated_sealed_release_provenance_resource(
+    source: Path,
+    contents: bytes,
+) -> SealedReleaseProvenanceResource:
+    """Revalidate captured V1 bytes at the public packager API boundary."""
+
+    provenance = parse_installer_release_provenance_bytes(
+        contents,
+        label="sealed release provenance resource",
+    )
+    return SealedReleaseProvenanceResource(
+        source=source,
+        contents=contents,
+        provenance_sha256=provenance.provenance_sha256,
+        installer_version=provenance.installer_version,
+        channel=provenance.channel,
+        release_sequence=provenance.release_sequence,
+        source_revision=provenance.source_revision,
+        policy_revision=provenance.policy_revision,
+        capabilities=provenance.capabilities,
+        release_trust_configuration_sha256=provenance.release_trust_configuration_sha256,
+    )
 
 
 def _output_bundle(value: str) -> Path:
@@ -305,13 +275,72 @@ def package(
     output: Path,
     bundle_identifier: str,
     sealed_release_trust: SealedReleaseTrustResource | None = None,
+    sealed_release_provenance: SealedReleaseProvenanceResource | None = None,
 ) -> None:
-    """Lay out an unsigned app bundle without replacing an existing target."""
+    """Lay out an unsigned app bundle without replacing an existing target.
+
+    This public API repeats every path and identifier admission check performed
+    by the CLI.  A caller must not be able to bypass the no-symlink executable
+    rule merely by constructing ``Path`` or resource dataclasses directly.
+    """
+
+    executable = _source_executable(str(executable))
+    output = _output_bundle(str(output))
+    bundle_identifier = _bundle_identifier(bundle_identifier)
+
+    if sealed_release_trust is not None:
+        sealed_release_trust = _validated_sealed_release_trust_resource(
+            sealed_release_trust.source,
+            sealed_release_trust.contents,
+        )
+    if sealed_release_provenance is not None:
+        sealed_release_provenance = _validated_sealed_release_provenance_resource(
+            sealed_release_provenance.source,
+            sealed_release_provenance.contents,
+        )
+
+    if (sealed_release_trust is None) != (sealed_release_provenance is None):
+        raise ValueError(
+            "released installer packaging requires both sealed release trust and provenance resources"
+        )
+    if (
+        sealed_release_trust is not None
+        and sealed_release_provenance is not None
+        and sealed_release_trust.configuration_sha256
+        != sealed_release_provenance.release_trust_configuration_sha256
+    ):
+        raise ValueError(
+            "sealed release provenance trust configuration digest does not match the bundled release trust resource"
+        )
+    if (
+        sealed_release_trust is not None
+        and sealed_release_trust.expected_bundle_identifier != bundle_identifier
+    ):
+        raise ValueError(
+            "sealed release trust resource bundle identifier does not match the packaged app"
+        )
 
     manifest = load_manifest()
     version = manifest["version"]
     if not isinstance(version, str):  # The manifest validator establishes this.
         raise RuntimeError("installer version manifest returned an invalid version")
+    manifest_channel = manifest["channel"]
+    manifest_capabilities = manifest["capabilities"]
+    if not isinstance(manifest_channel, str) or not isinstance(manifest_capabilities, list):
+        raise RuntimeError("installer version manifest returned invalid release projections")
+    if sealed_release_provenance is not None:
+        if sealed_release_provenance.installer_version != version:
+            raise ValueError(
+                "sealed release provenance installer version does not match the packaged app"
+            )
+        if sealed_release_provenance.channel != manifest_channel:
+            raise ValueError(
+                "sealed release provenance channel does not match the packaged app"
+            )
+        if sealed_release_provenance.capabilities != tuple(sorted(manifest_capabilities)):
+            raise ValueError(
+                "sealed release provenance capabilities do not match the packaged app"
+            )
 
     contents = output / "Contents"
     macos = contents / "MacOS"
@@ -346,12 +375,18 @@ def package(
         with info_plist.open("wb") as stream:
             plistlib.dump(metadata, stream, fmt=plistlib.FMT_XML, sort_keys=True)
         info_plist.chmod(0o644)
-        if sealed_release_trust is not None:
+        if sealed_release_trust is not None or sealed_release_provenance is not None:
             resources.mkdir(mode=0o755)
-            trust_destination = resources / _SEALED_RELEASE_TRUST_RESOURCE_NAME
+        if sealed_release_trust is not None:
+            trust_destination = resources / INSTALLER_RELEASE_TRUST_RESOURCE_NAME
             with trust_destination.open("xb") as stream:
                 stream.write(sealed_release_trust.contents)
             trust_destination.chmod(0o644)
+        if sealed_release_provenance is not None:
+            provenance_destination = resources / INSTALLER_RELEASE_PROVENANCE_RESOURCE_NAME
+            with provenance_destination.open("xb") as stream:
+                stream.write(sealed_release_provenance.contents)
+            provenance_destination.chmod(0o644)
     except BaseException:
         # The output path was required to be new and is therefore the sole
         # operation-owned cleanup target on failure.
@@ -369,7 +404,14 @@ def main() -> None:
         "--sealed-release-trust-resource",
         help=(
             "explicit public V2 JSON trust descriptor to copy verbatim to "
-            f"Contents/Resources/{_SEALED_RELEASE_TRUST_RESOURCE_NAME}"
+            f"Contents/Resources/{INSTALLER_RELEASE_TRUST_RESOURCE_NAME}"
+        ),
+    )
+    parser.add_argument(
+        "--sealed-release-provenance-resource",
+        help=(
+            "explicit public V1 JSON release provenance to copy verbatim to "
+            f"Contents/Resources/{INSTALLER_RELEASE_PROVENANCE_RESOURCE_NAME}"
         ),
     )
     args = parser.parse_args()
@@ -382,17 +424,24 @@ def main() -> None:
             if args.sealed_release_trust_resource is not None
             else None
         )
+        sealed_release_provenance = (
+            _sealed_release_provenance_resource(args.sealed_release_provenance_resource)
+            if args.sealed_release_provenance_resource is not None
+            else None
+        )
         package(
             executable=executable,
             output=output,
             bundle_identifier=bundle_identifier,
             sealed_release_trust=sealed_release_trust,
+            sealed_release_provenance=sealed_release_provenance,
         )
         print(
             "INSTALLER_APP_BUNDLE=PASS"
             f" version={load_manifest()['version']}"
             f" bundle_identifier={bundle_identifier}"
             f" sealed_release_trust={'PACKAGED_V2' if sealed_release_trust is not None else 'ABSENT_FAIL_CLOSED'}"
+            f" sealed_release_provenance={'PACKAGED_V1' if sealed_release_provenance is not None else 'ABSENT_FAIL_CLOSED'}"
             " signing=UNSIGNED_CANDIDATE"
         )
     except (OSError, RuntimeError, ValueError) as error:

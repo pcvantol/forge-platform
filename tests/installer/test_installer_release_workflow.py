@@ -41,6 +41,10 @@ class InstallerReleaseWorkflowTests(unittest.TestCase):
             self.workflow,
         )
         self.assertIn("scripts/validate_installer_release_identity.py --require-ready", self.workflow)
+        self.assertIn("release_sequence:", self.workflow)
+        self.assertIn("provenance_sha256:", self.workflow)
+        self.assertIn("release_sequence must be a positive UInt64 decimal integer", self.workflow)
+        self.assertIn("provenance_sha256 must be a raw lowercase SHA-256 identity", self.workflow)
         self.assertIn("INSTALLER_RELEASE_POLICY_REVISION", self.workflow)
         self.assertIn("git fetch --no-tags origin +refs/heads/main:refs/remotes/origin/main", self.workflow)
         self.assertIn('test "$GITHUB_REPOSITORY" = "$IDENTITY_REPOSITORY"', self.workflow)
@@ -54,6 +58,8 @@ class InstallerReleaseWorkflowTests(unittest.TestCase):
         self.assertIn("ditto -c -k --sequesterRsrc --keepParent", self.workflow)
         self.assertIn("shasum -a 256", self.workflow)
         self.assertIn('"packaging": "UNSIGNED_APP_CANDIDATE"', self.workflow)
+        self.assertIn('"release_trust_configuration_sha256": os.environ["RELEASE_TRUST_CONFIGURATION_SHA256"]', self.workflow)
+        self.assertIn('"provenance_sha256": os.environ["PROVENANCE_SHA256"]', self.workflow)
         self.assertIn("scripts/prepare_installer_release_candidate.py", self.workflow)
         self.assertIn("installer-release-preparation.json", self.workflow)
         self.assertIn('--preparation-receipt-reference "receipt:installer-preparation-$OPERATION_ID"', self.workflow)
@@ -63,6 +69,7 @@ class InstallerReleaseWorkflowTests(unittest.TestCase):
         self.assertIn("name: forge-platform-installer-publication", self.workflow)
         self.assertIn("if: ${{ inputs.request_publication }}", self.workflow)
         self.assertIn("No protected Apple signing/notarization and descriptor-trust implementation is configured.", self.workflow)
+        self.assertIn("No protected cross-run installer release-operation/sequence store is configured.", self.workflow)
         self.assertIn("durable PREPARED candidate", self.workflow)
         self.assertIn("Refuse public GitHub Release publication until a protected publisher is implemented", self.workflow)
         self.assertIn("permissions:\n      contents: write", self.workflow)
@@ -74,15 +81,19 @@ class InstallerReleaseWorkflowTests(unittest.TestCase):
         refuse_index = self.workflow.index("Refuse public GitHub Release publication until a protected publisher is implemented")
         self.assertLess(verify_index, refuse_index)
         self.assertIn("signed-release-input/installer-release-operation.json", self.workflow)
-        self.assertIn("signed-release-input/installer-release-descriptor.json", self.workflow)
+        self.assertIn('--descriptor "signed-release-input/$DESCRIPTOR_ASSET_NAME"', self.workflow)
         self.assertIn('name: forge-platform-installer-signed-${{ needs.release-context.outputs.installer_version }}-${{ needs.release-context.outputs.source_sha }}', self.workflow)
         for flag in (
             '--operation-id "$OPERATION_ID"',
             '--installer-version "$INSTALLER_VERSION"',
             '--channel "$CHANNEL"',
+            '--release-sequence "$RELEASE_SEQUENCE"',
             '--policy-revision "$POLICY_REVISION"',
+            '--provenance-sha256 "$PROVENANCE_SHA256"',
+            '--release-trust-configuration-sha256 "$RELEASE_TRUST_CONFIGURATION_SHA256"',
             '--github-repository "$IDENTITY_GITHUB_REPOSITORY"',
             '--release-tag "$RELEASE_TAG"',
+            '--descriptor-asset-name "$DESCRIPTOR_ASSET_NAME"',
             '--bundle-identifier "$BUNDLE_IDENTIFIER"',
             '--team-identifier "$TEAM_IDENTIFIER"',
             '--asset-prefix "$ASSET_PREFIX"',

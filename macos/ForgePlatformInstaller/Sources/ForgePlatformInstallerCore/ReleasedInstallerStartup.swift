@@ -1,6 +1,7 @@
 import CryptoKit
 import Foundation
 import Security
+import Darwin
 
 /// One public Ed25519 descriptor-signing key embedded in the code-signed
 /// installer release.  It is intentionally a public 32-byte raw key, never a
@@ -183,6 +184,230 @@ public struct SealedInstallerReleaseTrustConfiguration: Equatable, Sendable {
     }
 }
 
+/// Public, code-signed provenance for one native installer release. This is a
+/// small immutable identity record: it contains neither a release transport,
+/// signing key, credential, component selection, service state, nor product
+/// installation authority. A future signed descriptor verifier can compare its
+/// independently verified provenance and V2 trust-configuration digests against
+/// this model, but is not implemented here.
+public struct SealedInstallerReleaseProvenance: Equatable, Sendable {
+    public static let schemaVersion = 1
+
+    public let provenanceSHA256: String
+    public let installerVersion: InstallerVersion
+    public let channel: InstallerReleaseChannel
+    public let releaseSequence: UInt64
+    public let sourceRevision: String
+    public let policyRevision: String
+    /// Strictly ascending, unique public capability identities.
+    public let capabilities: [String]
+    /// Canonical digest of the independently sealed V2 release-trust policy.
+    public let releaseTrustConfigurationSHA256: String
+
+    public init(
+        provenanceSHA256: String,
+        installerVersion: InstallerVersion,
+        channel: InstallerReleaseChannel,
+        releaseSequence: UInt64,
+        sourceRevision: String,
+        policyRevision: String,
+        capabilities: [String],
+        releaseTrustConfigurationSHA256: String
+    ) throws {
+        guard InstallerSelfUpdateValidation.isSHA256(provenanceSHA256),
+              releaseSequence > 0,
+              InstallerSelfUpdateValidation.isGitRevision(sourceRevision),
+              InstallerReleaseProvenanceValidation.isPolicyRevision(policyRevision),
+              InstallerReleaseProvenanceValidation.hasStrictlyAscendingUniqueCapabilities(capabilities),
+              InstallerSelfUpdateValidation.isSHA256(releaseTrustConfigurationSHA256) else {
+            throw InstallerSelfUpdateMetadataError.invalidRecoveryRecord
+        }
+        guard provenanceSHA256 == Self.canonicalSHA256(
+            installerVersion: installerVersion,
+            channel: channel,
+            releaseSequence: releaseSequence,
+            sourceRevision: sourceRevision,
+            policyRevision: policyRevision,
+            capabilities: capabilities,
+            releaseTrustConfigurationSHA256: releaseTrustConfigurationSHA256
+        ) else {
+            throw InstallerSelfUpdateMetadataError.invalidRecoveryRecord
+        }
+
+        self.provenanceSHA256 = provenanceSHA256
+        self.installerVersion = installerVersion
+        self.channel = channel
+        self.releaseSequence = releaseSequence
+        self.sourceRevision = sourceRevision
+        self.policyRevision = policyRevision
+        self.capabilities = capabilities
+        self.releaseTrustConfigurationSHA256 = releaseTrustConfigurationSHA256
+    }
+
+    /// SHA-256 of the public v1 provenance semantics. The order and NUL
+    /// separators are an interoperability contract with the release packager;
+    /// `provenance_sha256` is intentionally excluded to avoid self-reference.
+    public static func canonicalSHA256(
+        installerVersion: InstallerVersion,
+        channel: InstallerReleaseChannel,
+        releaseSequence: UInt64,
+        sourceRevision: String,
+        policyRevision: String,
+        capabilities: [String],
+        releaseTrustConfigurationSHA256: String
+    ) -> String {
+        var canonicalFields = [
+            "forge-platform-installer-release-provenance-v1",
+            "schema_version=1",
+            "installer_version=\(installerVersion.description)",
+            "channel=\(channel.rawValue)",
+            "release_sequence=\(releaseSequence)",
+            "source_revision=\(sourceRevision)",
+            "policy_revision=\(policyRevision)",
+            "release_trust_configuration_sha256=\(releaseTrustConfigurationSHA256)",
+            "capability_count=\(capabilities.count)",
+        ]
+        for capability in capabilities {
+            canonicalFields.append("capability=\(capability)")
+        }
+        let digest = SHA256.hash(data: Data(canonicalFields.joined(separator: "\u{0}").utf8))
+        return digest.map { String(format: "%02x", $0) }.joined()
+    }
+
+    /// Pure identity comparison for a later descriptor verifier. It neither
+    /// fetches nor verifies a descriptor and it does not authorize a release,
+    /// staging, handoff, or product operation.
+    public func matchesExpectedDescriptorIdentity(
+        expectedProvenanceSHA256: String,
+        expectedReleaseTrustConfigurationSHA256: String
+    ) -> Bool {
+        guard InstallerSelfUpdateValidation.isSHA256(expectedProvenanceSHA256),
+              InstallerSelfUpdateValidation.isSHA256(expectedReleaseTrustConfigurationSHA256) else {
+            return false
+        }
+        return provenanceSHA256 == expectedProvenanceSHA256
+            && releaseTrustConfigurationSHA256 == expectedReleaseTrustConfigurationSHA256
+    }
+
+    /// Complete target comparison used after the staged bundle's static code
+    /// seal has been checked. The signed descriptor and V1 provenance must
+    /// agree on every semantic field, not merely on a self-consistent digest.
+    public func matches(_ expectation: InstallerReleaseProvenanceExpectation) -> Bool {
+        installerVersion == expectation.installerVersion
+            && channel == expectation.channel
+            && releaseSequence == expectation.releaseSequence
+            && sourceRevision == expectation.sourceRevision
+            && policyRevision == expectation.policyRevision
+            && capabilities == expectation.capabilities
+            && provenanceSHA256 == expectation.provenanceSHA256
+            && releaseTrustConfigurationSHA256 == expectation.releaseTrustConfigurationSHA256
+    }
+
+    /// Strictly decodes the complete public provenance v1 shape. Exact field
+    /// matching makes private keys, credentials, transports, component state,
+    /// filesystem input, and any other operational fields fail closed.
+    static func decodeJSONResource(_ data: Data) throws -> SealedInstallerReleaseProvenance {
+        guard data.count <= InstallerReleaseProvenanceValidation.maximumResourceBytes else {
+            throw InstallerSelfUpdateMetadataError.invalidRecoveryRecord
+        }
+        var reader = try StrictJSONResourceReader(data: data)
+        let root = try reader.parseDocument()
+        guard let fields = root.objectValue,
+              Set(fields.keys) == Set([
+                  "schema_version",
+                  "provenance_sha256",
+                  "installer_version",
+                  "channel",
+                  "release_sequence",
+                  "source_revision",
+                  "policy_revision",
+                  "capabilities",
+                  "release_trust_configuration_sha256",
+              ]),
+              let schemaVersion = fields["schema_version"]?.integerValue,
+              schemaVersion == Self.schemaVersion,
+              let provenanceSHA256 = fields["provenance_sha256"]?.stringValue,
+              let installerVersionRaw = fields["installer_version"]?.stringValue,
+              let installerVersion = try? InstallerVersion(installerVersionRaw),
+              let channelRaw = fields["channel"]?.stringValue,
+              let channel = InstallerReleaseChannel(rawValue: channelRaw),
+              let releaseSequence = fields["release_sequence"]?.positiveUInt64Value,
+              let sourceRevision = fields["source_revision"]?.stringValue,
+              let policyRevision = fields["policy_revision"]?.stringValue,
+              let capabilityValues = fields["capabilities"]?.arrayValue,
+              let releaseTrustConfigurationSHA256 = fields["release_trust_configuration_sha256"]?.stringValue else {
+            throw InstallerSelfUpdateMetadataError.invalidRecoveryRecord
+        }
+
+        let capabilities = try capabilityValues.map { capabilityValue -> String in
+            guard let capability = capabilityValue.stringValue else {
+                throw InstallerSelfUpdateMetadataError.invalidRecoveryRecord
+            }
+            return capability
+        }
+
+        return try SealedInstallerReleaseProvenance(
+            provenanceSHA256: provenanceSHA256,
+            installerVersion: installerVersion,
+            channel: channel,
+            releaseSequence: releaseSequence,
+            sourceRevision: sourceRevision,
+            policyRevision: policyRevision,
+            capabilities: capabilities,
+            releaseTrustConfigurationSHA256: releaseTrustConfigurationSHA256
+        )
+    }
+}
+
+/// Loads the public provenance resource from an intact code-signed application
+/// bundle. Source builds have no such resource and therefore fail closed. The
+/// loader is separate from startup and self-update transport; callers use it
+/// only as a sealed identity input.
+public protocol SealedInstallerReleaseProvenanceLoading: Sendable {
+    func loadSealedReleaseProvenance() async -> Result<SealedInstallerReleaseProvenance, InstallerSelfUpdateFailure>
+}
+
+/// Bundle-backed provenance loader. It validates the enclosing static code
+/// object before reading the bounded resource, then admits only the exact v1
+/// public record. It never follows a user-supplied path or performs a network
+/// request.
+public struct BundleSealedInstallerReleaseProvenanceLoader: SealedInstallerReleaseProvenanceLoading {
+    private let bundle: Bundle
+    private let resourceName: String
+    private let bundleValidator: any SealedInstallerBundleValidating
+
+    public init(
+        bundle: Bundle = .main,
+        resourceName: String = "ForgePlatformInstallerReleaseProvenance",
+        bundleValidator: any SealedInstallerBundleValidating = MacOSSealedInstallerBundleValidator()
+    ) {
+        self.bundle = bundle
+        self.resourceName = resourceName
+        self.bundleValidator = bundleValidator
+    }
+
+    public func loadSealedReleaseProvenance() async -> Result<SealedInstallerReleaseProvenance, InstallerSelfUpdateFailure> {
+        do {
+            guard case .success = bundleValidator.validateSealedInstallerBundle(at: bundle.bundleURL) else {
+                return .failure(InstallerSelfUpdateFailure(.sealedReleaseProvenanceAbsent))
+            }
+            guard let url = bundle.url(forResource: resourceName, withExtension: "json") else {
+                return .failure(InstallerSelfUpdateFailure(.sealedReleaseProvenanceAbsent))
+            }
+            let data = try SealedInstallerResourceFileReader.read(
+                at: url,
+                maximumBytes: InstallerReleaseProvenanceValidation.maximumResourceBytes
+            )
+            guard case .success = bundleValidator.validateSealedInstallerBundle(at: bundle.bundleURL) else {
+                return .failure(InstallerSelfUpdateFailure(.sealedReleaseProvenanceAbsent))
+            }
+            return .success(try SealedInstallerReleaseProvenance.decodeJSONResource(data))
+        } catch {
+            return .failure(InstallerSelfUpdateFailure(.sealedReleaseProvenanceAbsent))
+        }
+    }
+}
+
 /// Loads the app-code-signed release trust descriptor.  The loader is separate
 /// from release-feed verification so a production builder can reject a missing,
 /// unsealed, or unsupported descriptor before any wizard UI exists.
@@ -249,17 +474,110 @@ public struct BundleSealedInstallerReleaseTrustConfigurationLoader: SealedInstal
             guard let url = bundle.url(forResource: resourceName, withExtension: "json") else {
                 return .failure(InstallerSelfUpdateFailure(.sealedReleaseTrustConfigurationAbsent))
             }
-            let resourceValues = try url.resourceValues(forKeys: [.fileSizeKey])
-            guard let fileSize = resourceValues.fileSize,
-                  fileSize <= InstallerReleaseTrustValidation.maximumResourceBytes else {
+            let data = try SealedInstallerResourceFileReader.read(
+                at: url,
+                maximumBytes: InstallerReleaseTrustValidation.maximumResourceBytes
+            )
+            guard case .success = bundleValidator.validateSealedInstallerBundle(at: bundle.bundleURL) else {
                 return .failure(InstallerSelfUpdateFailure(.sealedReleaseTrustConfigurationAbsent))
             }
-            let data = try Data(contentsOf: url)
             return .success(try SealedInstallerReleaseTrustConfiguration.decodeJSONResource(data))
         } catch {
             return .failure(InstallerSelfUpdateFailure(.sealedReleaseTrustConfigurationAbsent))
         }
     }
+}
+
+/// Reads a bounded public resource through its descriptor rather than following
+/// a path after static code validation. The enclosing bundle is validated both
+/// before and after this reader is used; this helper additionally refuses a
+/// final symlink, writable resource or file replacement while bytes are read.
+enum SealedInstallerResourceFileReader {
+    static func read(at url: URL, maximumBytes: Int) throws -> Data {
+        guard maximumBytes > 0 else {
+            throw SealedInstallerResourceFileReaderError.invalid
+        }
+        let canonicalURL = canonicalURL(for: url)
+        let descriptor = canonicalURL.withUnsafeFileSystemRepresentation { path -> Int32 in
+            guard let path else { return -1 }
+            return Darwin.open(path, O_RDONLY | O_CLOEXEC | O_NOFOLLOW_ANY)
+        }
+        guard descriptor >= 0 else {
+            throw SealedInstallerResourceFileReaderError.invalid
+        }
+        defer { _ = Darwin.close(descriptor) }
+        let initialDetails = try secureResourceDetails(descriptor)
+        guard initialDetails.st_size > 0,
+              initialDetails.st_size <= off_t(maximumBytes) else {
+            throw SealedInstallerResourceFileReaderError.invalid
+        }
+        var data = Data()
+        var buffer = [UInt8](repeating: 0, count: 8192)
+        while true {
+            let count = buffer.withUnsafeMutableBytes { rawBuffer in
+                Darwin.read(descriptor, rawBuffer.baseAddress, rawBuffer.count)
+            }
+            if count == 0 {
+                break
+            }
+            if count < 0 {
+                if errno == EINTR {
+                    continue
+                }
+                throw SealedInstallerResourceFileReaderError.invalid
+            }
+            data.append(contentsOf: buffer.prefix(Int(count)))
+            guard data.count <= maximumBytes else {
+                throw SealedInstallerResourceFileReaderError.invalid
+            }
+        }
+        var finalDetails = stat()
+        guard Darwin.fstat(descriptor, &finalDetails) == 0,
+              finalDetails.st_dev == initialDetails.st_dev,
+              finalDetails.st_ino == initialDetails.st_ino,
+              finalDetails.st_size == initialDetails.st_size,
+              finalDetails.st_mtimespec.tv_sec == initialDetails.st_mtimespec.tv_sec,
+              finalDetails.st_mtimespec.tv_nsec == initialDetails.st_mtimespec.tv_nsec else {
+            throw SealedInstallerResourceFileReaderError.invalid
+        }
+        return data
+    }
+
+    private static func secureResourceDetails(_ descriptor: Int32) throws -> stat {
+        var details = stat()
+        guard Darwin.fstat(descriptor, &details) == 0,
+              (details.st_mode & mode_t(S_IFMT)) == mode_t(S_IFREG),
+              details.st_nlink == 1,
+              (details.st_mode & mode_t(S_IWGRP | S_IWOTH)) == 0 else {
+            throw SealedInstallerResourceFileReaderError.invalid
+        }
+        return details
+    }
+
+    /// Normalize existing ancestor aliases such as `/tmp` and `/var` without
+    /// ever resolving the final resource component. `O_NOFOLLOW_ANY` can then
+    /// reject a resource symlink rather than treating a normal macOS alias as
+    /// an unsafe leaf.
+    private static func canonicalURL(for input: URL) -> URL {
+        let standardized = input.standardizedFileURL
+        let parent = standardized.deletingLastPathComponent()
+        let resolvedParentPath: String? = parent.withUnsafeFileSystemRepresentation { parentPath in
+            guard let parentPath, let resolvedPath = Darwin.realpath(parentPath, nil) else {
+                return nil
+            }
+            defer { Darwin.free(resolvedPath) }
+            return String(cString: resolvedPath)
+        }
+        guard let resolvedParentPath else {
+            return standardized
+        }
+        return URL(fileURLWithPath: resolvedParentPath, isDirectory: true)
+            .appendingPathComponent(standardized.lastPathComponent, isDirectory: false)
+    }
+}
+
+private enum SealedInstallerResourceFileReaderError: Error {
+    case invalid
 }
 
 private enum InstallerReleaseTrustValidation {
@@ -278,13 +596,17 @@ private enum InstallerReleaseTrustValidation {
     }
 
     static func isDescriptorAssetName(_ value: String) -> Bool {
-        guard value.hasSuffix(".json"), value.count > ".json".count, value.count <= 128,
+        guard value.hasSuffix(".json"), value.utf8.count <= 128,
               !value.contains("/"), !value.contains("\\") else {
             return false
         }
-        return value.unicodeScalars.allSatisfy { scalar in
-            isMetadataScalar(scalar)
+        let stem = value.dropLast(5)
+        guard !stem.isEmpty,
+              let first = stem.unicodeScalars.first,
+              isASCIILetterOrDigit(first) else {
+            return false
         }
+        return stem.unicodeScalars.allSatisfy(isMetadataScalar)
     }
 
     static func hasStrictlyAscendingUniqueKeys(
@@ -312,13 +634,60 @@ private enum InstallerReleaseTrustValidation {
         (scalar.value >= 48 && scalar.value <= 57)
             || (scalar.value >= 97 && scalar.value <= 122)
     }
+
+    private static func isASCIILetterOrDigit(_ scalar: Unicode.Scalar) -> Bool {
+        (scalar.value >= 48 && scalar.value <= 57)
+            || (scalar.value >= 65 && scalar.value <= 90)
+            || (scalar.value >= 97 && scalar.value <= 122)
+    }
 }
 
-private indirect enum StrictJSONResourceValue {
+private enum InstallerReleaseProvenanceValidation {
+    static let maximumResourceBytes = 32 * 1024
+
+    static func isPolicyRevision(_ value: String) -> Bool {
+        isPublicIdentifier(value)
+    }
+
+    static func hasStrictlyAscendingUniqueCapabilities(_ capabilities: [String]) -> Bool {
+        guard !capabilities.isEmpty,
+              capabilities.allSatisfy(isPublicIdentifier) else {
+            return false
+        }
+        return zip(capabilities, capabilities.dropFirst()).allSatisfy { current, next in
+            current < next
+        }
+    }
+
+    private static func isPublicIdentifier(_ value: String) -> Bool {
+        guard !value.isEmpty, value.count <= 128,
+              let first = value.unicodeScalars.first,
+              isLowercaseLetterOrDigit(first) else {
+            return false
+        }
+        return value.unicodeScalars.allSatisfy { scalar in
+            isLowercaseLetterOrDigit(scalar)
+                || scalar.value == 45
+                || scalar.value == 46
+                || scalar.value == 95
+                || scalar.value == 47
+        }
+    }
+
+    private static func isLowercaseLetterOrDigit(_ scalar: Unicode.Scalar) -> Bool {
+        (scalar.value >= 48 && scalar.value <= 57)
+            || (scalar.value >= 97 && scalar.value <= 122)
+    }
+}
+
+/// Internal strict JSON value shared by the sealed-resource and signed-release
+/// parsers.  It deliberately retains integer literals instead of silently
+/// converting them through floating point.
+indirect enum StrictJSONResourceValue {
     case object([String: StrictJSONResourceValue])
     case array([StrictJSONResourceValue])
     case string(String)
-    case integer(Int)
+    case integer(String)
     case boolean(Bool)
     case null
 
@@ -347,19 +716,28 @@ private indirect enum StrictJSONResourceValue {
         guard case .integer(let value) = self else {
             return nil
         }
-        return value
+        return Int(value)
+    }
+
+    var positiveUInt64Value: UInt64? {
+        guard case .integer(let value) = self,
+              value != "0",
+              !value.hasPrefix("-") else {
+            return nil
+        }
+        return UInt64(value)
     }
 }
 
-private enum StrictJSONResourceError: Error {
+enum StrictJSONResourceError: Error {
     case invalid
 }
 
-/// Small strict JSON reader for the sealed trust resource. Foundation's
-/// general JSON decoding intentionally accepts duplicate object keys, which is
+/// Small strict JSON reader for sealed public resources. Foundation's general
+/// JSON decoding intentionally accepts duplicate object keys, which is
 /// unsuitable for a code-signed trust-policy input. This reader rejects them
 /// at every object depth before semantic validation occurs.
-private struct StrictJSONResourceReader {
+struct StrictJSONResourceReader {
     private let scalars: [Unicode.Scalar]
     private var position = 0
 
@@ -556,9 +934,10 @@ private struct StrictJSONResourceReader {
         return result
     }
 
-    private mutating func parseInteger() throws -> Int {
+    private mutating func parseInteger() throws -> String {
         var literal = ""
-        if current?.value == 45 {
+        let isNegative = current?.value == 45
+        if isNegative {
             literal.append("-")
             position += 1
         }
@@ -566,9 +945,12 @@ private struct StrictJSONResourceReader {
             throw StrictJSONResourceError.invalid
         }
         if first.value == 48 {
+            guard !isNegative else {
+                throw StrictJSONResourceError.invalid
+            }
             literal.append("0")
             position += 1
-            guard current?.value != 48 else {
+            guard !(current.map { (48...57).contains($0.value) } ?? false) else {
                 throw StrictJSONResourceError.invalid
             }
         } else {
@@ -580,11 +962,10 @@ private struct StrictJSONResourceReader {
                 position += 1
             }
         }
-        guard current?.value != 46, current?.value != 69, current?.value != 101,
-              let integer = Int(literal) else {
+        guard current?.value != 46, current?.value != 69, current?.value != 101 else {
             throw StrictJSONResourceError.invalid
         }
-        return integer
+        return literal
     }
 
     private mutating func consumeLiteral(_ expected: String) throws {
@@ -620,13 +1001,15 @@ public protocol InstallerStartupEnforcing: Sendable {
 /// conform, preventing its use in the released startup path.
 public protocol TrustedInstallerRuntime: InstallerWizardCoordinator, InstallerStartupEnforcing {}
 
-/// Builds a trusted runtime from sealed release configuration.  Implementations
-/// supply the signed-release verifier, bundle inspector, staged downloader,
-/// artifact verifier, atomic handoff and durable recovery store.  This core
-/// package intentionally provides no live implementation or credentials.
+/// Builds a trusted runtime from both code-signed public resources.
+/// Implementations supply the signed-release verifier, bundle inspector, staged
+/// downloader, artifact verifier, atomic handoff and durable recovery store.
+/// This core package intentionally provides no live implementation or
+/// credentials.
 public protocol TrustedInstallerRuntimeBuilding: Sendable {
     func buildTrustedInstallerRuntime(
-        sealedTrustConfiguration: SealedInstallerReleaseTrustConfiguration
+        sealedTrustConfiguration: SealedInstallerReleaseTrustConfiguration,
+        sealedReleaseProvenance: SealedInstallerReleaseProvenance
     ) async -> Result<any TrustedInstallerRuntime, InstallerSelfUpdateFailure>
 }
 
@@ -636,7 +1019,8 @@ public struct AbsentTrustedInstallerRuntimeBuilder: TrustedInstallerRuntimeBuild
     public init() {}
 
     public func buildTrustedInstallerRuntime(
-        sealedTrustConfiguration: SealedInstallerReleaseTrustConfiguration
+        sealedTrustConfiguration: SealedInstallerReleaseTrustConfiguration,
+        sealedReleaseProvenance: SealedInstallerReleaseProvenance
     ) async -> Result<any TrustedInstallerRuntime, InstallerSelfUpdateFailure> {
         .failure(InstallerSelfUpdateFailure(.trustedUpdaterUnavailable))
     }
@@ -645,10 +1029,18 @@ public struct AbsentTrustedInstallerRuntimeBuilder: TrustedInstallerRuntimeBuild
 public struct ReleasedInstallerWizardSession: Sendable {
     public let runtime: any TrustedInstallerRuntime
     public let currentRelease: VerifiedInstallerRelease
+    /// The code-signed provenance retained for this fail-closed wizard session.
+    /// It grants no runtime/product authority by itself.
+    public let sealedReleaseProvenance: SealedInstallerReleaseProvenance
 
-    public init(runtime: any TrustedInstallerRuntime, currentRelease: VerifiedInstallerRelease) {
+    public init(
+        runtime: any TrustedInstallerRuntime,
+        currentRelease: VerifiedInstallerRelease,
+        sealedReleaseProvenance: SealedInstallerReleaseProvenance
+    ) {
         self.runtime = runtime
         self.currentRelease = currentRelease
+        self.sealedReleaseProvenance = sealedReleaseProvenance
     }
 }
 
@@ -663,10 +1055,12 @@ public enum ReleasedInstallerStartupOutcome: Sendable {
 
 /// Production composition boundary for the native app.  It does not start a
 /// platform installation, create a provider, or make a service change.  Its
-/// sole role is requiring sealed trust configuration plus successful automatic
-/// self-update enforcement before handing a trusted runtime to the wizard.
+/// sole role is requiring sealed trust configuration and release provenance,
+/// then successful automatic self-update enforcement before handing a trusted
+/// runtime to the wizard.
 public actor ReleasedInstallerStartupBoundary {
     private let trustConfigurationLoader: any SealedInstallerReleaseTrustConfigurationLoading
+    private let provenanceLoader: any SealedInstallerReleaseProvenanceLoading
     private let runtimeBuilder: any TrustedInstallerRuntimeBuilding
     private let concurrentOperationRetryLimit: Int
     private let concurrentOperationRetryNanoseconds: UInt64
@@ -677,11 +1071,13 @@ public actor ReleasedInstallerStartupBoundary {
 
     public init(
         trustConfigurationLoader: any SealedInstallerReleaseTrustConfigurationLoading,
+        provenanceLoader: any SealedInstallerReleaseProvenanceLoading,
         runtimeBuilder: any TrustedInstallerRuntimeBuilding,
         concurrentOperationRetryLimit: Int = 8,
         concurrentOperationRetryNanoseconds: UInt64 = 250_000_000
     ) {
         self.trustConfigurationLoader = trustConfigurationLoader
+        self.provenanceLoader = provenanceLoader
         self.runtimeBuilder = runtimeBuilder
         self.concurrentOperationRetryLimit = min(max(concurrentOperationRetryLimit, 0), 12)
         self.concurrentOperationRetryNanoseconds = min(concurrentOperationRetryNanoseconds, 1_000_000_000)
@@ -690,6 +1086,7 @@ public actor ReleasedInstallerStartupBoundary {
     public static func bundledFailClosed() -> ReleasedInstallerStartupBoundary {
         ReleasedInstallerStartupBoundary(
             trustConfigurationLoader: BundleSealedInstallerReleaseTrustConfigurationLoader(),
+            provenanceLoader: BundleSealedInstallerReleaseProvenanceLoader(),
             runtimeBuilder: AbsentTrustedInstallerRuntimeBuilder()
         )
     }
@@ -706,9 +1103,25 @@ public actor ReleasedInstallerStartupBoundary {
             return .blocked(failure.code.userFacingMessage)
         }
 
+        let sealedReleaseProvenance: SealedInstallerReleaseProvenance
+        switch await provenanceLoader.loadSealedReleaseProvenance() {
+        case .success(let provenance):
+            sealedReleaseProvenance = provenance
+        case .failure(let failure):
+            return .blocked(failure.code.userFacingMessage)
+        }
+        guard sealedReleaseProvenance.installerVersion == currentVersion else {
+            return .blocked(InstallerSelfUpdateFailureCode.installerVersionMismatch.userFacingMessage)
+        }
+        guard sealedReleaseProvenance.releaseTrustConfigurationSHA256
+            == sealedTrustConfiguration.configurationSHA256 else {
+            return .blocked(InstallerSelfUpdateFailureCode.sealedReleaseProvenanceMismatch.userFacingMessage)
+        }
+
         let runtime: any TrustedInstallerRuntime
         switch await runtimeBuilder.buildTrustedInstallerRuntime(
-            sealedTrustConfiguration: sealedTrustConfiguration
+            sealedTrustConfiguration: sealedTrustConfiguration,
+            sealedReleaseProvenance: sealedReleaseProvenance
         ) {
         case .success(let builtRuntime):
             runtime = builtRuntime
@@ -719,7 +1132,11 @@ public actor ReleasedInstallerStartupBoundary {
         for attempt in 0...concurrentOperationRetryLimit {
             switch await runtime.enforceCurrentInstaller(currentVersion: currentVersion) {
             case .current(let release):
-                return .ready(ReleasedInstallerWizardSession(runtime: runtime, currentRelease: release))
+                return .ready(ReleasedInstallerWizardSession(
+                    runtime: runtime,
+                    currentRelease: release,
+                    sealedReleaseProvenance: sealedReleaseProvenance
+                ))
             case .relaunching(let release):
                 relaunchingRuntime = runtime
                 return .relaunching(release)

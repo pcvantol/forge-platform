@@ -7,6 +7,7 @@ final class ReleasedInstallerStartupTests: XCTestCase {
         let builder = TrustedRuntimeBuilderSpy(failure: .trustedUpdaterUnavailable)
         let boundary = ReleasedInstallerStartupBoundary(
             trustConfigurationLoader: SealedTrustLoaderSpy(failure: .sealedReleaseTrustConfigurationAbsent),
+            provenanceLoader: SealedProvenanceLoaderSpy(failure: .sealedReleaseProvenanceAbsent),
             runtimeBuilder: builder
         )
 
@@ -28,8 +29,11 @@ final class ReleasedInstallerStartupTests: XCTestCase {
         let release = try makeRelease("1.0.0")
         let runtime = TrustedRuntimeSpy(enforcement: .current(release))
         let builder = TrustedRuntimeBuilderSpy(runtime: runtime)
+        let configuration = try makeConfiguration()
+        let provenance = try makeProvenance(configuration: configuration)
         let boundary = ReleasedInstallerStartupBoundary(
-            trustConfigurationLoader: SealedTrustLoaderSpy(configuration: try makeConfiguration()),
+            trustConfigurationLoader: SealedTrustLoaderSpy(configuration: configuration),
+            provenanceLoader: SealedProvenanceLoaderSpy(provenance: provenance),
             runtimeBuilder: builder
         )
 
@@ -41,6 +45,7 @@ final class ReleasedInstallerStartupTests: XCTestCase {
             return XCTFail("A current trusted runtime should be the sole ready outcome")
         }
         XCTAssertEqual(session.currentRelease, release)
+        XCTAssertEqual(session.sealedReleaseProvenance, provenance)
         XCTAssertEqual(builderCallCount, 1)
         XCTAssertEqual(enforcementCallCount, 1)
     }
@@ -49,8 +54,10 @@ final class ReleasedInstallerStartupTests: XCTestCase {
         let currentVersion = try InstallerVersion("1.0.0")
         let release = try makeRelease("1.1.0")
         let runtime = TrustedRuntimeSpy(enforcement: .relaunching(release))
+        let configuration = try makeConfiguration()
         let boundary = ReleasedInstallerStartupBoundary(
-            trustConfigurationLoader: SealedTrustLoaderSpy(configuration: try makeConfiguration()),
+            trustConfigurationLoader: SealedTrustLoaderSpy(configuration: configuration),
+            provenanceLoader: SealedProvenanceLoaderSpy(provenance: try makeProvenance(configuration: configuration)),
             runtimeBuilder: TrustedRuntimeBuilderSpy(runtime: runtime)
         )
 
@@ -79,6 +86,74 @@ final class ReleasedInstallerStartupTests: XCTestCase {
             result,
             .failure(InstallerSelfUpdateFailure(.sealedReleaseTrustConfigurationAbsent))
         )
+    }
+
+    func testMissingSealedProvenanceBlocksBeforeRuntimeBuildOrWizard() async throws {
+        let builder = TrustedRuntimeBuilderSpy(failure: .trustedUpdaterUnavailable)
+        let boundary = ReleasedInstallerStartupBoundary(
+            trustConfigurationLoader: SealedTrustLoaderSpy(configuration: try makeConfiguration()),
+            provenanceLoader: SealedProvenanceLoaderSpy(failure: .sealedReleaseProvenanceAbsent),
+            runtimeBuilder: builder
+        )
+
+        let outcome = await boundary.start(currentVersion: try InstallerVersion("1.0.0"))
+        let builderCallCount = await builder.callCount()
+
+        guard case .blocked(let reason) = outcome else {
+            return XCTFail("A wizard session must not exist without sealed release provenance")
+        }
+        XCTAssertEqual(
+            reason,
+            InstallerSelfUpdateFailureCode.sealedReleaseProvenanceAbsent.userFacingMessage
+        )
+        XCTAssertEqual(builderCallCount, 0)
+    }
+
+    func testProvenanceTrustConfigurationMismatchBlocksBeforeRuntimeBuildOrWizard() async throws {
+        let configuration = try makeConfiguration()
+        let mismatchedProvenance = try makeProvenance(
+            configurationSHA256: String(repeating: "f", count: 64)
+        )
+        let builder = TrustedRuntimeBuilderSpy(failure: .trustedUpdaterUnavailable)
+        let boundary = ReleasedInstallerStartupBoundary(
+            trustConfigurationLoader: SealedTrustLoaderSpy(configuration: configuration),
+            provenanceLoader: SealedProvenanceLoaderSpy(provenance: mismatchedProvenance),
+            runtimeBuilder: builder
+        )
+
+        let outcome = await boundary.start(currentVersion: try InstallerVersion("1.0.0"))
+        let builderCallCount = await builder.callCount()
+
+        guard case .blocked(let reason) = outcome else {
+            return XCTFail("Mismatched sealed public resources must not construct a runtime")
+        }
+        XCTAssertEqual(
+            reason,
+            InstallerSelfUpdateFailureCode.sealedReleaseProvenanceMismatch.userFacingMessage
+        )
+        XCTAssertEqual(builderCallCount, 0)
+    }
+
+    func testProvenanceInstallerVersionMismatchBlocksBeforeRuntimeBuildOrWizard() async throws {
+        let configuration = try makeConfiguration()
+        let builder = TrustedRuntimeBuilderSpy(failure: .trustedUpdaterUnavailable)
+        let boundary = ReleasedInstallerStartupBoundary(
+            trustConfigurationLoader: SealedTrustLoaderSpy(configuration: configuration),
+            provenanceLoader: SealedProvenanceLoaderSpy(provenance: try makeProvenance(configuration: configuration)),
+            runtimeBuilder: builder
+        )
+
+        let outcome = await boundary.start(currentVersion: try InstallerVersion("1.0.1"))
+        let builderCallCount = await builder.callCount()
+
+        guard case .blocked(let reason) = outcome else {
+            return XCTFail("A provenance/build version mismatch must not construct a runtime")
+        }
+        XCTAssertEqual(
+            reason,
+            InstallerSelfUpdateFailureCode.installerVersionMismatch.userFacingMessage
+        )
+        XCTAssertEqual(builderCallCount, 0)
     }
 
     func testSealedConfigurationRejectsAChangedPublicPolicyWithAnOldDigest() throws {
@@ -218,6 +293,39 @@ final class ReleasedInstallerStartupTests: XCTestCase {
         XCTAssertEqual(validator.callCount(), 1)
     }
 
+    func testSealedResourceReaderRejectsSymlinkedWritableAndOversizedResources() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("forge-platform-installer-sealed-resource-\(UUID().uuidString)", isDirectory: true)
+        let resource = root.appendingPathComponent("resource.json", isDirectory: false)
+        let symlink = root.appendingPathComponent("symlink.json", isDirectory: false)
+        defer { try? FileManager.default.removeItem(at: root) }
+        try FileManager.default.createDirectory(
+            at: root,
+            withIntermediateDirectories: true,
+            attributes: [.posixPermissions: 0o700]
+        )
+        let expected = Data("{\"public\":true}".utf8)
+        try expected.write(to: resource)
+        try FileManager.default.setAttributes([.posixPermissions: 0o644], ofItemAtPath: resource.path)
+
+        XCTAssertEqual(
+            try SealedInstallerResourceFileReader.read(at: resource, maximumBytes: 1024),
+            expected
+        )
+        try FileManager.default.createSymbolicLink(at: symlink, withDestinationURL: resource)
+        XCTAssertThrowsError(
+            try SealedInstallerResourceFileReader.read(at: symlink, maximumBytes: 1024)
+        )
+        try FileManager.default.setAttributes([.posixPermissions: 0o664], ofItemAtPath: resource.path)
+        XCTAssertThrowsError(
+            try SealedInstallerResourceFileReader.read(at: resource, maximumBytes: 1024)
+        )
+        try FileManager.default.setAttributes([.posixPermissions: 0o644], ofItemAtPath: resource.path)
+        XCTAssertThrowsError(
+            try SealedInstallerResourceFileReader.read(at: resource, maximumBytes: 4)
+        )
+    }
+
     func testStartupRetriesOnlyTheTypedConcurrentHandoffWindowBeforeOpeningWizard() async throws {
         let currentVersion = try InstallerVersion("1.0.0")
         let release = try makeRelease("1.0.0")
@@ -225,8 +333,10 @@ final class ReleasedInstallerStartupTests: XCTestCase {
             .concurrentOperationInProgress,
             .current(release),
         ])
+        let configuration = try makeConfiguration()
         let boundary = ReleasedInstallerStartupBoundary(
-            trustConfigurationLoader: SealedTrustLoaderSpy(configuration: try makeConfiguration()),
+            trustConfigurationLoader: SealedTrustLoaderSpy(configuration: configuration),
+            provenanceLoader: SealedProvenanceLoaderSpy(provenance: try makeProvenance(configuration: configuration)),
             runtimeBuilder: TrustedRuntimeBuilderSpy(runtime: runtime),
             concurrentOperationRetryLimit: 1,
             concurrentOperationRetryNanoseconds: 0
@@ -283,6 +393,38 @@ final class ReleasedInstallerStartupTests: XCTestCase {
                 publicKeyBase64: Data((32..<64).map { UInt8($0) }).base64EncodedString()
             ),
         ]
+    }
+
+    private func makeProvenance(
+        configuration: SealedInstallerReleaseTrustConfiguration? = nil,
+        configurationSHA256: String? = nil
+    ) throws -> SealedInstallerReleaseProvenance {
+        let installerVersion = try InstallerVersion("1.0.0")
+        let trustConfigurationSHA256 = configurationSHA256
+            ?? configuration?.configurationSHA256
+            ?? String(repeating: "e", count: 64)
+        let sourceRevision = String(repeating: "a", count: 40)
+        let policyRevision = "forge-platform-installer-release-v1"
+        let capabilities = ["composition/v1", "provider-gate/v1"]
+        let provenanceSHA256 = SealedInstallerReleaseProvenance.canonicalSHA256(
+            installerVersion: installerVersion,
+            channel: .stable,
+            releaseSequence: 1,
+            sourceRevision: sourceRevision,
+            policyRevision: policyRevision,
+            capabilities: capabilities,
+            releaseTrustConfigurationSHA256: trustConfigurationSHA256
+        )
+        return try SealedInstallerReleaseProvenance(
+            provenanceSHA256: provenanceSHA256,
+            installerVersion: installerVersion,
+            channel: .stable,
+            releaseSequence: 1,
+            sourceRevision: sourceRevision,
+            policyRevision: policyRevision,
+            capabilities: capabilities,
+            releaseTrustConfigurationSHA256: trustConfigurationSHA256
+        )
     }
 
     private func makeConfigurationJSON(_ configuration: SealedInstallerReleaseTrustConfiguration) -> String {
@@ -354,6 +496,22 @@ private actor SealedTrustLoaderSpy: SealedInstallerReleaseTrustConfigurationLoad
     }
 }
 
+private actor SealedProvenanceLoaderSpy: SealedInstallerReleaseProvenanceLoading {
+    private let result: Result<SealedInstallerReleaseProvenance, InstallerSelfUpdateFailure>
+
+    init(provenance: SealedInstallerReleaseProvenance) {
+        result = .success(provenance)
+    }
+
+    init(failure: InstallerSelfUpdateFailureCode) {
+        result = .failure(InstallerSelfUpdateFailure(failure))
+    }
+
+    func loadSealedReleaseProvenance() async -> Result<SealedInstallerReleaseProvenance, InstallerSelfUpdateFailure> {
+        result
+    }
+}
+
 private actor TrustedRuntimeBuilderSpy: TrustedInstallerRuntimeBuilding {
     private let runtime: (any TrustedInstallerRuntime)?
     private let failure: InstallerSelfUpdateFailure?
@@ -370,7 +528,8 @@ private actor TrustedRuntimeBuilderSpy: TrustedInstallerRuntimeBuilding {
     }
 
     func buildTrustedInstallerRuntime(
-        sealedTrustConfiguration: SealedInstallerReleaseTrustConfiguration
+        sealedTrustConfiguration: SealedInstallerReleaseTrustConfiguration,
+        sealedReleaseProvenance: SealedInstallerReleaseProvenance
     ) async -> Result<any TrustedInstallerRuntime, InstallerSelfUpdateFailure> {
         calls += 1
         if let runtime {

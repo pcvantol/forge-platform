@@ -7,6 +7,7 @@ public enum InstallerSelfUpdateFailureCode: String, Equatable, Sendable {
     case releaseFeedUnavailable
     case releaseMetadataRejected
     case sealedReleaseTrustConfigurationAbsent
+    case sealedReleaseProvenanceAbsent
     case trustedUpdaterUnavailable
     case selfUpdateOperationInProgress
     case selfUpdateOperationLockUnavailable
@@ -24,6 +25,7 @@ public enum InstallerSelfUpdateFailureCode: String, Equatable, Sendable {
     case sha256VerificationFailed
     case codeSignatureVerificationFailed
     case sealedReleaseTrustConfigurationMismatch
+    case sealedReleaseProvenanceMismatch
     case notarizationVerificationFailed
     case stagingCleanupFailed
     case recoveryLoadFailed
@@ -40,6 +42,8 @@ public enum InstallerSelfUpdateFailureCode: String, Equatable, Sendable {
             return "Het releasebewijs is niet geldig of niet vertrouwd."
         case .sealedReleaseTrustConfigurationAbsent:
             return "De verzegelde release-trustconfiguratie ontbreekt of is niet geldig."
+        case .sealedReleaseProvenanceAbsent:
+            return "De verzegelde installer-provenance ontbreekt of is niet geldig."
         case .trustedUpdaterUnavailable:
             return "Er is geen vertrouwde installer-updater beschikbaar voor deze release."
         case .selfUpdateOperationInProgress:
@@ -74,6 +78,8 @@ public enum InstallerSelfUpdateFailureCode: String, Equatable, Sendable {
             return "De codeondertekening van de installer-update is niet geldig."
         case .sealedReleaseTrustConfigurationMismatch:
             return "De verzegelde trustconfiguratie van de installer-update hoort niet bij de geverifieerde release."
+        case .sealedReleaseProvenanceMismatch:
+            return "De verzegelde provenance van de installer-update hoort niet bij de geverifieerde release."
         case .notarizationVerificationFailed:
             return "De notarization-controle van de installer-update is niet geldig."
         case .stagingCleanupFailed:
@@ -117,6 +123,14 @@ public enum InstallerSelfUpdateMetadataError: Error, Equatable, Sendable {
     case releaseAssetMismatch
 }
 
+/// The signed release channel is an immutable release-identity field.  It is
+/// deliberately distinct from an installer version or GitHub tag: candidate
+/// and stable releases must never be treated as interchangeable bytes.
+public enum InstallerReleaseChannel: String, Codable, Equatable, Sendable {
+    case stable
+    case candidate
+}
+
 /// A GitHub Release asset is named, rather than addressed through an arbitrary
 /// URL supplied by the UI.  The signed-feed verifier owns transport and any
 /// redirect policy; the coordinator only authorizes this exact release identity.
@@ -149,14 +163,61 @@ public struct GitHubInstallerReleaseAsset: Equatable, Sendable {
 /// feed implementation must verify its signature and GitHub provenance before
 /// constructing this value.  The coordinator then binds the downloaded bundle
 /// to all of this identity evidence before it asks for an atomic relaunch.
+public struct InstallerReleaseProvenanceExpectation: Equatable, Sendable {
+    public let installerVersion: InstallerVersion
+    public let channel: InstallerReleaseChannel
+    public let releaseSequence: UInt64
+    public let sourceRevision: String
+    public let policyRevision: String
+    /// Strictly ascending, unique capability identities carried by the signed
+    /// descriptor and expected from the staged V1 provenance resource.
+    public let capabilities: [String]
+    public let provenanceSHA256: String
+    public let releaseTrustConfigurationSHA256: String
+
+    public init(
+        installerVersion: InstallerVersion,
+        channel: InstallerReleaseChannel,
+        releaseSequence: UInt64,
+        sourceRevision: String,
+        policyRevision: String,
+        capabilities: [String],
+        provenanceSHA256: String,
+        releaseTrustConfigurationSHA256: String
+    ) throws {
+        guard releaseSequence > 0,
+              InstallerSelfUpdateValidation.isGitRevision(sourceRevision),
+              InstallerSelfUpdateValidation.isPublicProvenanceIdentifier(policyRevision),
+              InstallerSelfUpdateValidation.hasStrictlyAscendingUniqueProvenanceIdentifiers(capabilities),
+              InstallerSelfUpdateValidation.isSHA256(provenanceSHA256),
+              InstallerSelfUpdateValidation.isSHA256(releaseTrustConfigurationSHA256) else {
+            throw InstallerSelfUpdateMetadataError.invalidRecoveryRecord
+        }
+        self.installerVersion = installerVersion
+        self.channel = channel
+        self.releaseSequence = releaseSequence
+        self.sourceRevision = sourceRevision
+        self.policyRevision = policyRevision
+        self.capabilities = capabilities
+        self.provenanceSHA256 = provenanceSHA256
+        self.releaseTrustConfigurationSHA256 = releaseTrustConfigurationSHA256
+    }
+}
+
 public struct VerifiedInstallerReleaseRecord: Equatable, Sendable {
     public let release: VerifiedInstallerRelease
     public let sequence: UInt64
+    public let channel: InstallerReleaseChannel
     public let sourceRevision: String
     public let expectedBundleIdentifier: String
     public let expectedTeamIdentifier: String
     public let expectedCodeDirectorySHA256: String
-    public let metadataSHA256: String
+    /// Complete expected identity of the code-signed bundled V1 provenance
+    /// resource. A verifier must bind every field, not merely its digest.
+    public let provenanceExpectation: InstallerReleaseProvenanceExpectation
+    /// Compatibility projection of `provenanceExpectation` for receipts and
+    /// current-bundle comparison.
+    public var provenanceSHA256: String { provenanceExpectation.provenanceSHA256 }
     /// Digest of the release package's canonical sealed-trust descriptor. It
     /// is signed release metadata, not an unchecked checksum supplied by the
     /// bundle currently being launched.
@@ -167,11 +228,14 @@ public struct VerifiedInstallerReleaseRecord: Equatable, Sendable {
     public init(
         release: VerifiedInstallerRelease,
         sequence: UInt64,
+        channel: InstallerReleaseChannel,
         sourceRevision: String,
         expectedBundleIdentifier: String,
         expectedTeamIdentifier: String,
         expectedCodeDirectorySHA256: String,
-        metadataSHA256: String,
+        policyRevision: String,
+        capabilities: [String],
+        provenanceSHA256: String,
         expectedReleaseTrustConfigurationSHA256: String,
         notarizationReference: String,
         githubAsset: GitHubInstallerReleaseAsset
@@ -190,12 +254,12 @@ public struct VerifiedInstallerReleaseRecord: Equatable, Sendable {
         }
         guard InstallerSelfUpdateValidation.isSHA256(release.sha256),
               InstallerSelfUpdateValidation.isSHA256(expectedCodeDirectorySHA256),
-              InstallerSelfUpdateValidation.isSHA256(metadataSHA256),
+              InstallerSelfUpdateValidation.isSHA256(provenanceSHA256),
               InstallerSelfUpdateValidation.isSHA256(expectedReleaseTrustConfigurationSHA256) else {
             throw InstallerSelfUpdateMetadataError.invalidDigest(release.sha256)
         }
         guard InstallerSelfUpdateValidation.isOpaqueReference(release.signingKeyID),
-              InstallerSelfUpdateValidation.isOpaqueReference(notarizationReference) else {
+              InstallerSelfUpdateValidation.isNotarizationReceiptReference(notarizationReference) else {
             throw InstallerSelfUpdateMetadataError.invalidOpaqueReference(notarizationReference)
         }
         guard release.releasePage == githubAsset.releasePage else {
@@ -207,11 +271,21 @@ public struct VerifiedInstallerReleaseRecord: Equatable, Sendable {
 
         self.release = release
         self.sequence = sequence
+        self.channel = channel
         self.sourceRevision = sourceRevision
         self.expectedBundleIdentifier = expectedBundleIdentifier
         self.expectedTeamIdentifier = expectedTeamIdentifier
         self.expectedCodeDirectorySHA256 = expectedCodeDirectorySHA256
-        self.metadataSHA256 = metadataSHA256
+        self.provenanceExpectation = try InstallerReleaseProvenanceExpectation(
+            installerVersion: release.version,
+            channel: channel,
+            releaseSequence: sequence,
+            sourceRevision: sourceRevision,
+            policyRevision: policyRevision,
+            capabilities: capabilities,
+            provenanceSHA256: provenanceSHA256,
+            releaseTrustConfigurationSHA256: expectedReleaseTrustConfigurationSHA256
+        )
         self.expectedReleaseTrustConfigurationSHA256 = expectedReleaseTrustConfigurationSHA256
         self.notarizationReference = notarizationReference
         self.githubAsset = githubAsset
@@ -225,11 +299,15 @@ public struct VerifiedInstallerReleaseRecord: Equatable, Sendable {
 public struct CurrentInstallerBundleIdentity: Equatable, Sendable {
     public let version: InstallerVersion
     public let acceptedReleaseSequence: UInt64
+    public let channel: InstallerReleaseChannel
     public let sourceRevision: String
     public let bundleIdentifier: String
     public let teamIdentifier: String
     public let codeDirectorySHA256: String
-    public let metadataSHA256: String
+    /// Canonical digest read from the current bundle's sealed provenance
+    /// record. It is compared to signed release evidence for an exact-current
+    /// decision.
+    public let provenanceSHA256: String
     /// Canonical digest read from the current bundle's sealed trust descriptor.
     /// It is compared to signed release evidence for an exact-current decision.
     public let releaseTrustConfigurationSHA256: String
@@ -237,11 +315,12 @@ public struct CurrentInstallerBundleIdentity: Equatable, Sendable {
     public init(
         version: InstallerVersion,
         acceptedReleaseSequence: UInt64,
+        channel: InstallerReleaseChannel,
         sourceRevision: String,
         bundleIdentifier: String,
         teamIdentifier: String,
         codeDirectorySHA256: String,
-        metadataSHA256: String,
+        provenanceSHA256: String,
         releaseTrustConfigurationSHA256: String
     ) throws {
         guard acceptedReleaseSequence > 0 else {
@@ -257,18 +336,19 @@ public struct CurrentInstallerBundleIdentity: Equatable, Sendable {
             throw InstallerSelfUpdateMetadataError.invalidTeamIdentifier(teamIdentifier)
         }
         guard InstallerSelfUpdateValidation.isSHA256(codeDirectorySHA256),
-              InstallerSelfUpdateValidation.isSHA256(metadataSHA256),
+              InstallerSelfUpdateValidation.isSHA256(provenanceSHA256),
               InstallerSelfUpdateValidation.isSHA256(releaseTrustConfigurationSHA256) else {
             throw InstallerSelfUpdateMetadataError.invalidDigest(codeDirectorySHA256)
         }
 
         self.version = version
         self.acceptedReleaseSequence = acceptedReleaseSequence
+        self.channel = channel
         self.sourceRevision = sourceRevision
         self.bundleIdentifier = bundleIdentifier
         self.teamIdentifier = teamIdentifier
         self.codeDirectorySHA256 = codeDirectorySHA256
-        self.metadataSHA256 = metadataSHA256
+        self.provenanceSHA256 = provenanceSHA256
         self.releaseTrustConfigurationSHA256 = releaseTrustConfigurationSHA256
     }
 }
@@ -367,6 +447,17 @@ public protocol StagedInstallerArtifactVerifying: Sendable {
     /// exact digest carried in signed release evidence.  This prevents a valid
     /// app archive with a different trust selector from reaching handoff.
     func verifySealedReleaseTrustConfiguration(
+        of stagedAsset: StagedInstallerAsset,
+        for release: VerifiedInstallerReleaseRecord
+    ) async -> Result<Void, InstallerSelfUpdateFailure>
+
+    /// Loads both staged code-signed public resources and checks the V1
+    /// provenance against `release.provenanceExpectation`. In the same
+    /// observation it must require V1's trust-config digest to equal the
+    /// staged V2 trust-config digest and V2's digest to equal the signed
+    /// target expectation. This prevents individually valid but mutually
+    /// inconsistent target resources from reaching handoff.
+    func verifySealedReleaseProvenance(
         of stagedAsset: StagedInstallerAsset,
         for release: VerifiedInstallerReleaseRecord
     ) async -> Result<Void, InstallerSelfUpdateFailure>
@@ -664,6 +755,23 @@ public actor VerifiedInstallerSelfUpdateCoordinator: TrustedInstallerRuntime {
                 because: .stagedAssetIdentityChanged
             )
         }
+        guard case .success = await artifactVerifier.verifySealedReleaseProvenance(
+            of: stagedAsset,
+            for: pendingUpdate.release
+        ) else {
+            return await discardAndFail(
+                stagedAsset,
+                operation: pendingUpdate.operation,
+                because: .sealedReleaseProvenanceMismatch
+            )
+        }
+        guard await stagedAssetIdentityIsCurrent(stagedAsset) else {
+            return await discardAndFail(
+                stagedAsset,
+                operation: pendingUpdate.operation,
+                because: .stagedAssetIdentityChanged
+            )
+        }
         guard case .success = await artifactVerifier.verifyNotarization(of: stagedAsset, for: pendingUpdate.release) else {
             return await discardAndFail(
                 stagedAsset,
@@ -806,9 +914,10 @@ public actor VerifiedInstallerSelfUpdateCoordinator: TrustedInstallerRuntime {
     ) -> Bool {
         hasExpectedApplicationIdentity(currentBundle, for: release)
             && currentBundle.acceptedReleaseSequence == release.sequence
+            && currentBundle.channel == release.channel
             && currentBundle.sourceRevision == release.sourceRevision
             && currentBundle.codeDirectorySHA256 == release.expectedCodeDirectorySHA256
-            && currentBundle.metadataSHA256 == release.metadataSHA256
+            && currentBundle.provenanceSHA256 == release.provenanceSHA256
             && currentBundle.releaseTrustConfigurationSHA256 == release.expectedReleaseTrustConfigurationSHA256
     }
 
@@ -977,7 +1086,7 @@ enum InstallerSelfUpdateValidation {
     }
 
     static func isGitRevision(_ value: String) -> Bool {
-        (value.count == 40 || value.count == 64) && value.unicodeScalars.allSatisfy(isLowercaseHex)
+        (40...64).contains(value.count) && value.unicodeScalars.allSatisfy(isLowercaseHex)
     }
 
     static func isTeamIdentifier(_ value: String) -> Bool {
@@ -1007,19 +1116,78 @@ enum InstallerSelfUpdateValidation {
             return false
         }
         return labels.allSatisfy { label in
-            !label.isEmpty && label.unicodeScalars.allSatisfy(isRepositoryScalar)
+            guard label.utf8.count <= 100,
+                  let first = label.unicodeScalars.first,
+                  isASCIILetterOrDigit(first) else {
+                return false
+            }
+            return label.unicodeScalars.allSatisfy(isRepositoryScalar)
         }
     }
 
     static func isGitHubTag(_ value: String) -> Bool {
-        !value.isEmpty && value.unicodeScalars.allSatisfy(isRepositoryScalar)
-    }
-
-    static func isInstallerArchiveName(_ value: String) -> Bool {
-        guard value.hasSuffix(".zip"), !value.contains("/"), !value.contains("\\") else {
+        guard value.utf8.count <= 128,
+              let first = value.unicodeScalars.first,
+              isASCIILetterOrDigit(first) else {
             return false
         }
         return value.unicodeScalars.allSatisfy(isRepositoryScalar)
+    }
+
+    static func isInstallerArchiveName(_ value: String) -> Bool {
+        guard value.utf8.count <= 128, value.hasSuffix(".zip"), !value.contains("/"), !value.contains("\\") else {
+            return false
+        }
+        let stem = value.dropLast(4)
+        guard !stem.isEmpty,
+              let first = stem.unicodeScalars.first,
+              isASCIILetterOrDigit(first) else {
+            return false
+        }
+        return stem.unicodeScalars.allSatisfy(isRepositoryScalar)
+    }
+
+    /// Public descriptor evidence for Apple's notarization is a bounded,
+    /// typed receipt reference. It is not a general opaque transport value.
+    static func isNotarizationReceiptReference(_ value: String) -> Bool {
+        guard value.hasPrefix("receipt:") else {
+            return false
+        }
+        let suffix = value.dropFirst("receipt:".count)
+        guard suffix.utf8.count <= 128,
+              let first = suffix.unicodeScalars.first,
+              isLowercaseLetterOrDigit(first) else {
+            return false
+        }
+        return suffix.unicodeScalars.allSatisfy { scalar in
+            isLowercaseLetterOrDigit(scalar)
+                || scalar.value == 45
+                || scalar.value == 46
+                || scalar.value == 95
+        }
+    }
+
+    static func isPublicProvenanceIdentifier(_ value: String) -> Bool {
+        guard value.utf8.count <= 128,
+              let first = value.unicodeScalars.first,
+              isLowercaseLetterOrDigit(first) else {
+            return false
+        }
+        return value.unicodeScalars.allSatisfy { scalar in
+            isLowercaseLetterOrDigit(scalar)
+                || scalar.value == 45
+                || scalar.value == 46
+                || scalar.value == 95
+                || scalar.value == 47
+        }
+    }
+
+    static func hasStrictlyAscendingUniqueProvenanceIdentifiers(_ values: [String]) -> Bool {
+        guard !values.isEmpty,
+              values.allSatisfy(isPublicProvenanceIdentifier) else {
+            return false
+        }
+        return zip(values, values.dropFirst()).allSatisfy { current, next in current < next }
     }
 
     static func isOpaqueReference(_ value: String) -> Bool {
@@ -1030,6 +1198,17 @@ enum InstallerSelfUpdateValidation {
 
     private static func isLowercaseHex(_ scalar: Unicode.Scalar) -> Bool {
         (scalar.value >= 48 && scalar.value <= 57) || (scalar.value >= 97 && scalar.value <= 102)
+    }
+
+    private static func isASCIILetterOrDigit(_ scalar: Unicode.Scalar) -> Bool {
+        (scalar.value >= 48 && scalar.value <= 57)
+            || (scalar.value >= 65 && scalar.value <= 90)
+            || (scalar.value >= 97 && scalar.value <= 122)
+    }
+
+    private static func isLowercaseLetterOrDigit(_ scalar: Unicode.Scalar) -> Bool {
+        (scalar.value >= 48 && scalar.value <= 57)
+            || (scalar.value >= 97 && scalar.value <= 122)
     }
 
     private static func isRepositoryScalar(_ scalar: Unicode.Scalar) -> Bool {

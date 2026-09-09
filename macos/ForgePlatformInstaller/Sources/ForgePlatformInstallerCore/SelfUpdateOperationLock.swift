@@ -113,7 +113,7 @@ public struct FileInstallerSelfUpdateOperationLock: InstallerSelfUpdateOperation
         }
         return (details.st_mode & mode_t(S_IFMT)) == mode_t(S_IFDIR)
             && details.st_uid == Darwin.geteuid()
-            && (details.st_mode & mode_t(S_IRWXG | S_IRWXO)) == 0
+            && (details.st_mode & mode_t(0o7777)) == mode_t(0o700)
     }
 
     private func isSecureRegularFile(_ descriptor: Int32) -> Bool {
@@ -124,7 +124,7 @@ public struct FileInstallerSelfUpdateOperationLock: InstallerSelfUpdateOperation
         return (details.st_mode & mode_t(S_IFMT)) == mode_t(S_IFREG)
             && details.st_uid == Darwin.geteuid()
             && details.st_nlink == 1
-            && (details.st_mode & mode_t(S_IRWXG | S_IRWXO)) == 0
+            && (details.st_mode & mode_t(0o7777)) == mode_t(0o600)
     }
 
     /// `URL.resolvingSymlinksInPath()` deliberately preserves some macOS

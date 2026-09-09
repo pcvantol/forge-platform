@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
+from dataclasses import replace
 from hashlib import sha256
 import json
 from pathlib import Path
@@ -25,6 +26,8 @@ from forge_platform.universal_installer import (  # noqa: E402
     AcceptedCatalogIdentity,
     COMPOSITION_CATALOG_SCHEMA,
     COMPOSITION_SCHEMA,
+    MAXIMUM_CANONICAL_HTTPS_URL_LENGTH,
+    MAXIMUM_INSTALLER_RELEASE_DESCRIPTOR_BYTES,
     CompositionCatalog,
     CompositionCatalogEntry,
     INSTALLER_RELEASE_SCHEMA,
@@ -34,6 +37,7 @@ from forge_platform.universal_installer import (  # noqa: E402
     DiscoveredInstallation,
     DownloadIdentity,
     HostFacts,
+    GitHubInstallerReleaseIdentity,
     InstalledCompositionIdentity,
     InstalledInstallerIdentity,
     InstallerRelease,
@@ -45,6 +49,7 @@ from forge_platform.universal_installer import (  # noqa: E402
     PublicSignatureEnvelope,
     ReleaseFeedReadback,
     SemanticVersion,
+    SealedInstallerReleaseTrustExpectation,
     SignatureThresholdPolicy,
     StandaloneInstallerJournal,
     SystemServiceContract,
@@ -52,6 +57,7 @@ from forge_platform.universal_installer import (  # noqa: E402
     VerifiedCompositionSelection,
     VerifiedInstallerContext,
     evaluate_provider_gate,
+    canonical_https_url,
     plan_managed_tools,
     preflight_host,
     provider_command,
@@ -67,6 +73,10 @@ OLD_EP_DIGEST = "sha256:" + "4" * 64
 GIT_DIGEST = "sha256:" + "5" * 64
 PYTHON_DIGEST = "sha256:" + "6" * 64
 MANIFEST_DIGEST = "sha256:" + "7" * 64
+RELEASE_TRUST_CONFIGURATION_SHA256 = "8" * 64
+PROVENANCE_SHA256 = "9" * 64
+CODE_DIRECTORY_SHA256 = "a" * 64
+NOTARIZATION_RECEIPT_REFERENCE = "receipt:fixture-notarization-arm64"
 INSTALLER_CAPABILITIES = (
     "composition/v1",
     "provider-gate/v1",
@@ -89,6 +99,13 @@ FIXTURE_SIGNATURE_POLICY = SignatureThresholdPolicy(
     algorithm="ed25519",
     trusted_key_ids=frozenset({"fixture-key-001"}),
     threshold=1,
+)
+SEALED_RELEASE_TRUST = SealedInstallerReleaseTrustExpectation(
+    repository="example/forge-platform",
+    descriptor_asset_name="ForgePlatformInstallerReleaseDescriptor.json",
+    expected_bundle_identifier="com.example.ForgePlatformInstaller",
+    expected_team_identifier="ABCDE12345",
+    configuration_sha256=RELEASE_TRUST_CONFIGURATION_SHA256,
 )
 
 
@@ -128,6 +145,13 @@ def release_metadata(
     channel: str = "stable",
     capabilities: tuple[str, ...] = INSTALLER_CAPABILITIES,
     catalog_url: str = CATALOG_URL,
+    release_trust_configuration_sha256: str = RELEASE_TRUST_CONFIGURATION_SHA256,
+    provenance_sha256: str = PROVENANCE_SHA256,
+    code_directory_sha256: str = CODE_DIRECTORY_SHA256,
+    release_tag: str | None = None,
+    descriptor_asset_name: str = "ForgePlatformInstallerReleaseDescriptor.json",
+    asset_name: str = "ForgePlatformInstaller-macos-arm64.zip",
+    notarization_receipt_reference: str = NOTARIZATION_RECEIPT_REFERENCE,
     expires_at: datetime | None = None,
 ) -> dict[str, object]:
     return {
@@ -136,19 +160,27 @@ def release_metadata(
         "channel": channel,
         "published_at": "2026-09-01T00:00:00Z",
         "expires_at": (expires_at or (NOW + timedelta(days=30))).isoformat().replace("+00:00", "Z"),
+        "github_release": {
+            "repository": "example/forge-platform",
+            "tag": release_tag or f"forge-platform-installer-v{version}",
+            "descriptor_asset_name": descriptor_asset_name,
+        },
         "installer": {
             "version": version,
             "source_revision": source_revision,
             "policy_revision": policy_revision,
+            "release_trust_configuration_sha256": release_trust_configuration_sha256,
+            "provenance_sha256": provenance_sha256,
             "capabilities": list(capabilities),
             "assets": [{
                 "operating_system": "macos",
                 "architecture": "arm64",
-                "url": f"https://github.example.invalid/releases/{version}/ForgePlatformInstaller-arm64.dmg",
+                "asset_name": asset_name,
                 "digest": digest,
                 "bundle_identifier": "com.example.ForgePlatformInstaller",
-                "team_identifier": "TEAMID",
-                "notarization_evidence": f"https://evidence.example.invalid/notarization/{version}/arm64",
+                "team_identifier": "ABCDE12345",
+                "code_directory_sha256": code_directory_sha256,
+                "notarization_receipt_reference": notarization_receipt_reference,
             }],
         },
         "composition_catalog": {
@@ -164,6 +196,7 @@ def trusted_release(**changes: object) -> InstallerRelease:
         payload,
         FixtureVerifier(),
         signature_policy=FIXTURE_SIGNATURE_POLICY,
+        sealed_release_trust=SEALED_RELEASE_TRUST,
     )
 
 
@@ -176,18 +209,25 @@ def installed(
     channel: str = "stable",
     accepted_sequence: int = 1,
     capabilities: tuple[str, ...] = INSTALLER_CAPABILITIES,
+    code_directory_sha256: str = CODE_DIRECTORY_SHA256,
+    notarization_receipt_reference: str = NOTARIZATION_RECEIPT_REFERENCE,
+    release_trust_configuration_sha256: str = RELEASE_TRUST_CONFIGURATION_SHA256,
+    provenance_sha256: str = PROVENANCE_SHA256,
 ) -> InstalledInstallerIdentity:
     return InstalledInstallerIdentity(
-        SemanticVersion.parse(version),
-        source_revision,
-        policy_revision,
-        digest,
-        "com.example.ForgePlatformInstaller",
-        "TEAMID",
-        f"https://evidence.example.invalid/notarization/{version}/arm64",
-        channel,
-        accepted_sequence,
-        frozenset(capabilities),
+        version=SemanticVersion.parse(version),
+        source_revision=source_revision,
+        accepted_policy_revision=policy_revision,
+        bundle_digest=digest,
+        bundle_identifier="com.example.ForgePlatformInstaller",
+        team_identifier="ABCDE12345",
+        code_directory_sha256=code_directory_sha256,
+        notarization_receipt_reference=notarization_receipt_reference,
+        accepted_channel=channel,
+        accepted_sequence=accepted_sequence,
+        accepted_release_trust_configuration_sha256=release_trust_configuration_sha256,
+        accepted_provenance_sha256=provenance_sha256,
+        accepted_capabilities=frozenset(capabilities),
     )
 
 
@@ -366,6 +406,7 @@ def current_context() -> VerifiedInstallerContext:
         architecture="arm64",
         now=NOW,
         release_feed=fresh_release_feed(),
+        sealed_release_trust=SEALED_RELEASE_TRUST,
     )
 
 
@@ -412,23 +453,61 @@ def selection(
 
 
 class UniversalInstallerTests(unittest.TestCase):
+    def test_canonical_https_urls_match_the_native_descriptor_admission_profile(self) -> None:
+        accepted = "https://CATALOG.example.invalid:443/releases/catalog%20stable.json?sequence=%7E1"
+        self.assertEqual(canonical_https_url(accepted, "catalog URL"), accepted)
+
+        for rejected in (
+            "http://catalog.example.invalid/catalog.json",
+            "https://user@catalog.example.invalid/catalog.json",
+            "https://catalog.example.invalid:444/catalog.json",
+            "https://catalog.example.invalid/catalog.json#fragment",
+            "https://catalog.example.invalid/catalog space.json",
+            "https://catalog.example.invalid/catalog%zz.json",
+            "https://cátalog.example.invalid/catalog.json",
+            "https://catalog.example.invalid?",
+            "https://catalog.example.invalid:" + "a" * (MAXIMUM_CANONICAL_HTTPS_URL_LENGTH + 1),
+        ):
+            with self.assertRaisesRegex(ValueError, "bounded canonical HTTPS URL"):
+                canonical_https_url(rejected, "catalog URL")
+
+    def test_signed_descriptor_bytes_are_bounded_before_json_or_signature_processing(self) -> None:
+        oversized = b"{" + b" " * MAXIMUM_INSTALLER_RELEASE_DESCRIPTOR_BYTES + b"}"
+        with self.assertRaisesRegex(UniversalInstallerError, "accepted byte bound"):
+            InstallerRelease.from_signed_bytes(
+                oversized,
+                FixtureVerifier(),
+                signature_policy=FIXTURE_SIGNATURE_POLICY,
+                sealed_release_trust=SEALED_RELEASE_TRUST,
+            )
+
     def test_signed_release_requires_a_trust_root_and_canonical_payload(self) -> None:
         verifier = FixtureVerifier()
         release = InstallerRelease.from_signed_metadata(
             release_metadata(),
             verifier,
             signature_policy=FIXTURE_SIGNATURE_POLICY,
+            sealed_release_trust=SEALED_RELEASE_TRUST,
         )
         self.assertEqual(release.version, SemanticVersion.parse("1.1.0"))
         self.assertEqual(len(verifier.payloads), 1)
         self.assertEqual(verifier.policies, [FIXTURE_SIGNATURE_POLICY])
         self.assertEqual(release.signatures, (FIXTURE_SIGNATURE,))
+        self.assertEqual(
+            release.github_release.descriptor_url,
+            "https://github.com/example/forge-platform/releases/download/forge-platform-installer-v1.1.0/ForgePlatformInstallerReleaseDescriptor.json",
+        )
+        self.assertEqual(
+            release.github_release.asset_url(release.assets[0].asset_name),
+            "https://github.com/example/forge-platform/releases/download/forge-platform-installer-v1.1.0/ForgePlatformInstaller-macos-arm64.zip",
+        )
         self.assertNotIn(b"signatures", verifier.payloads[0])
         with self.assertRaisesRegex(UniversalInstallerError, "signature verification failed"):
             InstallerRelease.from_signed_metadata(
                 release_metadata(),
                 FixtureVerifier(False),
                 signature_policy=FIXTURE_SIGNATURE_POLICY,
+                sealed_release_trust=SEALED_RELEASE_TRUST,
             )
         bad = release_metadata()
         bad["unexpected"] = "untrusted"  # type: ignore[index]
@@ -437,7 +516,21 @@ class UniversalInstallerTests(unittest.TestCase):
                 bad,
                 FixtureVerifier(),
                 signature_policy=FIXTURE_SIGNATURE_POLICY,
+                sealed_release_trust=SEALED_RELEASE_TRUST,
             )
+
+        self.assertEqual(
+            trusted_release(sequence=(1 << 64) - 1).sequence,
+            (1 << 64) - 1,
+        )
+        with self.assertRaisesRegex(ValueError, "UInt64"):
+            trusted_release(sequence=(1 << 64))
+        self.assertEqual(
+            str(SemanticVersion.parse("9223372036854775807.0.0")),
+            "9223372036854775807.0.0",
+        )
+        with self.assertRaisesRegex(ValueError, "Int64"):
+            SemanticVersion.parse("9223372036854775808.0.0")
 
     def test_public_signature_envelopes_enforce_key_ids_and_threshold_before_verification(self) -> None:
         verifier = FixtureVerifier()
@@ -448,6 +541,7 @@ class UniversalInstallerTests(unittest.TestCase):
                 opaque,
                 verifier,
                 signature_policy=FIXTURE_SIGNATURE_POLICY,
+                sealed_release_trust=SEALED_RELEASE_TRUST,
             )
         self.assertEqual(verifier.payloads, [])
 
@@ -462,6 +556,7 @@ class UniversalInstallerTests(unittest.TestCase):
                 untrusted,
                 verifier,
                 signature_policy=FIXTURE_SIGNATURE_POLICY,
+                sealed_release_trust=SEALED_RELEASE_TRUST,
             )
         self.assertEqual(verifier.payloads, [])
 
@@ -472,6 +567,7 @@ class UniversalInstallerTests(unittest.TestCase):
                 duplicate,
                 verifier,
                 signature_policy=FIXTURE_SIGNATURE_POLICY,
+                sealed_release_trust=SEALED_RELEASE_TRUST,
             )
         self.assertEqual(verifier.payloads, [])
 
@@ -485,6 +581,7 @@ class UniversalInstallerTests(unittest.TestCase):
                 release_metadata(),
                 verifier,
                 signature_policy=threshold_policy,
+                sealed_release_trust=SEALED_RELEASE_TRUST,
             )
         self.assertEqual(verifier.payloads, [])
 
@@ -501,51 +598,239 @@ class UniversalInstallerTests(unittest.TestCase):
             threshold_payload,
             threshold_verifier,
             signature_policy=threshold_policy,
+            sealed_release_trust=SEALED_RELEASE_TRUST,
         )
         self.assertEqual(release.signatures, (FIXTURE_SIGNATURE, SECOND_FIXTURE_SIGNATURE))
         self.assertEqual(threshold_verifier.policies, [threshold_policy])
 
+    def test_release_descriptor_rejects_arbitrary_asset_urls_and_mismatched_sealed_provenance(self) -> None:
+        injected = release_metadata()
+        injected["installer"]["assets"][0]["url"] = "https://attacker.example.invalid/installer.zip"  # type: ignore[index]
+        with self.assertRaisesRegex(ValueError, "fields are invalid"):
+            InstallerRelease.from_signed_metadata(
+                injected,
+                FixtureVerifier(),
+                signature_policy=FIXTURE_SIGNATURE_POLICY,
+                sealed_release_trust=SEALED_RELEASE_TRUST,
+            )
+
+        bad_tag = release_metadata(release_tag="../other-release")
+        with self.assertRaisesRegex(ValueError, "GitHub release tag"):
+            InstallerRelease.from_signed_metadata(
+                bad_tag,
+                FixtureVerifier(),
+                signature_policy=FIXTURE_SIGNATURE_POLICY,
+                sealed_release_trust=SEALED_RELEASE_TRUST,
+            )
+
+        for repository in ("owner/..", "./repo", "owner/."):
+            dot_segment = release_metadata()
+            dot_segment["github_release"]["repository"] = repository  # type: ignore[index]
+            with self.assertRaisesRegex(ValueError, "GitHub release repository"):
+                InstallerRelease.from_signed_metadata(
+                    dot_segment,
+                    FixtureVerifier(),
+                    signature_policy=FIXTURE_SIGNATURE_POLICY,
+                    sealed_release_trust=SEALED_RELEASE_TRUST,
+                )
+
+        redirected = release_metadata()
+        redirected["github_release"]["repository"] = "other-owner/other-repository"  # type: ignore[index]
+        with self.assertRaisesRegex(ValueError, "does not match the sealed trust"):
+            InstallerRelease.from_signed_metadata(
+                redirected,
+                FixtureVerifier(),
+                signature_policy=FIXTURE_SIGNATURE_POLICY,
+                sealed_release_trust=SEALED_RELEASE_TRUST,
+            )
+
+        # The selector repeats the binding so a manually constructed model can
+        # never bypass parser admission and redirect a live update.
+        forged_model = replace(
+            trusted_release(),
+            github_release=GitHubInstallerReleaseIdentity(
+                repository="other-owner/other-repository",
+                tag="forge-platform-installer-v1.1.0",
+                descriptor_asset_name="ForgePlatformInstallerReleaseDescriptor.json",
+            ),
+        )
+        with self.assertRaisesRegex(UniversalInstallerError, "sealed trust configuration"):
+            select_self_update(
+                installed(),
+                [forged_model],
+                channel="stable",
+                architecture="arm64",
+                now=NOW,
+                release_feed=fresh_release_feed(),
+                sealed_release_trust=SEALED_RELEASE_TRUST,
+            )
+
+        current = trusted_release()
+        mismatched = installed(
+            version="1.1.0",
+            source_revision="b" * 40,
+            digest=NEW_DIGEST,
+            accepted_sequence=2,
+            provenance_sha256="f" * 64,
+        )
+        decision = select_self_update(
+            mismatched,
+            [current],
+            channel="stable",
+            architecture="arm64",
+            now=NOW,
+            release_feed=fresh_release_feed(),
+            sealed_release_trust=SEALED_RELEASE_TRUST,
+        )
+        self.assertEqual(decision.state, "SELF_UPDATE_BLOCKED")
+        self.assertIn("different immutable provenance", decision.reason)
+
+    def test_signed_release_bytes_reject_duplicate_json_keys_before_verification(self) -> None:
+        raw = json.dumps(release_metadata(), separators=(",", ":"))
+        duplicate = raw[:-1] + ',"sequence":2}'
+        with self.assertRaisesRegex(UniversalInstallerError, "strict JSON"):
+            InstallerRelease.from_signed_bytes(
+                duplicate.encode("utf-8"),
+                FixtureVerifier(),
+                signature_policy=FIXTURE_SIGNATURE_POLICY,
+                sealed_release_trust=SEALED_RELEASE_TRUST,
+            )
+
     def test_older_installer_must_handoff_to_newer_verified_release(self) -> None:
-        decision = select_self_update(installed(), [trusted_release()], channel="stable", architecture="arm64", now=NOW, release_feed=fresh_release_feed())
+        decision = select_self_update(
+            installed(),
+            [trusted_release()],
+            channel="stable",
+            architecture="arm64",
+            now=NOW,
+            release_feed=fresh_release_feed(),
+            sealed_release_trust=SEALED_RELEASE_TRUST,
+        )
         self.assertEqual(decision.state, "SELF_UPDATE_REQUIRED")
         self.assertTrue(decision.old_process_must_exit)
         self.assertFalse(decision.permits_platform_mutation)
         self.assertEqual(str(decision.target_release.version), "1.1.0")  # type: ignore[union-attr]
-        self.assertEqual(decision.target_asset.download.digest, NEW_DIGEST)  # type: ignore[union-attr]
+        self.assertEqual(decision.target_asset.archive_digest, NEW_DIGEST)  # type: ignore[union-attr]
+
+    def test_newer_installer_may_rotate_its_target_trust_configuration(self) -> None:
+        rotated = trusted_release(
+            version="1.2.0",
+            sequence=3,
+            release_trust_configuration_sha256="f" * 64,
+            provenance_sha256="e" * 64,
+        )
+        decision = select_self_update(
+            installed(),
+            [rotated],
+            channel="stable",
+            architecture="arm64",
+            now=NOW,
+            release_feed=fresh_release_feed(),
+            sealed_release_trust=SEALED_RELEASE_TRUST,
+        )
+        self.assertEqual(decision.state, "SELF_UPDATE_REQUIRED")
+
+        current_config_mismatch = select_self_update(
+            installed(release_trust_configuration_sha256="f" * 64),
+            [rotated],
+            channel="stable",
+            architecture="arm64",
+            now=NOW,
+            release_feed=fresh_release_feed(),
+            sealed_release_trust=SEALED_RELEASE_TRUST,
+        )
+        self.assertEqual(current_config_mismatch.state, "SELF_UPDATE_BLOCKED")
+        self.assertIn("installed installer identity", current_config_mismatch.reason)
 
     def test_same_installer_version_with_other_bytes_fails_closed_not_overwrites(self) -> None:
-        release = trusted_release(version="1.0.0", source_revision="z" * 40, digest=NEW_DIGEST)
-        decision = select_self_update(installed(), [release], channel="stable", architecture="arm64", now=NOW, release_feed=fresh_release_feed())
+        release = trusted_release(version="1.0.0", source_revision="e" * 40, digest=NEW_DIGEST)
+        decision = select_self_update(
+            installed(),
+            [release],
+            channel="stable",
+            architecture="arm64",
+            now=NOW,
+            release_feed=fresh_release_feed(),
+            sealed_release_trust=SEALED_RELEASE_TRUST,
+        )
         self.assertEqual(decision.state, "SELF_UPDATE_BLOCKED")
         self.assertIn("different immutable provenance", decision.reason)
         duplicate = trusted_release(version="1.1.0", source_revision="c" * 40, digest="sha256:" + "9" * 64, sequence=3)
         with self.assertRaisesRegex(UniversalInstallerError, "conflicting immutable metadata"):
-            select_self_update(installed(), [trusted_release(), duplicate], channel="stable", architecture="arm64", now=NOW, release_feed=fresh_release_feed())
+            select_self_update(
+                installed(),
+                [trusted_release(), duplicate],
+                channel="stable",
+                architecture="arm64",
+                now=NOW,
+                release_feed=fresh_release_feed(),
+                sealed_release_trust=SEALED_RELEASE_TRUST,
+            )
         policy_changed = trusted_release(version="1.1.0", policy_revision="forge-platform-installer-release-v2", sequence=4)
         with self.assertRaisesRegex(UniversalInstallerError, "conflicting immutable metadata"):
-            select_self_update(installed(), [trusted_release(), policy_changed], channel="stable", architecture="arm64", now=NOW, release_feed=fresh_release_feed())
+            select_self_update(
+                installed(),
+                [trusted_release(), policy_changed],
+                channel="stable",
+                architecture="arm64",
+                now=NOW,
+                release_feed=fresh_release_feed(),
+                sealed_release_trust=SEALED_RELEASE_TRUST,
+            )
 
     def test_self_update_rejects_replayed_sequence_and_higher_unproven_local_version(self) -> None:
         current = trusted_release(version="1.1.0", source_revision="b" * 40, digest=NEW_DIGEST, sequence=2)
         matching = installed(version="1.1.0", source_revision="b" * 40, digest=NEW_DIGEST, accepted_sequence=2)
         self.assertEqual(
-            select_self_update(matching, [current], channel="stable", architecture="arm64", now=NOW, release_feed=fresh_release_feed()).state,
+            select_self_update(
+                matching,
+                [current],
+                channel="stable",
+                architecture="arm64",
+                now=NOW,
+                release_feed=fresh_release_feed(),
+                sealed_release_trust=SEALED_RELEASE_TRUST,
+            ).state,
             "CURRENT",
         )
         replayed = installed(version="1.1.0", source_revision="b" * 40, digest=NEW_DIGEST, accepted_sequence=3)
         self.assertEqual(
-            select_self_update(replayed, [current], channel="stable", architecture="arm64", now=NOW, release_feed=fresh_release_feed()).state,
+            select_self_update(
+                replayed,
+                [current],
+                channel="stable",
+                architecture="arm64",
+                now=NOW,
+                release_feed=fresh_release_feed(),
+                sealed_release_trust=SEALED_RELEASE_TRUST,
+            ).state,
             "SELF_UPDATE_BLOCKED",
         )
         unproven_higher = installed(version="1.2.0", accepted_sequence=3)
         self.assertEqual(
-            select_self_update(unproven_higher, [current], channel="stable", architecture="arm64", now=NOW, release_feed=fresh_release_feed()).state,
+            select_self_update(
+                unproven_higher,
+                [current],
+                channel="stable",
+                architecture="arm64",
+                now=NOW,
+                release_feed=fresh_release_feed(),
+                sealed_release_trust=SEALED_RELEASE_TRUST,
+            ).state,
             "SELF_UPDATE_BLOCKED",
         )
 
     def test_expired_or_architecture_missing_release_blocks_platform_mutation(self) -> None:
         expired = trusted_release(expires_at=NOW - timedelta(seconds=1))
-        decision = select_self_update(installed(), [expired], channel="stable", architecture="arm64", now=NOW, release_feed=fresh_release_feed())
+        decision = select_self_update(
+            installed(),
+            [expired],
+            channel="stable",
+            architecture="arm64",
+            now=NOW,
+            release_feed=fresh_release_feed(),
+            sealed_release_trust=SEALED_RELEASE_TRUST,
+        )
         self.assertEqual(decision.state, "SELF_UPDATE_BLOCKED")
 
     def test_self_update_requires_fresh_trusted_feed_and_preserves_accepted_channel(self) -> None:
@@ -558,6 +843,7 @@ class UniversalInstallerTests(unittest.TestCase):
             architecture="arm64",
             now=NOW,
             release_feed=fresh_release_feed(fresh_until=NOW),
+            sealed_release_trust=SEALED_RELEASE_TRUST,
         )
         self.assertEqual(stale.state, "SELF_UPDATE_BLOCKED")
         untrusted_clock = select_self_update(
@@ -567,6 +853,7 @@ class UniversalInstallerTests(unittest.TestCase):
             architecture="arm64",
             now=NOW,
             release_feed=fresh_release_feed(trusted_clock=False),
+            sealed_release_trust=SEALED_RELEASE_TRUST,
         )
         self.assertEqual(untrusted_clock.state, "SELF_UPDATE_BLOCKED")
         channel_switch = select_self_update(
@@ -576,6 +863,7 @@ class UniversalInstallerTests(unittest.TestCase):
             architecture="arm64",
             now=NOW,
             release_feed=fresh_release_feed(),
+            sealed_release_trust=SEALED_RELEASE_TRUST,
         )
         self.assertEqual(channel_switch.state, "SELF_UPDATE_BLOCKED")
 
@@ -650,7 +938,15 @@ class UniversalInstallerTests(unittest.TestCase):
             parsed.catalog_digest,
         )
         arm_only = trusted_release()
-        decision = select_self_update(installed(), [arm_only], channel="stable", architecture="x86_64", now=NOW, release_feed=fresh_release_feed())
+        decision = select_self_update(
+            installed(),
+            [arm_only],
+            channel="stable",
+            architecture="x86_64",
+            now=NOW,
+            release_feed=fresh_release_feed(),
+            sealed_release_trust=SEALED_RELEASE_TRUST,
+        )
         self.assertEqual(decision.state, "SELF_UPDATE_BLOCKED")
 
     def test_catalog_without_the_new_index_locator_stays_parseable_but_cannot_bind_one(self) -> None:

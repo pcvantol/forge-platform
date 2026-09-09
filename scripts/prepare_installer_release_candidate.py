@@ -109,7 +109,8 @@ def _candidate_manifest(value: str) -> tuple[Path, bytes, Mapping[str, object]]:
     except (UnicodeDecodeError, ValueError, json.JSONDecodeError) as error:
         raise ValueError("installer candidate manifest is not strict UTF-8 JSON") from error
     expected = {
-        "schema", "product", "source_revision", "version", "channel", "policy_revision",
+        "schema", "product", "source_revision", "version", "channel", "release_sequence", "policy_revision",
+        "provenance_sha256", "release_trust_configuration_sha256",
         "bundle_identifier", "capabilities", "archives",
     }
     if not isinstance(parsed, dict) or set(parsed) != expected:
@@ -197,7 +198,10 @@ def _validate_candidate(
     source_revision: str,
     installer_version: str,
     channel: str,
+    release_sequence: int,
     policy_revision: str,
+    provenance_sha256: str,
+    release_trust_configuration_sha256: str,
     bundle_identifier: str,
     asset_names: Mapping[str, str],
 ) -> tuple[tuple[str, ...], dict[str, str]]:
@@ -207,7 +211,10 @@ def _validate_candidate(
         "source_revision": source_revision,
         "version": installer_version,
         "channel": channel,
+        "release_sequence": release_sequence,
         "policy_revision": policy_revision,
+        "provenance_sha256": provenance_sha256,
+        "release_trust_configuration_sha256": release_trust_configuration_sha256,
         "bundle_identifier": bundle_identifier,
     }
     for field, expected in expected_fields.items():
@@ -218,6 +225,8 @@ def _validate_candidate(
         raise ValueError("installer candidate manifest capabilities are invalid")
     if len(set(capabilities)) != len(capabilities):
         raise ValueError("installer candidate manifest capabilities must be unique")
+    if capabilities != sorted(capabilities):
+        raise ValueError("installer candidate manifest capabilities must be strictly sorted")
     archive_manifest = manifest["archives"]
     if not isinstance(archive_manifest, dict) or set(archive_manifest) != set(archive_inputs):
         raise ValueError("installer candidate manifest archives do not exactly match supplied archives")
@@ -291,7 +300,9 @@ def prepare(
     operation_id: str,
     installer_version: str,
     channel: str,
+    release_sequence: int,
     policy_revision: str,
+    provenance_sha256: str,
     release_identity_path: Path,
     journal_root: Path,
     output: Path,
@@ -310,7 +321,10 @@ def prepare(
         source_revision=source_revision,
         installer_version=installer_version,
         channel=channel,
+        release_sequence=release_sequence,
         policy_revision=policy_revision,
+        provenance_sha256=provenance_sha256,
+        release_trust_configuration_sha256=identity.release_trust_configuration_sha256,
         bundle_identifier=identity.bundle_identifier,
         asset_names={architecture: identity.asset_name(architecture) for architecture in archive_inputs},
     )
@@ -318,8 +332,10 @@ def prepare(
         operation_id=operation_id,
         installer_version=installer_version,
         channel=channel,
+        release_sequence=release_sequence,
         source_revision=source_revision,
         policy_revision=policy_revision,
+        provenance_sha256=provenance_sha256,
         release_identity=identity,
         capabilities=capabilities,
         preparation=InstallerPreparationEvidence(
@@ -346,7 +362,9 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--operation-id", required=True)
     parser.add_argument("--installer-version", required=True)
     parser.add_argument("--channel", required=True)
+    parser.add_argument("--release-sequence", required=True, type=int)
     parser.add_argument("--policy-revision", required=True)
+    parser.add_argument("--provenance-sha256", required=True)
     parser.add_argument("--release-identity", required=True)
     parser.add_argument("--journal-root", required=True)
     parser.add_argument("--output", required=True)
@@ -360,7 +378,9 @@ def main(argv: list[str] | None = None) -> int:
             operation_id=args.operation_id,
             installer_version=args.installer_version,
             channel=args.channel,
+            release_sequence=args.release_sequence,
             policy_revision=args.policy_revision,
+            provenance_sha256=args.provenance_sha256,
             release_identity_path=Path(args.release_identity),
             journal_root=Path(args.journal_root),
             output=Path(args.output),

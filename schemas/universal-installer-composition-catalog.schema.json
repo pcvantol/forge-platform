@@ -28,7 +28,12 @@
   },
   "$defs": {
     "sha256": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
-    "https_url": {"type": "string", "pattern": "^https://[^\\s@/]+(?:/[^\\s]*)?$"},
+    "https_url": {
+      "type": "string",
+      "maxLength": 2048,
+      "pattern": "^https://(?:[A-Za-z0-9._-]+(?::443)?|\\[[0-9A-Fa-f:.]+\\](?::443)?)(?:/[A-Za-z0-9._~!$&'()*+,;=:@%/?-]*)?(?:\\?[A-Za-z0-9._~!$&'()*+,;=:@%/?-]*)?$",
+      "description": "ASCII canonical HTTPS URL: no user info or fragment, and port omitted or exactly 443. Runtime parsers also reject malformed percent escapes and non-canonical serialization."
+    },
     "component_combination_catalog_locator": {
       "description": "Digest-pinned locator for the versioned component-combination selection index. The enclosing signed catalog is the trust root; the index has no independent mutable latest pointer.",
       "type": "object",

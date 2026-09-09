@@ -57,6 +57,20 @@ final class SelfUpdateOperationLockTests: XCTestCase {
         assertFailure(lock.acquireExclusiveSelfUpdateOperationLock(), code: .selfUpdateOperationLockUnavailable)
     }
 
+    func testFileLockFailsClosedForAStateDirectoryWithSpecialPermissionBits() throws {
+        let stateDirectory = try makeStateDirectory()
+        defer { try? FileManager.default.removeItem(at: stateDirectory) }
+        try FileManager.default.createDirectory(
+            at: stateDirectory,
+            withIntermediateDirectories: false,
+            attributes: [.posixPermissions: 0o700]
+        )
+        try FileManager.default.setAttributes([.posixPermissions: 0o1700], ofItemAtPath: stateDirectory.path)
+
+        let lock = FileInstallerSelfUpdateOperationLock(rootDirectory: stateDirectory)
+        assertFailure(lock.acquireExclusiveSelfUpdateOperationLock(), code: .selfUpdateOperationLockUnavailable)
+    }
+
     private func makeStateDirectory() throws -> URL {
         let parent = FileManager.default.temporaryDirectory
             .appendingPathComponent("forge-platform-installer-lock-tests", isDirectory: true)
