@@ -1,0 +1,71 @@
+name: Forge Platform production composition release
+
+on:
+  workflow_dispatch:
+    inputs:
+      source_sha:
+        description: Exact already-merged origin/main commit to qualify
+        required: true
+        type: string
+      composition_manifest:
+        description: Repository-relative, evidence-complete component manifest
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  release-composition:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v5
+        with: {ref: ${{ inputs.source_sha }}, fetch-depth: 0}
+      - name: Verify protected source and qualify composition evidence
+        env:
+          SOURCE_SHA: ${{ inputs.source_sha }}
+          MANIFEST: ${{ inputs.composition_manifest }}
+        run: |
+          set -euo pipefail
+          case "$MANIFEST" in ''|/*|*'..'*) echo 'manifest path must remain within the source checkout' >&2; exit 1;; esac
+          git fetch --no-tags origin main
+          test "$SOURCE_SHA" = "$(git rev-parse HEAD)"
+          test "$SOURCE_SHA" = "$(git rev-parse origin/main)"
+          test -z "$(git status --porcelain)"
+          sh scripts/validate.sh
+          VERSION="$(python3 -c 'import json; print(json.load(open("product-version.json"))["version"])')"
+          python3 scripts/qualify_release_composition.py --manifest "$MANIFEST" --version "$VERSION" --source-sha "$SOURCE_SHA"
+          cp "$MANIFEST" "forge-platform-composition-$VERSION-$SOURCE_SHA.json"
+          echo "SOURCE_SHA=$SOURCE_SHA" >> "$GITHUB_ENV"
+          echo "version=$VERSION" >> "$GITHUB_ENV"
+          echo "receipt=forge-platform-release-complete-$VERSION-$SOURCE_SHA.json" >> "$GITHUB_ENV"
+          echo "composition=forge-platform-composition-$VERSION-$SOURCE_SHA.json" >> "$GITHUB_ENV"
+      - name: Publish or verify immutable composition receipt
+        env: {GH_TOKEN: ${{ github.token }}}
+        run: |
+          set -euo pipefail
+          export COMPOSITION_DIGEST="sha256:$(sha256sum "$composition" | cut -d' ' -f1)"
+          python3 - <<'PY'
+          import json, os
+          from pathlib import Path
+          Path(os.environ['receipt']).write_text(json.dumps({
+              'schema_version': 1,
+              'operation_id': f"forge-platform-{os.environ['version']}-{os.environ['SOURCE_SHA']}",
+              'product': 'forge-platform',
+              'version': os.environ['version'],
+              'source_revision': os.environ['SOURCE_SHA'],
+              'policy_revision': 'forge-platform-bootstrap-release-cadence-v2',
+              'publication': {'state': 'PUBLISHED', 'registry': 'github-release', 'composition_manifest': os.environ['composition'], 'composition_digest': os.environ['COMPOSITION_DIGEST']},
+              'state': 'RELEASE_COMPLETE',
+          }, indent=2, sort_keys=True) + '\n')
+          PY
+          TAG="forge-platform-v$version"
+          if gh release view "$TAG" --json targetCommitish >/dev/null 2>&1; then
+            test "$(gh release view "$TAG" --json targetCommitish --jq .targetCommitish)" = "$SOURCE_SHA"
+            mkdir readback
+            gh release download "$TAG" --pattern "$composition" --pattern "$receipt" --dir readback
+            cmp "$composition" "readback/$composition"
+            cmp "$receipt" "readback/$receipt"
+          else
+            gh release create "$TAG" "$composition" "$receipt" --target "$SOURCE_SHA" --title "Forge Platform $version" --generate-notes
+          fi
