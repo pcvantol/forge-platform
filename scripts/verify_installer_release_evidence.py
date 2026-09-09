@@ -3,11 +3,13 @@
 
 This is intentionally a structural evidence verifier, not a cryptographic
 signer or trust-root implementation.  A protected signing/notarization stage
-must verify descriptor signatures and Apple evidence before it supplies the
-opaque qualification receipt retained by ``InstallerReleaseOperation``.  This
-script then makes sure that the supplied descriptor, exact archive bytes,
-candidate source, and durable operation describe the same release identity.
-It never downloads, signs, notarizes, or publishes an artifact.
+must cryptographically verify the descriptor's structured public signature
+envelopes and Apple evidence before it supplies the opaque qualification
+receipt retained by ``InstallerReleaseOperation``.  This script enforces the
+same reviewed key-ID/threshold envelope policy, then makes sure that the
+supplied descriptor, exact archive bytes, candidate source, and durable
+operation describe the same release identity.  It never downloads, signs,
+notarizes, or publishes an artifact.
 """
 
 from __future__ import annotations
@@ -29,6 +31,10 @@ sys.path.insert(0, str(ROOT))
 from forge_platform.installer_release_operation import (  # noqa: E402
     InstallerReleaseOperation,
     InstallerReleaseOperationError,
+)
+from forge_platform.universal_installer import (  # noqa: E402
+    SignatureThresholdPolicy,
+    parse_public_signature_envelopes,
 )
 
 
@@ -190,6 +196,29 @@ def _descriptor_assets(
             raise ValueError("descriptor asset digest does not bind the operation archive")
 
 
+def _descriptor_signature_envelopes(
+    signatures_value: object,
+    operation: InstallerReleaseOperation,
+) -> None:
+    """Require the descriptor to expose the reviewed public threshold shape.
+
+    This deliberately stops before cryptographic verification: only the
+    protected signer/notarization environment owns a concrete public-key trust
+    root.  The structural gate still rejects opaque signatures, untrusted key
+    IDs, duplicate key IDs, algorithm drift and insufficient threshold evidence
+    before that later verifier can issue a qualification receipt.
+    """
+
+    policy = SignatureThresholdPolicy(
+        algorithm=operation.release_identity.signature_algorithm,
+        trusted_key_ids=frozenset(operation.release_identity.signature_key_ids),
+        threshold=operation.release_identity.signature_threshold,
+    )
+    policy.require_eligible(
+        parse_public_signature_envelopes(signatures_value, label="installer release descriptor")
+    )
+
+
 def verify(
     *,
     operation_raw: bytes,
@@ -259,11 +288,7 @@ def verify(
         raise ValueError("descriptor expiry does not follow publication")
     catalog = _mapping(descriptor["composition_catalog"], frozenset({"url"}), "descriptor catalog")
     _https_url(catalog["url"], "descriptor catalog URL")
-    signatures = descriptor["signatures"]
-    if not isinstance(signatures, list) or not signatures or any(
-        not isinstance(signature, str) or not signature for signature in signatures
-    ):
-        raise ValueError("descriptor signatures are required for protected external verification")
+    _descriptor_signature_envelopes(descriptor["signatures"], operation)
     _descriptor_assets(descriptor, operation)
     if _file_digest_bytes(descriptor_raw) != operation.descriptor_digest:
         raise ValueError("descriptor digest does not bind the durable operation")
@@ -318,6 +343,8 @@ def main() -> None:
             f" version={operation.installer_version}"
             f" tag={operation.release_tag}"
             f" state={operation.state}"
+            f" signature_envelopes=STRUCTURALLY_BOUND"
+            f" threshold={operation.release_identity.signature_threshold}"
             " cryptographic_signature_verification=NOT_PERFORMED"
         )
     except (OSError, ValueError) as error:

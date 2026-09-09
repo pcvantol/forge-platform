@@ -29,6 +29,11 @@ SOURCE_SHA = "a" * 40
 CAPABILITIES = ["composition/v1", "provider-gate/v1", "system-launchdaemon/v1"]
 POLICY_REVISION = "forge-platform-installer-release-v1"
 CANDIDATE_MANIFEST_DIGEST = "sha256:" + "b" * 64
+SIGNATURE_ENVELOPE = {
+    "algorithm": "ed25519",
+    "key_id": "release-key-001",
+    "signature": "A" * 86,
+}
 IDENTITY = InstallerReleaseIdentity(
     github_repository="example/forge-platform",
     bundle_identifier="com.example.forge-platform-installer",
@@ -52,6 +57,8 @@ class VerifyInstallerReleaseEvidenceTests(unittest.TestCase):
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertIn("INSTALLER_RELEASE_EVIDENCE_STRUCTURE=PASS", result.stdout)
             self.assertIn("tag=forge-platform-installer-v0.1.0", result.stdout)
+            self.assertIn("signature_envelopes=STRUCTURALLY_BOUND", result.stdout)
+            self.assertIn("threshold=1", result.stdout)
             self.assertIn("cryptographic_signature_verification=NOT_PERFORMED", result.stdout)
 
     def test_rejects_an_archive_with_changed_bytes(self) -> None:
@@ -108,18 +115,29 @@ class VerifyInstallerReleaseEvidenceTests(unittest.TestCase):
             self.assertNotEqual(result.returncode, 0)
             self.assertIn("requested installer release context", result.stderr)
 
-    def test_rejects_an_unsigned_or_unrecognized_descriptor_shape(self) -> None:
+    def test_rejects_opaque_or_untrusted_descriptor_signature_envelopes(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             workspace = Path(temporary)
             operation_path, descriptor_path, archive = self._write_release_inputs(workspace)
             descriptor = json.loads(descriptor_path.read_text(encoding="utf-8"))
-            descriptor["signatures"] = []
+            descriptor["signatures"] = ["opaque-signature"]
             descriptor_path.write_text(json.dumps(descriptor), encoding="utf-8")
 
             result = self._run(operation_path, descriptor_path, archive)
 
             self.assertNotEqual(result.returncode, 0)
-            self.assertIn("signatures", result.stderr)
+            self.assertIn("signature envelope", result.stderr)
+
+            descriptor["signatures"] = [{
+                "algorithm": "ed25519",
+                "key_id": "untrusted-key-002",
+                "signature": "A" * 86,
+            }]
+            descriptor_path.write_text(json.dumps(descriptor), encoding="utf-8")
+            result = self._run(operation_path, descriptor_path, archive)
+
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("not trusted by policy", result.stderr)
 
     @staticmethod
     def _run(
@@ -202,7 +220,7 @@ class VerifyInstallerReleaseEvidenceTests(unittest.TestCase):
             "composition_catalog": {
                 "url": "https://github.com/pcvantol/forge-platform/releases/download/forge-platform-installer-v0.1.0/catalog.json"
             },
-            "signatures": ["opaque-signature"],
+            "signatures": [dict(SIGNATURE_ENVELOPE)],
         }
         descriptor_path = workspace / "installer-release-descriptor.json"
         descriptor_path.write_bytes(

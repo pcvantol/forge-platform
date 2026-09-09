@@ -41,8 +41,10 @@ from forge_platform.universal_installer import (  # noqa: E402
     ManagedToolReadback,
     ProviderReadback,
     ProviderSelection,
+    PublicSignatureEnvelope,
     ReleaseFeedReadback,
     SemanticVersion,
+    SignatureThresholdPolicy,
     StandaloneInstallerJournal,
     SystemServiceContract,
     UniversalInstallerError,
@@ -70,16 +72,49 @@ INSTALLER_CAPABILITIES = (
     "system-launchdaemon/v1",
 )
 CATALOG_URL = "https://github.example.invalid/forge-platform-installer/stable/composition-catalog.json"
+FIXTURE_SIGNATURE_ENVELOPE = {
+    "algorithm": "ed25519",
+    "key_id": "fixture-key-001",
+    "signature": "A" * 86,
+}
+FIXTURE_SIGNATURE = PublicSignatureEnvelope.from_mapping(FIXTURE_SIGNATURE_ENVELOPE)
+SECOND_FIXTURE_SIGNATURE_ENVELOPE = {
+    "algorithm": "ed25519",
+    "key_id": "fixture-key-002",
+    "signature": "B" * 86,
+}
+SECOND_FIXTURE_SIGNATURE = PublicSignatureEnvelope.from_mapping(SECOND_FIXTURE_SIGNATURE_ENVELOPE)
+FIXTURE_SIGNATURE_POLICY = SignatureThresholdPolicy(
+    algorithm="ed25519",
+    trusted_key_ids=frozenset({"fixture-key-001"}),
+    threshold=1,
+)
 
 
 class FixtureVerifier:
-    def __init__(self, accepted: bool = True) -> None:
+    def __init__(
+        self,
+        accepted: bool = True,
+        *,
+        expected_policy: SignatureThresholdPolicy = FIXTURE_SIGNATURE_POLICY,
+        expected_signatures: tuple[PublicSignatureEnvelope, ...] = (FIXTURE_SIGNATURE,),
+    ) -> None:
         self.accepted = accepted
+        self.expected_policy = expected_policy
+        self.expected_signatures = expected_signatures
         self.payloads: list[bytes] = []
+        self.policies: list[SignatureThresholdPolicy] = []
 
-    def verify(self, canonical_payload: bytes, signatures: tuple[str, ...]) -> bool:
+    def verify(
+        self,
+        canonical_payload: bytes,
+        signatures: tuple[PublicSignatureEnvelope, ...],
+        *,
+        policy: SignatureThresholdPolicy,
+    ) -> bool:
         self.payloads.append(canonical_payload)
-        return self.accepted and signatures == ("ed25519:fixture",)
+        self.policies.append(policy)
+        return self.accepted and policy == self.expected_policy and signatures == self.expected_signatures
 
 
 def release_metadata(
@@ -118,13 +153,17 @@ def release_metadata(
         "composition_catalog": {
             "url": catalog_url,
         },
-        "signatures": ["ed25519:fixture"],
+        "signatures": [dict(FIXTURE_SIGNATURE_ENVELOPE)],
     }
 
 
 def trusted_release(**changes: object) -> InstallerRelease:
     payload = release_metadata(**changes)
-    return InstallerRelease.from_signed_metadata(payload, FixtureVerifier())
+    return InstallerRelease.from_signed_metadata(
+        payload,
+        FixtureVerifier(),
+        signature_policy=FIXTURE_SIGNATURE_POLICY,
+    )
 
 
 def installed(
@@ -354,7 +393,7 @@ def selection(
             "digest": "sha256:" + sha256(raw_manifest).hexdigest(),
             "requires_installer": {"minimum_version": "1.0.0", "capabilities": list(INSTALLER_CAPABILITIES)},
         }],
-        "signatures": ["ed25519:fixture"],
+        "signatures": [dict(FIXTURE_SIGNATURE_ENVELOPE)],
     }
     raw_catalog = json.dumps(catalog, sort_keys=True, separators=(",", ":")).encode("utf-8")
     return VerifiedCompositionSelection.establish(
@@ -362,6 +401,7 @@ def selection(
         catalog_source_url=CATALOG_URL,
         catalog_raw_bytes=raw_catalog,
         catalog_verifier=FixtureVerifier(),
+        catalog_signature_policy=FIXTURE_SIGNATURE_POLICY,
         accepted_catalog=accepted_catalog,
         composition_id=composition_id,
         manifest_raw_bytes=raw_manifest,
@@ -373,16 +413,96 @@ def selection(
 class UniversalInstallerTests(unittest.TestCase):
     def test_signed_release_requires_a_trust_root_and_canonical_payload(self) -> None:
         verifier = FixtureVerifier()
-        release = InstallerRelease.from_signed_metadata(release_metadata(), verifier)
+        release = InstallerRelease.from_signed_metadata(
+            release_metadata(),
+            verifier,
+            signature_policy=FIXTURE_SIGNATURE_POLICY,
+        )
         self.assertEqual(release.version, SemanticVersion.parse("1.1.0"))
         self.assertEqual(len(verifier.payloads), 1)
+        self.assertEqual(verifier.policies, [FIXTURE_SIGNATURE_POLICY])
+        self.assertEqual(release.signatures, (FIXTURE_SIGNATURE,))
         self.assertNotIn(b"signatures", verifier.payloads[0])
         with self.assertRaisesRegex(UniversalInstallerError, "signature verification failed"):
-            InstallerRelease.from_signed_metadata(release_metadata(), FixtureVerifier(False))
+            InstallerRelease.from_signed_metadata(
+                release_metadata(),
+                FixtureVerifier(False),
+                signature_policy=FIXTURE_SIGNATURE_POLICY,
+            )
         bad = release_metadata()
         bad["unexpected"] = "untrusted"  # type: ignore[index]
         with self.assertRaisesRegex(ValueError, "fields are invalid"):
-            InstallerRelease.from_signed_metadata(bad, FixtureVerifier())
+            InstallerRelease.from_signed_metadata(
+                bad,
+                FixtureVerifier(),
+                signature_policy=FIXTURE_SIGNATURE_POLICY,
+            )
+
+    def test_public_signature_envelopes_enforce_key_ids_and_threshold_before_verification(self) -> None:
+        verifier = FixtureVerifier()
+        opaque = release_metadata()
+        opaque["signatures"] = ["opaque-signature"]
+        with self.assertRaisesRegex(ValueError, "signature envelope"):
+            InstallerRelease.from_signed_metadata(
+                opaque,
+                verifier,
+                signature_policy=FIXTURE_SIGNATURE_POLICY,
+            )
+        self.assertEqual(verifier.payloads, [])
+
+        untrusted = release_metadata()
+        untrusted["signatures"] = [{
+            "algorithm": "ed25519",
+            "key_id": "untrusted-key-002",
+            "signature": "A" * 86,
+        }]
+        with self.assertRaisesRegex(ValueError, "not trusted by policy"):
+            InstallerRelease.from_signed_metadata(
+                untrusted,
+                verifier,
+                signature_policy=FIXTURE_SIGNATURE_POLICY,
+            )
+        self.assertEqual(verifier.payloads, [])
+
+        duplicate = release_metadata()
+        duplicate["signatures"] = [dict(FIXTURE_SIGNATURE_ENVELOPE), dict(FIXTURE_SIGNATURE_ENVELOPE)]
+        with self.assertRaisesRegex(ValueError, "key IDs must be unique"):
+            InstallerRelease.from_signed_metadata(
+                duplicate,
+                verifier,
+                signature_policy=FIXTURE_SIGNATURE_POLICY,
+            )
+        self.assertEqual(verifier.payloads, [])
+
+        threshold_policy = SignatureThresholdPolicy(
+            algorithm="ed25519",
+            trusted_key_ids=frozenset({"fixture-key-001", "fixture-key-002"}),
+            threshold=2,
+        )
+        with self.assertRaisesRegex(ValueError, "policy threshold"):
+            InstallerRelease.from_signed_metadata(
+                release_metadata(),
+                verifier,
+                signature_policy=threshold_policy,
+            )
+        self.assertEqual(verifier.payloads, [])
+
+        threshold_payload = release_metadata()
+        threshold_payload["signatures"] = [
+            dict(FIXTURE_SIGNATURE_ENVELOPE),
+            dict(SECOND_FIXTURE_SIGNATURE_ENVELOPE),
+        ]
+        threshold_verifier = FixtureVerifier(
+            expected_policy=threshold_policy,
+            expected_signatures=(FIXTURE_SIGNATURE, SECOND_FIXTURE_SIGNATURE),
+        )
+        release = InstallerRelease.from_signed_metadata(
+            threshold_payload,
+            threshold_verifier,
+            signature_policy=threshold_policy,
+        )
+        self.assertEqual(release.signatures, (FIXTURE_SIGNATURE, SECOND_FIXTURE_SIGNATURE))
+        self.assertEqual(threshold_verifier.policies, [threshold_policy])
 
     def test_older_installer_must_handoff_to_newer_verified_release(self) -> None:
         decision = select_self_update(installed(), [trusted_release()], channel="stable", architecture="arm64", now=NOW, release_feed=fresh_release_feed())
@@ -472,10 +592,14 @@ class UniversalInstallerTests(unittest.TestCase):
                 "digest": MANIFEST_DIGEST,
                 "requires_installer": {"minimum_version": "1.0.0", "capabilities": ["composition/v1"]},
             }],
-            "signatures": ["ed25519:fixture"],
+            "signatures": [dict(FIXTURE_SIGNATURE_ENVELOPE)],
         }
         raw = json.dumps(catalog, sort_keys=True, separators=(",", ":")).encode("utf-8")
-        parsed = CompositionCatalog.from_signed_bytes(raw, FixtureVerifier())
+        parsed = CompositionCatalog.from_signed_bytes(
+            raw,
+            FixtureVerifier(),
+            signature_policy=FIXTURE_SIGNATURE_POLICY,
+        )
         self.assertEqual(parsed.catalog_digest, "sha256:" + sha256(raw).hexdigest())
         self.assertEqual([entry.composition_id for entry in parsed.selectable_entries(current_context(), now=NOW)], ["stable-001"])
         with self.assertRaisesRegex(UniversalInstallerError, "does not match"):
@@ -483,10 +607,15 @@ class UniversalInstallerTests(unittest.TestCase):
                 {**catalog, "sequence": 5},
                 FixtureVerifier(),
                 raw_bytes=raw,
+                signature_policy=FIXTURE_SIGNATURE_POLICY,
             )
         tampered = raw + b" "
         self.assertNotEqual(
-            CompositionCatalog.from_signed_bytes(tampered, FixtureVerifier()).catalog_digest,
+            CompositionCatalog.from_signed_bytes(
+                tampered,
+                FixtureVerifier(),
+                signature_policy=FIXTURE_SIGNATURE_POLICY,
+            ).catalog_digest,
             parsed.catalog_digest,
         )
         arm_only = trusted_release()

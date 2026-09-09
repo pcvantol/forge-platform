@@ -86,9 +86,15 @@ def main() -> None:
         raise SystemExit("universal installer release schema identity is invalid")
     if "policy_revision" not in installer_release["properties"]["installer"]["required"]:
         raise SystemExit("universal installer release descriptor must bind its policy revision")
+    release_signature = installer_release["$defs"]["public_signature_envelope"]
+    if release_signature["required"] != ["algorithm", "key_id", "signature"]:
+        raise SystemExit("universal installer release descriptor must use a strict public signature envelope")
     catalog = json.loads((ROOT / "schemas/universal-installer-composition-catalog.schema.json").read_text())
     if catalog["title"] != "Forge Platform universal installer composition catalog":
         raise SystemExit("universal installer catalog schema identity is invalid")
+    catalog_signature = catalog["$defs"]["public_signature_envelope"]
+    if catalog_signature["required"] != ["algorithm", "key_id", "signature"]:
+        raise SystemExit("universal installer catalog must use a strict public signature envelope")
     installer_composition = json.loads((ROOT / "schemas/universal-installer-composition.schema.json").read_text())
     if installer_composition["title"] != "Forge Platform universal installer composition":
         raise SystemExit("universal installer composition schema identity is invalid")
@@ -133,6 +139,7 @@ def main() -> None:
         "EP-owned resolver/provisioner",
         "Forge Platform must not add a second EP provisioner",
         "installer-release identity policy",
+        "structured public signature envelopes",
     ):
         if required_term not in universal_installer:
             raise SystemExit(f"universal installer contract is missing canonical term: {required_term}")
