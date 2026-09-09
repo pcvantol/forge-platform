@@ -58,6 +58,32 @@ Forge Platform may display or retain its non-secret evidence but may not
 reinterpret it as a PATH, HTTP-reachability, service, database, or migration
 decision.
 
+### EP OI-3 V1 read-only wire evidence
+
+The Forge Platform source kernel includes a strict, read-only decoder for the
+defined Engineering Platform OI-3 V1 `operational-readback` and
+`operational-update-assess` payload shapes. It accepts only contract `1.0` for
+`engineering-platform-server`, retains the product's inline `evidence` and
+inventory `scope` mappings without replacing them with Forge Platform evidence
+references, and reduces observed/candidate artifacts to the exact
+`version`/`source_revision`/`digest` correlation triple. EP's observed channel
+is metadata, not a fourth correlation field; a Forge Platform artifact locator
+or qualification is neither accepted nor recreated from the product payload.
+
+An anonymous `UNKNOWN` payload is retained only as non-actionable diagnostic
+evidence. When the decoder is asked to bind a payload to a Forge Platform
+request, a payload that names an installation must name that request's exact
+opaque installation identity. A readback's observed correlation may describe
+the currently installed release, while the update assessment's candidate must
+match the request's exact triple. The V1 decoder permits only the `server` role
+and the exact-candidate `update` kind with no product-request extension,
+because OI-3 has not published a wire-level proof for other selections. Wrong
+contract/component/identity/state, health combinations, artifact triples, and
+unknown fields fail closed. The decoder does not invoke an EP executable,
+discover a PATH/runtime, implement an adapter, or dispatch a product operation;
+a future explicit EP adapter remains separately owned and must consume this
+evidence without expanding the boundary.
+
 An `ACTIVE` product readback is valid only with a selected runtime,
 executable, instance, qualified artifact, and product health evidence. Forge
 Platform exposes `single_operational_installation_verified` only when the
