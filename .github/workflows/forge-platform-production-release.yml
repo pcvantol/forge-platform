@@ -82,7 +82,7 @@ jobs:
           import json
           import os
           from pathlib import Path
-          from forge_platform.release_operation import ReleaseOperation
+          from forge_platform.release_operation import ReleaseOperation, ReleaseOperationStore
 
           operation = ReleaseOperation.create(
               operation_id=os.environ["OPERATION_ID"],
@@ -90,12 +90,19 @@ jobs:
               policy_revision="forge-platform-production-release-v3", source_revision=os.environ["SOURCE_SHA"],
               artifacts={"composition_manifest": os.environ["COMPOSITION_DIGEST"]},
           )
-          qualified = operation.transition("QUALIFIED", evidence={
-              "exact_main_sha": os.environ["SOURCE_SHA"],
-              "artifact_digests": dict(operation.artifacts),
-              "composition_asset": os.environ["COMPOSITION"],
-              "qualification_marker": "forge-platform-composition-artifact-compatibility-v3",
-          })
+          store = ReleaseOperationStore(Path("release-input", "release-operation"))
+          store.acquire(operation.operation_id)
+          try:
+              qualified = store.prepare_qualified(operation, evidence={
+                  "exact_main_sha": os.environ["SOURCE_SHA"],
+                  "artifact_digests": dict(operation.artifacts),
+                  "composition_asset": os.environ["COMPOSITION"],
+                  "qualification_marker": "forge-platform-composition-artifact-compatibility-v3",
+              })
+              if qualified.state != "QUALIFIED":
+                  raise SystemExit("release operation is not qualified before retention")
+          finally:
+              store.release(operation.operation_id)
           Path("release-input", os.environ["QUALIFIED"]).write_text(
               json.dumps(asdict(qualified), indent=2, sort_keys=True, allow_nan=False) + "\n", encoding="utf-8"
           )
@@ -132,14 +139,28 @@ jobs:
           QUALIFIED="forge-platform-release-qualified-$VERSION-$SOURCE_SHA.json"
           export TAG COMPOSITION QUALIFIED
           PYTHONPATH=. python3 - <<'PY'
+          from dataclasses import asdict
           import hashlib
           import json
           import os
           from pathlib import Path
-          from forge_platform.release_operation import ReleaseOperation
+          from forge_platform.release_operation import ReleaseOperation, ReleaseOperationStore
 
           composition = Path("release-input", os.environ["COMPOSITION"])
-          qualified = ReleaseOperation.parse(json.loads(Path("release-input", os.environ["QUALIFIED"]).read_text(encoding="utf-8")))
+          receipt_path = Path("release-input", os.environ["QUALIFIED"])
+          receipt = ReleaseOperation.parse(json.loads(receipt_path.read_text(encoding="utf-8")))
+          store = ReleaseOperationStore(Path("release-input", "release-operation"))
+          store.acquire(os.environ["OPERATION_ID"])
+          try:
+              qualified = store.load(os.environ["OPERATION_ID"])
+          finally:
+              store.release(os.environ["OPERATION_ID"])
+          if qualified is None or qualified != receipt:
+              raise SystemExit("qualified receipt does not match the durable operation journal")
+          if receipt_path.read_bytes() != (
+              json.dumps(asdict(qualified), indent=2, sort_keys=True, allow_nan=False) + "\n"
+          ).encode("utf-8"):
+              raise SystemExit("qualified receipt has non-canonical bytes")
           digest = "sha256:" + hashlib.sha256(composition.read_bytes()).hexdigest()
           if (
               qualified.state != "QUALIFIED"
@@ -247,24 +268,36 @@ jobs:
           import json
           import os
           from pathlib import Path
-          from forge_platform.release_operation import ReleaseOperation
+          from forge_platform.release_operation import ReleaseOperation, ReleaseOperationStore
 
-          qualified = ReleaseOperation.parse(json.loads(Path("release-input", os.environ["QUALIFIED"]).read_text(encoding="utf-8")))
-          if (
-              qualified.state != "QUALIFIED"
-              or qualified.operation_id != os.environ["OPERATION_ID"]
-              or qualified.source_revision != os.environ["SOURCE_SHA"]
-              or qualified.artifacts.get("composition_manifest") != os.environ["READBACK_DIGEST"]
-          ):
-              raise SystemExit("registry readback does not match the durable qualified composition identity")
-          published = qualified.transition("PUBLISHED", evidence={
-              "registry": "github-release",
-              "tag": os.environ["TAG"],
-              "composition_asset": os.environ["COMPOSITION"],
-              "artifact_digests": dict(qualified.artifacts),
-              "readback": "PASS",
-              "release_visibility": "PUBLIC",
-          })
+          qualified_receipt = ReleaseOperation.parse(
+              json.loads(Path("release-input", os.environ["QUALIFIED"]).read_text(encoding="utf-8"))
+          )
+          store = ReleaseOperationStore(Path("release-input", "release-operation"))
+          store.acquire(os.environ["OPERATION_ID"])
+          try:
+              qualified = store.load(os.environ["OPERATION_ID"])
+              if qualified is None or qualified != qualified_receipt:
+                  raise SystemExit("qualified receipt does not match the durable operation journal")
+              if (
+                  qualified.state != "QUALIFIED"
+                  or qualified.operation_id != os.environ["OPERATION_ID"]
+                  or qualified.source_revision != os.environ["SOURCE_SHA"]
+                  or qualified.artifacts.get("composition_manifest") != os.environ["READBACK_DIGEST"]
+              ):
+                  raise SystemExit("registry readback does not match the durable qualified composition identity")
+              published = store.mark_published(qualified, evidence={
+                  "registry": "github-release",
+                  "tag": os.environ["TAG"],
+                  "composition_asset": os.environ["COMPOSITION"],
+                  "artifact_digests": dict(qualified.artifacts),
+                  "readback": "PASS",
+                  "release_visibility": "PUBLIC",
+              })
+              if published.state != "PUBLISHED":
+                  raise SystemExit("release operation is not PUBLISHED after composition readback")
+          finally:
+              store.release(os.environ["OPERATION_ID"])
           Path("release-input", os.environ["PUBLISHED"]).write_text(
               json.dumps(asdict(published), indent=2, sort_keys=True, allow_nan=False) + "\n", encoding="utf-8"
           )
@@ -329,17 +362,30 @@ jobs:
           cmp "published-input/$COMPOSITION" "operation-readback/$COMPOSITION"
           cmp "published-input/$QUALIFIED" "operation-readback/$QUALIFIED"
           cmp "published-input/$PUBLISHED" "operation-readback/$PUBLISHED"
+          assets="$(gh release view "$TAG" --json assets --jq '.assets[].name')"
+          pending_present=false
+          if printf '%s\n' "$assets" | grep -Fqx "$PENDING"; then
+            pending_present=true
+            mkdir pending-readback
+            gh release download "$TAG" --pattern "$PENDING" --dir pending-readback
+          fi
+          export PENDING_PRESENT="$pending_present"
           PYTHONPATH=. python3 - <<'PY'
           from dataclasses import asdict
           import hashlib
           import json
           import os
           from pathlib import Path
-          from forge_platform.release_operation import ReleaseOperation
+          from forge_platform.release_operation import ReleaseOperation, ReleaseOperationError, ReleaseOperationStore
+
+          def canonical_bytes(operation: ReleaseOperation) -> bytes:
+              return (json.dumps(asdict(operation), indent=2, sort_keys=True, allow_nan=False) + "\n").encode("utf-8")
 
           composition = Path("operation-readback", os.environ["COMPOSITION"])
           qualified = ReleaseOperation.parse(json.loads(Path("operation-readback", os.environ["QUALIFIED"]).read_text(encoding="utf-8")))
           published = ReleaseOperation.parse(json.loads(Path("operation-readback", os.environ["PUBLISHED"]).read_text(encoding="utf-8")))
+          local_qualified = ReleaseOperation.parse(json.loads(Path("published-input", os.environ["QUALIFIED"]).read_text(encoding="utf-8")))
+          local_published = ReleaseOperation.parse(json.loads(Path("published-input", os.environ["PUBLISHED"]).read_text(encoding="utf-8")))
           digest = "sha256:" + hashlib.sha256(composition.read_bytes()).hexdigest()
           expected_receipt = {
               "registry": "github-release",
@@ -354,8 +400,9 @@ jobs:
               or qualified.operation_id != os.environ["OPERATION_ID"]
               or qualified.source_revision != os.environ["SOURCE_SHA"]
               or qualified.artifacts != {"composition_manifest": digest}
+              or qualified != local_qualified
               or published.state != "PUBLISHED"
-              or not qualified == ReleaseOperation.parse(json.loads(Path("published-input", os.environ["QUALIFIED"]).read_text(encoding="utf-8")))
+              or published != local_published
               or published.product != "forge-platform"
               or published.component != "composition"
               or published.version != os.environ["VERSION"]
@@ -370,33 +417,129 @@ jobs:
               f"published-input/{os.environ['QUALIFIED']}",
               f"published-input/{os.environ['PUBLISHED']}",
           ]
-          pending = published.transition("CLEANUP_PENDING", evidence={
-              "result": "CLEANUP_PENDING", "targets": targets,
-          })
-          complete = published.transition("RELEASE_COMPLETE", evidence={
-              "result": "CLEANUP_COMPLETE", "targets": targets,
-          })
-          Path("release-outcomes", os.environ["PENDING"]).write_text(
-              json.dumps(asdict(pending), indent=2, sort_keys=True, allow_nan=False) + "\n", encoding="utf-8"
-          )
-          Path("release-outcomes", os.environ["COMPLETE"]).write_text(
-              json.dumps(asdict(complete), indent=2, sort_keys=True, allow_nan=False) + "\n", encoding="utf-8"
-          )
+          pending_evidence = {"result": "CLEANUP_PENDING", "targets": targets}
+          store = ReleaseOperationStore(Path("published-input", "release-operation"))
+          store.acquire(os.environ["OPERATION_ID"])
+          try:
+              current = store.load(os.environ["OPERATION_ID"])
+              if current is None or current != published:
+                  raise ReleaseOperationError("published receipt does not match the durable operation journal")
+              if Path("published-input", os.environ["PUBLISHED"]).read_bytes() != canonical_bytes(current):
+                  raise ReleaseOperationError("published receipt has non-canonical bytes")
+              if os.environ["PENDING_PRESENT"] == "true":
+                  pending_path = Path("pending-readback", os.environ["PENDING"])
+                  pending = ReleaseOperation.parse(json.loads(pending_path.read_text(encoding="utf-8")))
+                  if (
+                      pending.state != "CLEANUP_PENDING"
+                      or not ReleaseOperationStore.same_identity(current, pending)
+                      or pending.publication_receipt != current.publication_receipt
+                      or pending.cleanup != pending_evidence
+                      or pending_path.read_bytes() != canonical_bytes(pending)
+                  ):
+                      raise ReleaseOperationError("durable cleanup-pending receipt does not match PUBLISHED release identity")
+                  current = store.replace(current, pending)
+              if current.state not in {"PUBLISHED", "CLEANUP_PENDING"}:
+                  raise ReleaseOperationError("durable release evidence is not resumable")
+          finally:
+              store.release(os.environ["OPERATION_ID"])
           PY
-          assets="$(gh release view "$TAG" --json assets --jq '.assets[].name')"
-          pending_present=false
-          if printf '%s\n' "$assets" | grep -Fqx "$PENDING"; then
-            pending_present=true
-            mkdir pending-readback
-            gh release download "$TAG" --pattern "$PENDING" --dir pending-readback
-            cmp "release-outcomes/$PENDING" "pending-readback/$PENDING"
+          if ! mv -- published-input/release-operation release-outcomes/release-operation; then
+            # The journal is a necessary recovery artifact until its terminal
+            # receipt is retained.  A failed move is therefore a controlled
+            # cleanup failure, never an unrecorded shell exit.
+            PYTHONPATH=. python3 - <<'PY'
+            from dataclasses import asdict
+            import json
+            import os
+            from pathlib import Path
+            from forge_platform.release_operation import ReleaseOperation, ReleaseOperationStore
+
+            operation_id = os.environ["OPERATION_ID"]
+            targets = [
+                "operation-readback",
+                f"published-input/{os.environ['COMPOSITION']}",
+                f"published-input/{os.environ['QUALIFIED']}",
+                f"published-input/{os.environ['PUBLISHED']}",
+            ]
+            published = ReleaseOperation.parse(
+                json.loads(Path("operation-readback", os.environ["PUBLISHED"]).read_text(encoding="utf-8"))
+            )
+            # A cross-filesystem move can leave either side of the staging
+            # boundary behind.  Prefer a journal at the destination, then
+            # its source; if neither exists, reconstruct only the verified
+            # PUBLISHED receipt in an isolated recovery store.
+            try:
+                store = None
+                current = None
+                for root in (
+                    Path("release-outcomes", "release-operation"),
+                    Path("published-input", "release-operation"),
+                ):
+                    if not root.is_dir():
+                        continue
+                    candidate = ReleaseOperationStore(root)
+                    candidate.acquire(operation_id)
+                    store = candidate
+                    current = store.recover_published(published)
+                    break
+                if store is None:
+                    candidate = ReleaseOperationStore(Path("release-outcomes", "recovered-release-operation"))
+                    candidate.acquire(operation_id)
+                    store = candidate
+                    current = store.recover_published(published)
+                pending = store.mark_cleanup_pending(
+                    current, evidence={"result": "CLEANUP_PENDING", "targets": targets},
+                )
+            finally:
+                if store is not None:
+                    store.release(operation_id)
+            Path("release-outcomes", os.environ["PENDING"]).write_text(
+                json.dumps(asdict(pending), indent=2, sort_keys=True, allow_nan=False) + "\n", encoding="utf-8"
+            )
+            PY
+            if test "$pending_present" = true; then
+              cmp "release-outcomes/$PENDING" "pending-readback/$PENDING"
+            else
+              gh release upload "$TAG" "release-outcomes/$PENDING"
+            fi
+            echo 'operation-local journal staging is pending; resume the same release operation' >&2
+            exit 1
           fi
           cleanup_failed=false
-          for target in operation-readback pending-readback "published-input/$COMPOSITION" "published-input/$QUALIFIED" "published-input/$PUBLISHED"; do
-            if ! rm -rf -- "$target" || test -e "$target"; then cleanup_failed=true; fi
+          for target in operation-readback pending-readback "published-input/$COMPOSITION" "published-input/$QUALIFIED" "published-input/$PUBLISHED" "published-input/release-operation"; do
+            if ! rm -rf -- "$target" || test -e "$target" || test -L "$target"; then cleanup_failed=true; fi
           done
           if test -d published-input && ! rmdir published-input; then cleanup_failed=true; fi
           if test "$cleanup_failed" = true; then
+            PYTHONPATH=. python3 - <<'PY'
+            from dataclasses import asdict
+            import json
+            import os
+            from pathlib import Path
+            from forge_platform.release_operation import ReleaseOperationError, ReleaseOperationStore
+
+            operation_id = os.environ["OPERATION_ID"]
+            targets = [
+                "operation-readback",
+                f"published-input/{os.environ['COMPOSITION']}",
+                f"published-input/{os.environ['QUALIFIED']}",
+                f"published-input/{os.environ['PUBLISHED']}",
+            ]
+            store = ReleaseOperationStore(Path("release-outcomes", "release-operation"))
+            store.acquire(operation_id)
+            try:
+                current = store.load(operation_id)
+                if current is None:
+                    raise ReleaseOperationError("durable release evidence is unavailable")
+                pending = store.mark_cleanup_pending(
+                    current, evidence={"result": "CLEANUP_PENDING", "targets": targets},
+                )
+            finally:
+                store.release(operation_id)
+            Path("release-outcomes", os.environ["PENDING"]).write_text(
+                json.dumps(asdict(pending), indent=2, sort_keys=True, allow_nan=False) + "\n", encoding="utf-8"
+            )
+            PY
             if test "$pending_present" = true; then
               mkdir pending-confirmation
               gh release download "$TAG" --pattern "$PENDING" --dir pending-confirmation
@@ -410,8 +553,40 @@ jobs:
             exit 1
           fi
           test ! -e operation-readback
+          test ! -L operation-readback
           test ! -e pending-readback
+          test ! -L pending-readback
           test ! -e published-input
+          test ! -L published-input
+          PYTHONPATH=. python3 - <<'PY'
+          from dataclasses import asdict
+          import json
+          import os
+          from pathlib import Path
+          from forge_platform.release_operation import ReleaseOperationError, ReleaseOperationStore
+
+          operation_id = os.environ["OPERATION_ID"]
+          targets = [
+              "operation-readback",
+              f"published-input/{os.environ['COMPOSITION']}",
+              f"published-input/{os.environ['QUALIFIED']}",
+              f"published-input/{os.environ['PUBLISHED']}",
+          ]
+          store = ReleaseOperationStore(Path("release-outcomes", "release-operation"))
+          store.acquire(operation_id)
+          try:
+              current = store.load(operation_id)
+              if current is None:
+                  raise ReleaseOperationError("durable release evidence is unavailable")
+              complete = store.complete(
+                  current, evidence={"result": "CLEANUP_COMPLETE", "targets": targets},
+              )
+          finally:
+              store.release(operation_id)
+          Path("release-outcomes", os.environ["COMPLETE"]).write_text(
+              json.dumps(asdict(complete), indent=2, sort_keys=True, allow_nan=False) + "\n", encoding="utf-8"
+          )
+          PY
           complete_present=false
           if printf '%s\n' "$assets" | grep -Fqx "$COMPLETE"; then
             complete_present=true

@@ -300,6 +300,32 @@ class ReleaseOperationStore:
         self.record_publication(current)
         return current
 
+    def recover_published(self, published: ReleaseOperation) -> ReleaseOperation:
+        """Recover an exact PUBLISHED receipt into a resumable local journal.
+
+        A terminal cleanup worker can lose or fail to move its operation-local
+        journal after the immutable PUBLISHED receipt has been read back from
+        the registry.  The receipt is sufficient to recreate only that exact
+        PUBLISHED record.  Existing journal evidence must still agree with the
+        receipt; a conflicting or terminal record is never silently replaced.
+        """
+        self._require_lock(published.operation_id)
+        if published.state != "PUBLISHED":
+            raise ReleaseOperationError("only a PUBLISHED receipt can seed cleanup recovery")
+        current = self.load(published.operation_id)
+        if current is None:
+            current = self.save(published)
+        elif (
+            not self.same_identity(current, published)
+            or current.qualification != published.qualification
+            or current.publication_receipt != published.publication_receipt
+        ):
+            raise ReleaseOperationError("durable release evidence does not match the PUBLISHED receipt")
+        if current.state not in {"PUBLISHED", "CLEANUP_PENDING"}:
+            raise ReleaseOperationError("durable release evidence is not resumable")
+        self.record_publication(current)
+        return current
+
     def mark_cleanup_pending(self, operation: ReleaseOperation, *, evidence: Mapping[str, object]) -> ReleaseOperation:
         """Record a failed exact cleanup list for a later controlled retry."""
         self._require_lock(operation.operation_id)

@@ -135,6 +135,58 @@ class ReleaseOperationTests(unittest.TestCase):
             finally:
                 store.release(expected.operation_id)
 
+    def test_recovered_pending_receipt_rejects_tampered_identity_before_completion(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            first = ReleaseOperationStore(Path(temporary))
+            expected = operation()
+            first.acquire(expected.operation_id)
+            try:
+                qualified = first.prepare_qualified(expected, evidence=QUALIFICATION)
+                published = first.mark_published(qualified, evidence=PUBLICATION)
+                pending = first.mark_cleanup_pending(published, evidence=PENDING_CLEANUP)
+            finally:
+                first.release(expected.operation_id)
+
+            recovered = ReleaseOperationStore(Path(temporary))
+            recovered.acquire(expected.operation_id)
+            try:
+                self.assertEqual(recovered.load(expected.operation_id), pending)
+                with self.assertRaisesRegex(ReleaseOperationError, "exact requested identity"):
+                    recovered.complete(operation(digest="c" * 64), evidence=COMPLETE_CLEANUP)
+                self.assertEqual(
+                    recovered.complete(pending, evidence=COMPLETE_CLEANUP).state,
+                    "RELEASE_COMPLETE",
+                )
+            finally:
+                recovered.release(expected.operation_id)
+
+    def test_published_receipt_rehydrates_a_lost_journal_for_cleanup_pending(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            source = ReleaseOperationStore(Path(temporary) / "source")
+            expected = operation()
+            source.acquire(expected.operation_id)
+            try:
+                qualified = source.prepare_qualified(expected, evidence=QUALIFICATION)
+                published = source.mark_published(qualified, evidence=PUBLICATION)
+            finally:
+                source.release(expected.operation_id)
+
+            # Simulate a failed staging move with neither source nor
+            # destination journal left. The verified PUBLISHED receipt is the
+            # only evidence allowed to seed the recovery journal.
+            recovered = ReleaseOperationStore(Path(temporary) / "recovered")
+            recovered.acquire(expected.operation_id)
+            try:
+                self.assertIsNone(recovered.load(expected.operation_id))
+                restored = recovered.recover_published(published)
+                self.assertEqual(restored, published)
+                pending = recovered.mark_cleanup_pending(restored, evidence=PENDING_CLEANUP)
+                self.assertEqual(pending.state, "CLEANUP_PENDING")
+                self.assertEqual(recovered.recover_published(published), pending)
+                self.assertEqual(recovered.load(expected.operation_id), pending)
+            finally:
+                recovered.release(expected.operation_id)
+
     def test_bad_records_illegal_transitions_and_non_json_evidence_are_rejected(self) -> None:
         prepared = operation()
         with self.assertRaisesRegex(ReleaseOperationError, "not permitted"):
