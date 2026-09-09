@@ -11,6 +11,7 @@ python3 tests/foundation/test_release_operation.py
 python3 tests/foundation/test_production_release_workflow.py
 python3 tests/component_operations/test_component_operations.py
 python3 tests/component_operations/test_durable_component_operations.py
+python3 tests/component_operations/test_ep_oi3_readback_decoder.py
 python3 scripts/advance_product_version.py --check
 python3 docs/ai-development/validate_projection.py \
   --profile forge-platform \
