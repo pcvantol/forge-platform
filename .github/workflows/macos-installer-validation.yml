@@ -17,7 +17,9 @@ permissions:
 jobs:
   swift-package-tests:
     name: Swift installer-domain tests
-    runs-on: macos-14
+    # Swift tools 6.0 requires Xcode 16+, which is the default toolchain on
+    # the macos-15 hosted image.  macos-14 currently provides Swift 5.10.
+    runs-on: macos-15
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v5
       - name: Run native installer tests

@@ -85,7 +85,7 @@ jobs:
 
   build-unsigned-app-candidate:
     needs: release-context
-    runs-on: macos-14
+    runs-on: macos-15
     outputs:
       architecture: ${{ steps.candidate.outputs.architecture }}
       archive: ${{ steps.candidate.outputs.archive }}
@@ -172,7 +172,7 @@ jobs:
     # signed-release evidence. This protected gate currently fails closed.
     if: ${{ inputs.request_publication }}
     needs: [release-context, build-unsigned-app-candidate]
-    runs-on: macos-14
+    runs-on: macos-15
     environment:
       name: forge-platform-installer-signing
     permissions:
@@ -201,7 +201,7 @@ jobs:
     # that signer, then still refuses public GitHub publication in source.
     if: ${{ inputs.request_publication && needs.sign-notarize-and-qualify.result == 'success' }}
     needs: [release-context, build-unsigned-app-candidate, sign-notarize-and-qualify]
-    runs-on: macos-14
+    runs-on: macos-15
     environment:
       name: forge-platform-installer-publication
     permissions:
