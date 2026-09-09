@@ -54,12 +54,16 @@ class InstallerReleaseWorkflowTests(unittest.TestCase):
         self.assertIn("ditto -c -k --sequesterRsrc --keepParent", self.workflow)
         self.assertIn("shasum -a 256", self.workflow)
         self.assertIn('"packaging": "UNSIGNED_APP_CANDIDATE"', self.workflow)
+        self.assertIn("scripts/prepare_installer_release_candidate.py", self.workflow)
+        self.assertIn("installer-release-preparation.json", self.workflow)
+        self.assertIn('--preparation-receipt-reference "receipt:installer-preparation-$OPERATION_ID"', self.workflow)
 
     def test_requires_explicit_protected_signing_and_publication_gates_without_secret_or_publish_fallback(self) -> None:
         self.assertIn("name: forge-platform-installer-signing", self.workflow)
         self.assertIn("name: forge-platform-installer-publication", self.workflow)
         self.assertIn("if: ${{ inputs.request_publication }}", self.workflow)
         self.assertIn("No protected Apple signing/notarization and descriptor-trust implementation is configured.", self.workflow)
+        self.assertIn("durable PREPARED candidate", self.workflow)
         self.assertIn("Refuse public GitHub Release publication until a protected publisher is implemented", self.workflow)
         self.assertIn("permissions:\n      contents: write", self.workflow)
         self.assertNotIn("secrets.", self.workflow)

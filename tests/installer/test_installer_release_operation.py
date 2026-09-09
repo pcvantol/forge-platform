@@ -3,7 +3,7 @@
 
 from __future__ import annotations
 
-from dataclasses import asdict
+from dataclasses import asdict, replace
 from pathlib import Path
 import subprocess
 import sys
@@ -15,12 +15,14 @@ sys.path.insert(0, str(ROOT))
 
 from forge_platform.installer_release_operation import (  # noqa: E402
     InstallerCleanupEvidence,
+    InstallerPreparationEvidence,
     InstallerPublicationEvidence,
     InstallerQualificationEvidence,
     InstallerReleaseIdentity,
     InstallerReleaseOperation,
     InstallerReleaseOperationError,
     InstallerReleaseOperationStore,
+    InstallerReleasePreparation,
 )
 
 
@@ -28,6 +30,9 @@ SOURCE_REVISION = "a" * 40
 DESCRIPTOR_DIGEST = "sha256:" + "b" * 64
 ARM64_ARCHIVE_DIGEST = "sha256:" + "c" * 64
 X86_64_ARCHIVE_DIGEST = "sha256:" + "d" * 64
+CANDIDATE_MANIFEST_DIGEST = "sha256:" + "e" * 64
+ARM64_CANDIDATE_DIGEST = "sha256:" + "f" * 64
+X86_64_CANDIDATE_DIGEST = "sha256:" + "1" * 64
 CAPABILITIES = ("composition/v1", "provider-gate/v1", "system-launchdaemon/v1")
 POLICY_REVISION = "forge-platform-installer-release-v1"
 RELEASE_IDENTITY = InstallerReleaseIdentity(
@@ -56,16 +61,36 @@ def archives(*, arm64_digest: str = ARM64_ARCHIVE_DIGEST) -> dict[str, str]:
     return {"arm64": arm64_digest, "x86_64": X86_64_ARCHIVE_DIGEST}
 
 
+def candidate_archives(*, arm64_digest: str = ARM64_CANDIDATE_DIGEST) -> dict[str, str]:
+    return {"arm64": arm64_digest, "x86_64": X86_64_CANDIDATE_DIGEST}
+
+
+def preparation(
+    *,
+    candidate_manifest_digest: str = CANDIDATE_MANIFEST_DIGEST,
+    candidate_archive_digests: dict[str, str] | None = None,
+) -> InstallerPreparationEvidence:
+    return InstallerPreparationEvidence(
+        candidate_manifest_digest=candidate_manifest_digest,
+        candidate_archives=candidate_archive_digests or candidate_archives(),
+        preparation_receipt_reference="receipt:installer-preparation-001",
+    )
+
+
 def qualification(
     *,
     source_revision: str = SOURCE_REVISION,
     policy_revision: str = POLICY_REVISION,
     descriptor_digest: str = DESCRIPTOR_DIGEST,
     archive_digests: dict[str, str] | None = None,
+    candidate_manifest_digest: str = CANDIDATE_MANIFEST_DIGEST,
+    candidate_archive_digests: dict[str, str] | None = None,
 ) -> InstallerQualificationEvidence:
     return InstallerQualificationEvidence(
         source_revision=source_revision,
         policy_revision=policy_revision,
+        candidate_manifest_digest=candidate_manifest_digest,
+        candidate_archives=candidate_archive_digests or candidate_archives(),
         descriptor_digest=descriptor_digest,
         archives=archive_digests or archives(),
         qualification_receipt_reference="receipt:installer-qualification-001",
@@ -83,8 +108,15 @@ def operation(
     capabilities: tuple[str, ...] = CAPABILITIES,
     archive_digests: dict[str, str] | None = None,
     descriptor_digest: str = DESCRIPTOR_DIGEST,
+    candidate_manifest_digest: str = CANDIDATE_MANIFEST_DIGEST,
+    candidate_archive_digests: dict[str, str] | None = None,
 ) -> InstallerReleaseOperation:
     archive_digests = archive_digests or archives()
+    candidate_archive_digests = candidate_archive_digests or candidate_archives()
+    prepared = preparation(
+        candidate_manifest_digest=candidate_manifest_digest,
+        candidate_archive_digests=candidate_archive_digests,
+    )
     return InstallerReleaseOperation.create(
         operation_id=identifier,
         installer_version=version,
@@ -93,6 +125,7 @@ def operation(
         policy_revision=policy_revision,
         release_identity=release_identity,
         capabilities=capabilities,
+        preparation=prepared,
         archives=archive_digests,
         descriptor_digest=descriptor_digest,
         qualification=qualification(
@@ -100,7 +133,22 @@ def operation(
             policy_revision=policy_revision,
             descriptor_digest=descriptor_digest,
             archive_digests=archive_digests,
+            candidate_manifest_digest=candidate_manifest_digest,
+            candidate_archive_digests=candidate_archive_digests,
         ),
+    )
+
+
+def prepared_candidate(operation: InstallerReleaseOperation) -> InstallerReleasePreparation:
+    return InstallerReleasePreparation(
+        operation_id=operation.operation_id,
+        installer_version=operation.installer_version,
+        channel=operation.channel,
+        source_revision=operation.source_revision,
+        policy_revision=operation.policy_revision,
+        release_identity=operation.release_identity,
+        capabilities=operation.capabilities,
+        preparation=operation.preparation,
     )
 
 
@@ -136,6 +184,7 @@ class InstallerReleaseOperationTests(unittest.TestCase):
             first = InstallerReleaseOperationStore(Path(temporary))
             first.acquire(expected.operation_id)
             try:
+                self.assertEqual(first.prepare_candidate(prepared_candidate(expected)), prepared_candidate(expected))
                 qualified = first.prepare_qualified(expected)
                 published = first.mark_published(qualified, evidence=publication(expected))
                 self.assertEqual(published.state, "PUBLISHED")
@@ -157,12 +206,71 @@ class InstallerReleaseOperationTests(unittest.TestCase):
             finally:
                 recovered.release(expected.operation_id)
 
+    def test_candidate_is_durable_before_qualification_and_cannot_be_replaced(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            expected = operation()
+            store = InstallerReleaseOperationStore(Path(temporary))
+            prepared = prepared_candidate(expected)
+            store.acquire(expected.operation_id)
+            try:
+                self.assertEqual(store.prepare_candidate(prepared), prepared)
+                self.assertEqual(store.load_preparation(expected.operation_id), prepared)
+                self.assertEqual(
+                    oct(store._preparation_path(expected.operation_id).stat().st_mode & 0o777),
+                    "0o600",
+                )
+                changed = replace(
+                    prepared,
+                    preparation=preparation(candidate_manifest_digest="sha256:" + "2" * 64),
+                )
+                with self.assertRaisesRegex(InstallerReleaseOperationError, "different candidate bytes or provenance"):
+                    store.prepare_candidate(changed)
+                self.assertEqual(store.prepare_qualified(expected), expected)
+            finally:
+                store.release(expected.operation_id)
+
+    def test_qualification_requires_matching_durable_prepared_candidate(self) -> None:
+        expected = operation()
+        with tempfile.TemporaryDirectory() as temporary:
+            store = InstallerReleaseOperationStore(Path(temporary))
+            store.acquire(expected.operation_id)
+            try:
+                with self.assertRaisesRegex(InstallerReleaseOperationError, "immutable PREPARED"):
+                    store.prepare_qualified(expected)
+                store.prepare_candidate(prepared_candidate(expected))
+                mismatched_qualification = InstallerQualificationEvidence(
+                    source_revision=expected.source_revision,
+                    policy_revision=expected.policy_revision,
+                    candidate_manifest_digest="sha256:" + "3" * 64,
+                    candidate_archives=expected.preparation.candidate_archives,
+                    descriptor_digest=expected.descriptor_digest,
+                    archives=expected.archives,
+                    qualification_receipt_reference="receipt:installer-qualification-mismatched-candidate",
+                )
+                with self.assertRaisesRegex(InstallerReleaseOperationError, "prepared candidate bytes"):
+                    InstallerReleaseOperation.create(
+                        operation_id=expected.operation_id,
+                        installer_version=expected.installer_version,
+                        channel=expected.channel,
+                        source_revision=expected.source_revision,
+                        policy_revision=expected.policy_revision,
+                        release_identity=expected.release_identity,
+                        capabilities=expected.capabilities,
+                        preparation=expected.preparation,
+                        archives=expected.archives,
+                        descriptor_digest=expected.descriptor_digest,
+                        qualification=mismatched_qualification,
+                    )
+            finally:
+                store.release(expected.operation_id)
+
     def test_same_operation_retry_requires_every_immutable_installer_fact(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             store = InstallerReleaseOperationStore(Path(temporary))
             expected = operation()
             store.acquire(expected.operation_id)
             try:
+                self.assertEqual(store.prepare_candidate(prepared_candidate(expected)), prepared_candidate(expected))
                 self.assertEqual(store.prepare_qualified(expected), expected)
                 changed_qualification = InstallerReleaseOperation.create(
                     operation_id=expected.operation_id,
@@ -172,11 +280,14 @@ class InstallerReleaseOperationTests(unittest.TestCase):
                     policy_revision=expected.policy_revision,
                     release_identity=expected.release_identity,
                     capabilities=expected.capabilities,
+                    preparation=expected.preparation,
                     archives=expected.archives,
                     descriptor_digest=expected.descriptor_digest,
                     qualification=InstallerQualificationEvidence(
                         source_revision=expected.source_revision,
                         policy_revision=expected.policy_revision,
+                        candidate_manifest_digest=expected.preparation.candidate_manifest_digest,
+                        candidate_archives=expected.preparation.candidate_archives,
                         descriptor_digest=expected.descriptor_digest,
                         archives=expected.archives,
                         qualification_receipt_reference="receipt:installer-qualification-changed",
@@ -190,20 +301,20 @@ class InstallerReleaseOperationTests(unittest.TestCase):
                 with self.assertRaisesRegex(InstallerReleaseOperationError, "different immutable identity"):
                     store.prepare_qualified(changed_archive)
                 changed_capability = operation(capabilities=("composition/v1", "provider-gate/v2"))
-                with self.assertRaisesRegex(InstallerReleaseOperationError, "different immutable identity"):
-                    store.prepare_qualified(changed_capability)
+                with self.assertRaisesRegex(InstallerReleaseOperationError, "different candidate bytes or provenance"):
+                    store.prepare_candidate(prepared_candidate(changed_capability))
                 changed_descriptor = operation(descriptor_digest="sha256:" + "f" * 64)
                 with self.assertRaisesRegex(InstallerReleaseOperationError, "different immutable identity"):
                     store.prepare_qualified(changed_descriptor)
                 changed_source = operation(source_revision="9" * 40)
-                with self.assertRaisesRegex(InstallerReleaseOperationError, "different immutable identity"):
-                    store.prepare_qualified(changed_source)
+                with self.assertRaisesRegex(InstallerReleaseOperationError, "different candidate bytes or provenance"):
+                    store.prepare_candidate(prepared_candidate(changed_source))
                 changed_policy = operation(policy_revision="forge-platform-installer-release-v2")
-                with self.assertRaisesRegex(InstallerReleaseOperationError, "different immutable identity"):
-                    store.prepare_qualified(changed_policy)
+                with self.assertRaisesRegex(InstallerReleaseOperationError, "different candidate bytes or provenance"):
+                    store.prepare_candidate(prepared_candidate(changed_policy))
                 changed_release_identity = operation(release_identity=ALTERNATE_RELEASE_IDENTITY)
-                with self.assertRaisesRegex(InstallerReleaseOperationError, "different immutable identity"):
-                    store.prepare_qualified(changed_release_identity)
+                with self.assertRaisesRegex(InstallerReleaseOperationError, "different candidate bytes or provenance"):
+                    store.prepare_candidate(prepared_candidate(changed_release_identity))
             finally:
                 store.release(expected.operation_id)
 
@@ -213,6 +324,7 @@ class InstallerReleaseOperationTests(unittest.TestCase):
             initial = operation("installer-release-0001")
             first.acquire(initial.operation_id)
             try:
+                first.prepare_candidate(prepared_candidate(initial))
                 first.mark_published(first.prepare_qualified(initial), evidence=publication(initial))
             finally:
                 first.release(initial.operation_id)
@@ -225,6 +337,7 @@ class InstallerReleaseOperationTests(unittest.TestCase):
             second = InstallerReleaseOperationStore(Path(temporary))
             second.acquire(contender.operation_id)
             try:
+                second.prepare_candidate(prepared_candidate(contender))
                 qualified = second.prepare_qualified(contender)
                 with self.assertRaisesRegex(InstallerReleaseOperationError, "different bytes or provenance"):
                     second.mark_published(qualified, evidence=publication(contender))
@@ -363,6 +476,7 @@ class InstallerReleaseOperationTests(unittest.TestCase):
             store = InstallerReleaseOperationStore(Path(temporary))
             store.acquire(expected.operation_id)
             try:
+                store.prepare_candidate(prepared_candidate(expected))
                 store.prepare_qualified(expected)
                 store.mark_published(expected, evidence=publication(expected))
             finally:
@@ -384,6 +498,7 @@ class InstallerReleaseOperationTests(unittest.TestCase):
             store = InstallerReleaseOperationStore(Path(temporary))
             store.acquire(expected.operation_id)
             try:
+                store.prepare_candidate(prepared_candidate(expected))
                 published = store.mark_published(store.prepare_qualified(expected), evidence=publication(expected))
                 complete = store.complete(published, evidence=COMPLETE_CLEANUP)
                 self.assertEqual(complete.state, "RELEASE_COMPLETE")

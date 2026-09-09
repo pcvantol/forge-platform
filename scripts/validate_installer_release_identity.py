@@ -38,9 +38,22 @@ def _pairs(pairs: list[tuple[object, object]]) -> dict[str, object]:
     return result
 
 
-def load_identity(*, require_ready: bool = False) -> InstallerReleaseIdentity | None:
+def load_identity(
+    *,
+    require_ready: bool = False,
+    path: Path | None = None,
+) -> InstallerReleaseIdentity | None:
+    """Load one reviewed public identity source without selecting a default.
+
+    Release-side preparation passes an explicit reviewed identity file so a
+    candidate cannot accidentally bind whichever checkout happens to be on
+    ``sys.path``.  The command-line validator continues to use the repository
+    authority by default.
+    """
+
+    source = IDENTITY_PATH if path is None else Path(path)
     try:
-        payload = json.loads(IDENTITY_PATH.read_text(encoding="utf-8"), object_pairs_hook=_pairs)
+        payload = json.loads(source.read_text(encoding="utf-8"), object_pairs_hook=_pairs)
     except (OSError, ValueError, json.JSONDecodeError) as error:
         raise RuntimeError("installer release identity source is unreadable") from error
     if not isinstance(payload, dict) or set(payload) != FIELDS or payload["schema"] != SCHEMA:

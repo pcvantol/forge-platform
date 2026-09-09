@@ -15,8 +15,10 @@ the required product-owned evidence and has passed every gate.
 from __future__ import annotations
 
 from contextlib import contextmanager
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
+import base64
+import binascii
 import fcntl
 from hashlib import sha256
 import json
@@ -55,6 +57,11 @@ _DIGEST = re.compile(r"^sha256:[0-9a-f]{64}$")
 _CAPABILITY = re.compile(r"^[a-z0-9][a-z0-9./_-]{0,127}$")
 _POLICY_REVISION = re.compile(r"^[a-z0-9][a-z0-9._/-]{0,127}$")
 _SAFE_OPERATION_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
+_SIGNING_KEY_ID = re.compile(r"^[a-z0-9][a-z0-9._-]{0,127}$")
+# An Ed25519 signature is exactly 64 raw bytes, encoded as unpadded base64url.
+# Keeping its textual representation fixed avoids accepting semantically equal
+# but differently encoded signed metadata.
+_ED25519_SIGNATURE = re.compile(r"^[A-Za-z0-9_-]{86}$")
 _JOURNAL_FORBIDDEN_KEY_FRAGMENTS = frozenset({
     "access_token", "authorization", "credential", "cookie", "password", "private_key", "secret", "token",
 })
@@ -239,11 +246,141 @@ class InstallerAsset:
         )
 
 
+@dataclass(frozen=True)
+class PublicSignatureEnvelope:
+    """One non-secret signature over canonical installer metadata.
+
+    The descriptor carries a public signing algorithm, public key identity and
+    canonical base64url signature.  It intentionally carries neither a public
+    key nor any credential: the verifier resolves an approved key ID through
+    its independently protected trust root.
+    """
+
+    algorithm: str
+    key_id: str
+    signature: str
+
+    def __post_init__(self) -> None:
+        if self.algorithm != "ed25519":
+            raise ValueError("metadata signature algorithm is unsupported")
+        if not isinstance(self.key_id, str) or _SIGNING_KEY_ID.fullmatch(self.key_id) is None:
+            raise ValueError("metadata signature key_id is invalid")
+        if not isinstance(self.signature, str) or _ED25519_SIGNATURE.fullmatch(self.signature) is None:
+            raise ValueError("metadata Ed25519 signature must be canonical unpadded base64url")
+        try:
+            raw_signature = base64.b64decode(self.signature + "==", altchars=b"-_", validate=True)
+        except (ValueError, binascii.Error) as error:
+            raise ValueError("metadata Ed25519 signature encoding is invalid") from error
+        if len(raw_signature) != 64:
+            raise ValueError("metadata Ed25519 signature has invalid length")
+
+    @classmethod
+    def from_mapping(cls, value: object) -> "PublicSignatureEnvelope":
+        payload = _mapping(value, frozenset({"algorithm", "key_id", "signature"}), "metadata signature envelope")
+        return cls(
+            algorithm=_required(payload["algorithm"], "metadata signature algorithm"),
+            key_id=_required(payload["key_id"], "metadata signature key_id"),
+            signature=_required(payload["signature"], "metadata signature"),
+        )
+
+
+@dataclass(frozen=True)
+class SignatureThresholdPolicy:
+    """Public trust-policy facts enforced before a cryptographic verifier runs.
+
+    Key IDs and threshold are not substitute public keys.  They bind the
+    metadata parser to the protected key set which the supplied verifier must
+    resolve independently.  Unknown, duplicate, mixed-algorithm or
+    insufficient envelopes fail before a verifier can accidentally count them.
+    """
+
+    algorithm: str
+    trusted_key_ids: frozenset[str]
+    threshold: int
+
+    def __post_init__(self) -> None:
+        if self.algorithm != "ed25519":
+            raise ValueError("metadata signature policy algorithm is unsupported")
+        if not isinstance(self.trusted_key_ids, (frozenset, set, tuple, list)):
+            raise ValueError("metadata signature policy trusted key IDs are invalid")
+        if any(not isinstance(key_id, str) or _SIGNING_KEY_ID.fullmatch(key_id) is None for key_id in self.trusted_key_ids):
+            raise ValueError("metadata signature policy key ID is invalid")
+        normalized_key_ids = frozenset(self.trusted_key_ids)
+        if not normalized_key_ids or len(normalized_key_ids) != len(self.trusted_key_ids):
+            raise ValueError("metadata signature policy key IDs must be non-empty and unique")
+        if (
+            isinstance(self.threshold, bool)
+            or not isinstance(self.threshold, int)
+            or self.threshold <= 0
+            or self.threshold > len(normalized_key_ids)
+        ):
+            raise ValueError("metadata signature policy threshold is invalid")
+        object.__setattr__(self, "trusted_key_ids", normalized_key_ids)
+
+    def require_eligible(self, signatures: tuple[PublicSignatureEnvelope, ...]) -> None:
+        """Reject every envelope set that cannot meet this exact policy."""
+
+        if not isinstance(signatures, tuple) or not signatures:
+            raise ValueError("metadata signatures are required")
+        observed_key_ids: set[str] = set()
+        for envelope in signatures:
+            if not isinstance(envelope, PublicSignatureEnvelope):
+                raise ValueError("metadata signature envelope is invalid")
+            if envelope.algorithm != self.algorithm:
+                raise ValueError("metadata signature envelope algorithm does not match policy")
+            if envelope.key_id not in self.trusted_key_ids:
+                raise ValueError("metadata signature envelope key_id is not trusted by policy")
+            if envelope.key_id in observed_key_ids:
+                raise ValueError("metadata signature envelope key_id is duplicated")
+            observed_key_ids.add(envelope.key_id)
+        if len(observed_key_ids) < self.threshold:
+            raise ValueError("metadata signature envelopes do not meet the policy threshold")
+
+
+def parse_public_signature_envelopes(value: object, *, label: str) -> tuple[PublicSignatureEnvelope, ...]:
+    """Parse the sole accepted public envelope shape for signed metadata."""
+
+    if not isinstance(value, list) or not value:
+        raise ValueError(f"{label} signatures are required")
+    envelopes = tuple(PublicSignatureEnvelope.from_mapping(item) for item in value)
+    key_ids = tuple(envelope.key_id for envelope in envelopes)
+    if len(set(key_ids)) != len(key_ids):
+        raise ValueError(f"{label} signature key IDs must be unique")
+    return envelopes
+
+
 class InstallerMetadataVerifier(Protocol):
     """Trust-root adapter; GitHub's ``latest`` marker is never this verifier."""
 
-    def verify(self, canonical_payload: bytes, signatures: tuple[str, ...]) -> bool:
-        """Return true only for trusted threshold/key-rotation policy evidence."""
+    def verify(
+        self,
+        canonical_payload: bytes,
+        signatures: tuple[PublicSignatureEnvelope, ...],
+        *,
+        policy: SignatureThresholdPolicy,
+    ) -> bool:
+        """Cryptographically verify every counted envelope under ``policy``."""
+
+
+def _verify_metadata_signatures(
+    canonical_payload: bytes,
+    signatures: tuple[PublicSignatureEnvelope, ...],
+    verifier: InstallerMetadataVerifier,
+    policy: SignatureThresholdPolicy,
+    *,
+    label: str,
+) -> None:
+    """Apply public threshold policy before delegating cryptographic checks."""
+
+    if not isinstance(policy, SignatureThresholdPolicy):
+        raise ValueError("metadata signature policy is required")
+    policy.require_eligible(signatures)
+    try:
+        verified = verifier.verify(canonical_payload, signatures, policy=policy)
+    except Exception as error:
+        raise UniversalInstallerError(f"{label} signature verification failed") from error
+    if verified is not True:
+        raise UniversalInstallerError(f"{label} signature verification failed")
 
 
 @dataclass(frozen=True)
@@ -260,7 +397,7 @@ class InstallerRelease:
     capabilities: frozenset[str]
     assets: tuple[InstallerAsset, ...]
     composition_catalog_feed: CatalogFeedLocator
-    signatures: tuple[str, ...]
+    signatures: tuple[PublicSignatureEnvelope, ...]
 
     def __post_init__(self) -> None:
         _sequence(self.sequence, "installer sequence")
@@ -290,14 +427,22 @@ class InstallerRelease:
             seen_assets.add(key)
         if not isinstance(self.composition_catalog_feed, CatalogFeedLocator):
             raise ValueError("installer release requires a composition catalog feed locator")
-        if not self.signatures or any(not isinstance(signature, str) or not signature for signature in self.signatures):
-            raise ValueError("installer release requires signatures")
+        if (
+            not isinstance(self.signatures, tuple)
+            or not self.signatures
+            or any(not isinstance(signature, PublicSignatureEnvelope) for signature in self.signatures)
+        ):
+            raise ValueError("installer release requires public signature envelopes")
+        if len({signature.key_id for signature in self.signatures}) != len(self.signatures):
+            raise ValueError("installer release signature key IDs must be unique")
 
     @classmethod
     def from_signed_metadata(
         cls,
         value: object,
         verifier: InstallerMetadataVerifier,
+        *,
+        signature_policy: SignatureThresholdPolicy,
     ) -> "InstallerRelease":
         payload = _mapping(
             value,
@@ -306,13 +451,15 @@ class InstallerRelease:
         )
         if payload["schema"] != INSTALLER_RELEASE_SCHEMA:
             raise UniversalInstallerError("installer release schema is unsupported")
-        signatures_value = payload["signatures"]
-        if not isinstance(signatures_value, list) or not signatures_value:
-            raise UniversalInstallerError("installer release metadata is unsigned")
-        signatures = tuple(_required(item, "installer metadata signature") for item in signatures_value)
+        signatures = parse_public_signature_envelopes(payload["signatures"], label="installer release metadata")
         unsigned = {key: entry for key, entry in payload.items() if key != "signatures"}
-        if not verifier.verify(_canonical_json(unsigned), signatures):
-            raise UniversalInstallerError("installer release metadata signature verification failed")
+        _verify_metadata_signatures(
+            _canonical_json(unsigned),
+            signatures,
+            verifier,
+            signature_policy,
+            label="installer release metadata",
+        )
         installer = _mapping(
             payload["installer"],
             frozenset({"version", "source_revision", "policy_revision", "capabilities", "assets"}),
@@ -347,10 +494,20 @@ class InstallerRelease:
         )
 
     @classmethod
-    def from_signed_bytes(cls, raw_bytes: bytes, verifier: InstallerMetadataVerifier) -> "InstallerRelease":
+    def from_signed_bytes(
+        cls,
+        raw_bytes: bytes,
+        verifier: InstallerMetadataVerifier,
+        *,
+        signature_policy: SignatureThresholdPolicy,
+    ) -> "InstallerRelease":
         """Parse exactly the signed descriptor bytes fetched from a release."""
 
-        return cls.from_signed_metadata(_strict_json_mapping(raw_bytes, "installer release metadata"), verifier)
+        return cls.from_signed_metadata(
+            _strict_json_mapping(raw_bytes, "installer release metadata"),
+            verifier,
+            signature_policy=signature_policy,
+        )
 
     def asset_for(self, architecture: str) -> InstallerAsset | None:
         return next(
@@ -704,6 +861,9 @@ class CompositionCatalogEntry:
         )
 
 
+_VERIFIED_COMPOSITION_CATALOG_MARKER = object()
+
+
 @dataclass(frozen=True)
 class CompositionCatalog:
     """A separately signed mutable index of immutable composition bytes."""
@@ -713,8 +873,10 @@ class CompositionCatalog:
     published_at: datetime
     expires_at: datetime
     entries: tuple[CompositionCatalogEntry, ...]
+    component_combination_catalog: DownloadIdentity | None
     catalog_digest: str
-    signatures: tuple[str, ...]
+    signatures: tuple[PublicSignatureEnvelope, ...]
+    _verification_marker: object = field(default=None, repr=False, compare=False)
 
     def __post_init__(self) -> None:
         _sequence(self.sequence, "composition catalog sequence")
@@ -729,9 +891,22 @@ class CompositionCatalog:
         identities = [entry.composition_id for entry in self.entries]
         if len(identities) != len(set(identities)):
             raise ValueError("composition catalog contains duplicate composition identities")
+        if self.component_combination_catalog is not None and not isinstance(
+            self.component_combination_catalog,
+            DownloadIdentity,
+        ):
+            raise ValueError("composition catalog component-combination locator is invalid")
         _digest(self.catalog_digest, "composition catalog digest")
-        if not self.signatures or any(not isinstance(signature, str) or not signature for signature in self.signatures):
-            raise ValueError("composition catalog requires signatures")
+        if (
+            not isinstance(self.signatures, tuple)
+            or not self.signatures
+            or any(not isinstance(signature, PublicSignatureEnvelope) for signature in self.signatures)
+        ):
+            raise ValueError("composition catalog requires public signature envelopes")
+        if len({signature.key_id for signature in self.signatures}) != len(self.signatures):
+            raise ValueError("composition catalog signature key IDs must be unique")
+        if self._verification_marker is not _VERIFIED_COMPOSITION_CATALOG_MARKER:
+            raise TypeError("CompositionCatalog must be established from verified signed metadata")
 
     @classmethod
     def from_signed_metadata(
@@ -740,6 +915,7 @@ class CompositionCatalog:
         verifier: InstallerMetadataVerifier,
         *,
         raw_bytes: bytes,
+        signature_policy: SignatureThresholdPolicy,
     ) -> "CompositionCatalog":
         """Verify downloaded catalog bytes before parsing their signed contents."""
 
@@ -747,31 +923,48 @@ class CompositionCatalog:
         parsed_raw = _strict_json_mapping(raw_bytes, "composition catalog")
         if not isinstance(value, Mapping) or dict(parsed_raw) != dict(value):
             raise UniversalInstallerError("composition catalog object does not match verified catalog bytes")
-        payload = _mapping(
-            value,
-            frozenset({"schema", "sequence", "channel", "published_at", "expires_at", "compositions", "signatures"}),
-            "composition catalog",
-        )
+        legacy_fields = frozenset({
+            "schema", "sequence", "channel", "published_at", "expires_at", "compositions", "signatures",
+        })
+        selection_index_fields = legacy_fields | frozenset({"component_combination_catalog"})
+        if not isinstance(value, Mapping) or frozenset(value) not in {legacy_fields, selection_index_fields}:
+            raise ValueError("composition catalog fields are invalid")
+        payload = value
         if payload["schema"] != COMPOSITION_CATALOG_SCHEMA:
             raise UniversalInstallerError("composition catalog schema is unsupported")
-        signatures_value = payload["signatures"]
-        if not isinstance(signatures_value, list) or not signatures_value:
-            raise UniversalInstallerError("composition catalog is unsigned")
-        signatures = tuple(_required(item, "composition catalog signature") for item in signatures_value)
+        signatures = parse_public_signature_envelopes(payload["signatures"], label="composition catalog")
         unsigned = {key: entry for key, entry in payload.items() if key != "signatures"}
-        if not verifier.verify(_canonical_json(unsigned), signatures):
-            raise UniversalInstallerError("composition catalog signature verification failed")
+        _verify_metadata_signatures(
+            _canonical_json(unsigned),
+            signatures,
+            verifier,
+            signature_policy,
+            label="composition catalog",
+        )
         entries = payload["compositions"]
         if not isinstance(entries, list):
             raise ValueError("composition catalog entries must be a list")
+        selection_index = None
+        if "component_combination_catalog" in payload:
+            locator = _mapping(
+                payload["component_combination_catalog"],
+                frozenset({"url", "digest"}),
+                "component-combination catalog locator",
+            )
+            selection_index = DownloadIdentity(
+                _https_url(locator["url"], "component-combination catalog URL"),
+                _digest(locator["digest"], "component-combination catalog digest"),
+            )
         return cls(
-            _sequence(payload["sequence"], "composition catalog sequence"),
-            _required(payload["channel"], "composition catalog channel"),
-            _timestamp(payload["published_at"], "composition catalog published_at"),
-            _timestamp(payload["expires_at"], "composition catalog expires_at"),
-            tuple(CompositionCatalogEntry.from_mapping(entry) for entry in entries),
-            actual,
-            signatures,
+            sequence=_sequence(payload["sequence"], "composition catalog sequence"),
+            channel=_required(payload["channel"], "composition catalog channel"),
+            published_at=_timestamp(payload["published_at"], "composition catalog published_at"),
+            expires_at=_timestamp(payload["expires_at"], "composition catalog expires_at"),
+            entries=tuple(CompositionCatalogEntry.from_mapping(entry) for entry in entries),
+            component_combination_catalog=selection_index,
+            catalog_digest=actual,
+            signatures=signatures,
+            _verification_marker=_VERIFIED_COMPOSITION_CATALOG_MARKER,
         )
 
     @classmethod
@@ -779,6 +972,8 @@ class CompositionCatalog:
         cls,
         raw_bytes: bytes,
         verifier: InstallerMetadataVerifier,
+        *,
+        signature_policy: SignatureThresholdPolicy,
     ) -> "CompositionCatalog":
         """Parse exact, separately signed catalog bytes from the signed feed."""
 
@@ -787,6 +982,7 @@ class CompositionCatalog:
             value,
             verifier,
             raw_bytes=raw_bytes,
+            signature_policy=signature_policy,
         )
 
     def selectable_entries(
@@ -806,6 +1002,18 @@ class CompositionCatalog:
             for entry in self.entries
             if not entry.installer_requirement.unmet_by(installer_context.capabilities)
         )
+
+    def component_combination_catalog_binding(self) -> "CatalogPublicationBinding":
+        """Return the selection-index binding only from this verified catalog.
+
+        The import stays local to avoid a module import cycle: the selection
+        policy consumes :class:`CompositionCatalog`, while the signed catalog
+        remains the sole owner of the upstream verification boundary.
+        """
+
+        from .composition_catalog import CatalogPublicationBinding
+
+        return CatalogPublicationBinding.from_verified_composition_catalog(self)
 
 
 @dataclass(frozen=True)
@@ -1479,6 +1687,7 @@ class VerifiedCompositionSelection:
         catalog_source_url: str,
         catalog_raw_bytes: bytes,
         catalog_verifier: InstallerMetadataVerifier,
+        catalog_signature_policy: SignatureThresholdPolicy,
         accepted_catalog: AcceptedCatalogIdentity | None,
         composition_id: str,
         manifest_raw_bytes: bytes,
@@ -1491,7 +1700,11 @@ class VerifiedCompositionSelection:
             raise UniversalInstallerError("trusted clock is required before composition feed selection")
         if _https_url(catalog_source_url, "composition catalog source URL") != installer_context.release.composition_catalog_feed.url:
             raise UniversalInstallerError("composition catalog source does not match the verified installer release")
-        catalog = CompositionCatalog.from_signed_bytes(catalog_raw_bytes, catalog_verifier)
+        catalog = CompositionCatalog.from_signed_bytes(
+            catalog_raw_bytes,
+            catalog_verifier,
+            signature_policy=catalog_signature_policy,
+        )
         now = now.astimezone(timezone.utc)
         if catalog.channel != installer_context.release.channel:
             raise UniversalInstallerError("composition catalog channel does not match the verified installer channel")

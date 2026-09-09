@@ -236,11 +236,114 @@ class InstallerReleaseIdentity:
 
 
 @dataclass(frozen=True)
+class InstallerPreparationEvidence:
+    """Exact unsigned candidate bytes retained before protected side effects.
+
+    A signer may transform an unsigned archive into a signed/notarized release
+    archive, but it must do so from this exact candidate input.  The evidence
+    intentionally contains only digest identities and opaque receipt names;
+    no filesystem path, credential, or command output belongs in it.
+    """
+
+    candidate_manifest_digest: str
+    candidate_archives: Mapping[str, str]
+    preparation_receipt_reference: str
+    result: str = "PREPARED"
+
+    def __post_init__(self) -> None:
+        if self.result != "PREPARED":
+            raise InstallerReleaseOperationError("installer preparation result is invalid")
+        _digest(self.candidate_manifest_digest, "candidate manifest digest")
+        object.__setattr__(self, "candidate_archives", _archives(self.candidate_archives))
+        _receipt_reference(self.preparation_receipt_reference, "preparation receipt reference")
+
+    @classmethod
+    def from_mapping(cls, value: object) -> "InstallerPreparationEvidence":
+        payload = _strict_mapping(
+            value,
+            frozenset({"result", "candidate_manifest_digest", "candidate_archives", "preparation_receipt_reference"}),
+            "preparation evidence",
+        )
+        return cls(
+            result=_required_string(payload["result"], "preparation result"),
+            candidate_manifest_digest=_required_string(payload["candidate_manifest_digest"], "candidate manifest digest"),
+            candidate_archives=_archives(payload["candidate_archives"]),
+            preparation_receipt_reference=_required_string(
+                payload["preparation_receipt_reference"], "preparation receipt reference"
+            ),
+        )
+
+
+@dataclass(frozen=True)
+class InstallerReleasePreparation:
+    """The durable ``PREPARED`` precursor of one installer release operation.
+
+    This record is persisted before any signing, notarization, upload or
+    publication side effect.  It has the same operation ID and immutable
+    source/policy/release identity as the later qualified operation, while
+    retaining the unsigned candidate's exact digest identities separately from
+    the signed release archives.
+    """
+
+    operation_id: str
+    installer_version: str
+    channel: str
+    source_revision: str
+    policy_revision: str
+    release_identity: InstallerReleaseIdentity
+    capabilities: tuple[str, ...]
+    preparation: InstallerPreparationEvidence
+    state: str = "PREPARED"
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.operation_id, str) or _OPERATION_ID.fullmatch(self.operation_id) is None:
+            raise InstallerReleaseOperationError("installer preparation operation ID is invalid")
+        if not isinstance(self.installer_version, str) or _SEMVER.fullmatch(self.installer_version) is None:
+            raise InstallerReleaseOperationError("installer preparation version is invalid")
+        if self.channel not in _CHANNELS:
+            raise InstallerReleaseOperationError("installer preparation channel is invalid")
+        if not isinstance(self.source_revision, str) or _REVISION.fullmatch(self.source_revision) is None:
+            raise InstallerReleaseOperationError("installer preparation source revision is invalid")
+        _policy_revision(self.policy_revision, "preparation policy revision")
+        if not isinstance(self.release_identity, InstallerReleaseIdentity):
+            raise InstallerReleaseOperationError("installer preparation release identity is invalid")
+        object.__setattr__(self, "capabilities", _capabilities(self.capabilities))
+        if not isinstance(self.preparation, InstallerPreparationEvidence):
+            raise InstallerReleaseOperationError("installer preparation evidence is invalid")
+        if self.state != "PREPARED":
+            raise InstallerReleaseOperationError("installer preparation state is invalid")
+
+    @classmethod
+    def parse(cls, value: object) -> "InstallerReleasePreparation":
+        payload = _strict_mapping(
+            value,
+            frozenset({
+                "operation_id", "installer_version", "channel", "source_revision", "policy_revision",
+                "release_identity", "capabilities", "preparation", "state",
+            }),
+            "preparation record",
+        )
+        return cls(
+            operation_id=_required_string(payload["operation_id"], "preparation operation ID"),
+            installer_version=_required_string(payload["installer_version"], "preparation version"),
+            channel=_required_string(payload["channel"], "preparation channel"),
+            source_revision=_required_string(payload["source_revision"], "preparation source revision"),
+            policy_revision=_required_string(payload["policy_revision"], "preparation policy revision"),
+            release_identity=InstallerReleaseIdentity.from_mapping(payload["release_identity"]),
+            capabilities=_capabilities(payload["capabilities"]),
+            preparation=InstallerPreparationEvidence.from_mapping(payload["preparation"]),
+            state=_required_string(payload["state"], "preparation state"),
+        )
+
+
+@dataclass(frozen=True)
 class InstallerQualificationEvidence:
     """Typed qualification receipt with no command output, path, or credentials."""
 
     source_revision: str
     policy_revision: str
+    candidate_manifest_digest: str
+    candidate_archives: Mapping[str, str]
     descriptor_digest: str
     archives: Mapping[str, str]
     qualification_receipt_reference: str
@@ -252,6 +355,8 @@ class InstallerQualificationEvidence:
         if not isinstance(self.source_revision, str) or _REVISION.fullmatch(self.source_revision) is None:
             raise InstallerReleaseOperationError("installer qualification source revision is invalid")
         _policy_revision(self.policy_revision, "qualification policy revision")
+        _digest(self.candidate_manifest_digest, "qualification candidate manifest digest")
+        object.__setattr__(self, "candidate_archives", _archives(self.candidate_archives))
         _digest(self.descriptor_digest, "qualification descriptor digest")
         object.__setattr__(self, "archives", _archives(self.archives))
         _receipt_reference(self.qualification_receipt_reference, "qualification receipt reference")
@@ -260,13 +365,20 @@ class InstallerQualificationEvidence:
     def from_mapping(cls, value: object) -> "InstallerQualificationEvidence":
         payload = _strict_mapping(
             value,
-            frozenset({"result", "source_revision", "policy_revision", "descriptor_digest", "archives", "qualification_receipt_reference"}),
+            frozenset({
+                "result", "source_revision", "policy_revision", "candidate_manifest_digest", "candidate_archives",
+                "descriptor_digest", "archives", "qualification_receipt_reference",
+            }),
             "qualification evidence",
         )
         return cls(
             result=_required_string(payload["result"], "qualification result"),
             source_revision=_required_string(payload["source_revision"], "qualification source revision"),
             policy_revision=_required_string(payload["policy_revision"], "qualification policy revision"),
+            candidate_manifest_digest=_required_string(
+                payload["candidate_manifest_digest"], "qualification candidate manifest digest"
+            ),
+            candidate_archives=_archives(payload["candidate_archives"]),
             descriptor_digest=_required_string(payload["descriptor_digest"], "qualification descriptor digest"),
             archives=_archives(payload["archives"]),
             qualification_receipt_reference=_required_string(
@@ -365,6 +477,7 @@ class InstallerReleaseOperation:
     policy_revision: str
     release_identity: InstallerReleaseIdentity
     capabilities: tuple[str, ...]
+    preparation: InstallerPreparationEvidence
     archives: Mapping[str, str]
     descriptor_digest: str
     state: str
@@ -385,6 +498,8 @@ class InstallerReleaseOperation:
         if not isinstance(self.release_identity, InstallerReleaseIdentity):
             raise InstallerReleaseOperationError("installer release identity is invalid")
         object.__setattr__(self, "capabilities", _capabilities(self.capabilities))
+        if not isinstance(self.preparation, InstallerPreparationEvidence):
+            raise InstallerReleaseOperationError("installer release preparation evidence is invalid")
         object.__setattr__(self, "archives", _archives(self.archives))
         _digest(self.descriptor_digest, "descriptor digest")
         if self.state not in _STATES:
@@ -421,6 +536,7 @@ class InstallerReleaseOperation:
         policy_revision: str,
         release_identity: InstallerReleaseIdentity,
         capabilities: tuple[str, ...] | list[str],
+        preparation: InstallerPreparationEvidence,
         archives: Mapping[str, str],
         descriptor_digest: str,
         qualification: InstallerQualificationEvidence,
@@ -435,6 +551,7 @@ class InstallerReleaseOperation:
             policy_revision=policy_revision,
             release_identity=release_identity,
             capabilities=tuple(capabilities),
+            preparation=preparation,
             archives=dict(archives),
             descriptor_digest=descriptor_digest,
             state="QUALIFIED",
@@ -446,7 +563,7 @@ class InstallerReleaseOperation:
         payload = _strict_mapping(
             value,
             frozenset({
-                "operation_id", "installer_version", "channel", "source_revision", "policy_revision", "capabilities", "archives",
+                "operation_id", "installer_version", "channel", "source_revision", "policy_revision", "capabilities", "preparation", "archives",
                 "release_identity", "descriptor_digest", "state", "qualification", "publication", "cleanup",
             }),
             "operation record",
@@ -462,6 +579,7 @@ class InstallerReleaseOperation:
             policy_revision=_required_string(payload["policy_revision"], "policy revision"),
             release_identity=InstallerReleaseIdentity.from_mapping(payload["release_identity"]),
             capabilities=_capabilities(payload["capabilities"]),
+            preparation=InstallerPreparationEvidence.from_mapping(payload["preparation"]),
             archives=_archives(payload["archives"]),
             descriptor_digest=_required_string(payload["descriptor_digest"], "descriptor digest"),
             state=_required_string(payload["state"], "state"),
@@ -481,8 +599,12 @@ class InstallerReleaseOperation:
             if (
                 evidence.source_revision != self.source_revision
                 or evidence.policy_revision != self.policy_revision
+                or evidence.candidate_manifest_digest != self.preparation.candidate_manifest_digest
+                or dict(evidence.candidate_archives) != dict(self.preparation.candidate_archives)
             ):
-                raise InstallerReleaseOperationError("installer qualification evidence does not bind exact source revision and policy")
+                raise InstallerReleaseOperationError(
+                    "installer qualification evidence does not bind exact source, policy, and prepared candidate bytes"
+                )
         elif (
             evidence.github_repository != self.release_identity.github_repository
             or evidence.release_tag != self.release_tag
@@ -557,6 +679,11 @@ class InstallerReleaseOperationStore:
             raise InstallerReleaseOperationError("installer release operation ID is invalid")
         return self.root / "operations" / f"{operation_id}.json"
 
+    def _preparation_path(self, operation_id: str) -> Path:
+        if not isinstance(operation_id, str) or _OPERATION_ID.fullmatch(operation_id) is None:
+            raise InstallerReleaseOperationError("installer preparation operation ID is invalid")
+        return self.root / "preparations" / f"{operation_id}.json"
+
     @property
     def _lock(self) -> Path:
         return self.root / "installer-release-operation.lock"
@@ -604,6 +731,61 @@ class InstallerReleaseOperationStore:
         except (OSError, InstallerReleaseOperationError) as error:
             raise InstallerReleaseOperationError("installer release operation record is unreadable") from error
 
+    def load_preparation(self, operation_id: str) -> InstallerReleasePreparation | None:
+        path = self._preparation_path(operation_id)
+        if not path.exists():
+            return None
+        try:
+            return InstallerReleasePreparation.parse(
+                _strict_json_load(path.read_text(encoding="utf-8"), "preparation record")
+            )
+        except (OSError, InstallerReleaseOperationError) as error:
+            raise InstallerReleaseOperationError("installer release preparation record is unreadable") from error
+
+    @staticmethod
+    def _preparation_binds_operation(
+        preparation: InstallerReleasePreparation,
+        operation: InstallerReleaseOperation,
+    ) -> bool:
+        return (
+            preparation.operation_id,
+            preparation.installer_version,
+            preparation.channel,
+            preparation.source_revision,
+            preparation.policy_revision,
+            preparation.release_identity,
+            preparation.capabilities,
+            preparation.preparation,
+        ) == (
+            operation.operation_id,
+            operation.installer_version,
+            operation.channel,
+            operation.source_revision,
+            operation.policy_revision,
+            operation.release_identity,
+            operation.capabilities,
+            operation.preparation,
+        )
+
+    def prepare_candidate(self, preparation: InstallerReleasePreparation) -> InstallerReleasePreparation:
+        """Persist or resume immutable candidate bytes before protected signing.
+
+        This is the only write allowed before a signer/notarizer receives an
+        installer candidate.  A changed digest under the same operation ID
+        fails closed rather than replacing the original candidate.
+        """
+
+        self._require_lock(preparation.operation_id)
+        existing = self.load_preparation(preparation.operation_id)
+        if existing is None:
+            _atomic_json(self._preparation_path(preparation.operation_id), asdict(preparation))
+            return preparation
+        if existing != preparation:
+            raise InstallerReleaseOperationError(
+                "installer release preparation operation ID already binds different candidate bytes or provenance"
+            )
+        return existing
+
     def save(self, operation: InstallerReleaseOperation) -> InstallerReleaseOperation:
         self._require_lock(operation.operation_id)
         existing = self.load(operation.operation_id)
@@ -626,6 +808,7 @@ class InstallerReleaseOperationStore:
             left.policy_revision,
             left.release_identity,
             left.capabilities,
+            left.preparation,
             dict(left.archives),
             left.descriptor_digest,
         ) == (
@@ -636,6 +819,7 @@ class InstallerReleaseOperationStore:
             right.policy_revision,
             right.release_identity,
             right.capabilities,
+            right.preparation,
             dict(right.archives),
             right.descriptor_digest,
         )
@@ -644,11 +828,20 @@ class InstallerReleaseOperationStore:
         self,
         operation: InstallerReleaseOperation,
     ) -> InstallerReleaseOperation:
-        """Persist or resume exactly one already-qualified installer identity."""
+        """Persist or resume a qualification bound to a prior PREPARED record."""
 
         self._require_lock(operation.operation_id)
         if operation.state != "QUALIFIED":
             raise InstallerReleaseOperationError("only a qualified installer operation may begin or resume publication")
+        preparation = self.load_preparation(operation.operation_id)
+        if preparation is None:
+            raise InstallerReleaseOperationError(
+                "installer release qualification requires an immutable PREPARED candidate record"
+            )
+        if not self._preparation_binds_operation(preparation, operation):
+            raise InstallerReleaseOperationError(
+                "installer release qualification does not bind the durable PREPARED candidate record"
+            )
         existing = self.load(operation.operation_id)
         if existing is None:
             return self.save(operation)
@@ -808,6 +1001,7 @@ class InstallerReleaseOperationStore:
             "policy_revision": operation.policy_revision,
             "release_identity": release_identity,
             "capabilities": list(operation.capabilities),
+            "preparation": asdict(operation.preparation),
             "archives": dict(operation.archives),
             "descriptor_digest": operation.descriptor_digest,
             "publication": asdict(operation.publication),

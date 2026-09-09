@@ -50,11 +50,23 @@ number of times. Production composition must place this state root under its
 privileged, machine-wide installer controller. A per-user directory does not
 prove cross-account uniqueness.
 
-The sealed trust descriptor has a canonical SHA-256 over its accepted semantic
-fields, is checked inside a strictly validated macOS code-signed bundle, and is
-bound separately into signed release/current/staged-bundle identity checks. The
-checksum is not a substitute for code signing or the signed release-feed trust
-root; those remain required and absent configuration still fails closed.
+The sealed trust descriptor is a public V2 policy resource named
+`ForgePlatformInstallerReleaseTrust.json`. It has exact fields for the GitHub
+repository, the fixed `github-release-asset-v1` descriptor convention and
+asset name, expected bundle/team identity, threshold, and ordered Ed25519 key
+IDs plus canonical Base64-encoded public keys. Its SHA-256 covers a
+domain-separated, NUL-delimited representation of those accepted semantics.
+The package's bundle packager validates that exact V2 form and copies an
+explicit, non-symlink resource verbatim; source builds carry no resource and
+therefore fail closed. The descriptor never contains a private key, credential,
+URL, arbitrary transport setting, product authority, or installed-component
+state.
+
+The descriptor is checked inside a strictly validated macOS code-signed bundle
+and is bound separately into signed release/current/staged-bundle identity
+checks. Its checksum is not a substitute for code signing or the signed
+release-feed trust root; those remain required and absent configuration still
+fails closed.
 
 The default coordinator fails closed. This package deliberately ships no real
 release URL, signing key, credential, shell invocation, privileged helper or
@@ -65,6 +77,17 @@ constructs commands from UI input, stores credentials, changes global
 Git/Python tooling, writes a product database, selects a runtime, creates a
 venv, or installs/modifies a service. Product-adapter integration remains under
 the product-owned contracts in the repository architecture.
+
+The unsigned app-layout helper accepts a release-trust descriptor only through
+an explicit `--sealed-release-trust-resource PATH` argument. It validates the
+native loader's exact three-field v1 JSON shape and canonical digest, rejects
+symlinks, duplicate/unknown fields and explicit key-material fields, then
+copies the caller's validated bytes verbatim to
+`Contents/Resources/ForgePlatformInstallerReleaseTrust.json`. It never finds,
+generates or defaults a production identity, repository, URL, public/private
+key or credential. Omitting that argument leaves the resource absent, so the
+candidate remains fail-closed until a protected release packager supplies a
+reviewed non-secret descriptor and code-signs the completed bundle.
 
 Run the pure state-machine tests on macOS:
 

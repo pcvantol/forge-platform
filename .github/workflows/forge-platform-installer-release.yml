@@ -101,6 +101,7 @@ jobs:
           POLICY_REVISION: ${{ needs.release-context.outputs.policy_revision }}
           INSTALLER_VERSION: ${{ needs.release-context.outputs.installer_version }}
           SOURCE_SHA: ${{ needs.release-context.outputs.source_sha }}
+          OPERATION_ID: ${{ needs.release-context.outputs.operation_id }}
           BUNDLE_IDENTIFIER: ${{ needs.release-context.outputs.bundle_identifier }}
           ASSET_PREFIX: ${{ needs.release-context.outputs.asset_prefix }}
         run: |
@@ -157,6 +158,18 @@ jobs:
               encoding="utf-8",
           )
           PY
+          python3 scripts/prepare_installer_release_candidate.py \
+            --candidate-manifest release-input/installer-candidate.json \
+            --archive "$ARCHITECTURE=release-input/$ARCHIVE" \
+            --source-sha "$SOURCE_SHA" \
+            --operation-id "$OPERATION_ID" \
+            --installer-version "$INSTALLER_VERSION" \
+            --channel "$CHANNEL" \
+            --policy-revision "$POLICY_REVISION" \
+            --release-identity installer-release-identity.json \
+            --journal-root release-input/installer-release-journal \
+            --output release-input/installer-release-preparation.json \
+            --preparation-receipt-reference "receipt:installer-preparation-$OPERATION_ID"
           printf 'architecture=%s\n' "$ARCHITECTURE" >> "$GITHUB_OUTPUT"
           printf 'archive=%s\n' "$ARCHIVE" >> "$GITHUB_OUTPUT"
           printf 'archive_digest=%s\n' "$ARCHIVE_DIGEST" >> "$GITHUB_OUTPUT"
@@ -191,8 +204,10 @@ jobs:
           set -euo pipefail
           test -d release-input/ForgePlatformInstaller.app
           test -f release-input/installer-candidate.json
+          test -f release-input/installer-release-preparation.json
+          test -f "release-input/installer-release-journal/preparations/${{ needs.release-context.outputs.operation_id }}.json"
           echo 'No protected Apple signing/notarization and descriptor-trust implementation is configured.' >&2
-          echo 'A future protected executor must emit a signed .app archive, signed descriptor, and exact durable installer release operation.' >&2
+          echo 'A future protected executor must bind the durable PREPARED candidate to a signed .app archive, signed descriptor, and exact release operation.' >&2
           exit 1
 
   verify-signed-evidence-and-publish:

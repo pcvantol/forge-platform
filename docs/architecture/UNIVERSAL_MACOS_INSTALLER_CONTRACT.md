@@ -27,6 +27,65 @@ bundle identifier, Apple Team identifier and public descriptor-key threshold
 are approved. An unconfigured policy blocks the release workflow; no source
 literal or test fixture is an implicit production identity.
 
+## Sealed installer release-trust resource V2
+
+A released native installer may carry exactly one code-signed public resource,
+`ForgePlatformInstallerReleaseTrust.json`, that defines the future GitHub
+Release bootstrap trust policy. This is a format contract only: this repository
+commits no production resource, repository, bundle identity, Team identifier,
+or signing key. A source build without the resource remains fail-closed.
+
+The strict JSON object has exactly these fields:
+
+```text
+schema_version = 2
+configuration_sha256
+repository
+release_descriptor_locator = "github-release-asset-v1"
+release_descriptor_asset_name
+expected_bundle_identifier
+expected_team_identifier
+signature_threshold
+ed25519_public_keys = [{ key_id, public_key_base64 }, ...]
+```
+
+`repository` matches `^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$` and
+`release_descriptor_asset_name` matches
+`^[A-Za-z0-9._-]{1,123}\.json$`; it is therefore bounded and slash-free.
+`expected_bundle_identifier` matches
+`^[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)+$` and `expected_team_identifier` matches
+`^[A-Z0-9]{10}$`. Each `key_id` matches
+`^[a-z0-9][a-z0-9._-]{0,127}$`; keys are strictly ascending by ID, key IDs and
+public keys are each unique, and `public_key_base64` is canonical standard
+Base64 for exactly 32 raw Ed25519 public-key bytes. The threshold is an integer
+from one through the number of keys (maximum sixteen).
+
+`configuration_sha256` is lower-case SHA-256 of UTF-8 bytes obtained by joining
+these tokens with one NUL byte, in the exact order shown (followed by the two
+key tokens per key in strict key-ID order):
+
+```text
+forge-platform-installer-release-trust-v2
+schema_version=2
+repository=<repository>
+release_descriptor_locator=<release_descriptor_locator>
+release_descriptor_asset_name=<release_descriptor_asset_name>
+expected_bundle_identifier=<expected_bundle_identifier>
+expected_team_identifier=<expected_team_identifier>
+signature_threshold=<signature_threshold>
+ed25519_public_key_count=<count>
+ed25519_public_key_id=<key_id>
+ed25519_public_key_base64=<public_key_base64>
+```
+
+Duplicate JSON members (including nested key objects), unknown fields,
+non-integer JSON numbers, malformed UTF-8, noncanonical Base64 and any private
+or operational input are rejected. A resource is limited to 32 KiB. The bundle
+packager reads a caller-supplied resource only from a regular non-symlink file,
+validates this exact contract, and copies its captured bytes into the unsigned
+candidate. It does not fetch, publish, sign, stage, hand off, or activate an
+installer.
+
 ## Mandatory self-update
 
 ```text
@@ -42,9 +101,75 @@ verify own installed bundle identity
 
 GitHub Releases transport bytes, but `latest`, a tag, title, filename, or HTTP success is not a trust root. The bootstrapper accepts only a signed `forge-platform.installer-release/v1` descriptor under its rotatable embedded public-key/threshold policy. The descriptor binds sequence, channel, expiry, installer version/source revision, exact SHA-256, code-signing team/bundle identity, notarization evidence, capabilities, and the signed **catalog-feed locator**. A same installer version with different source, bytes, capability declaration, feed locator, or signing identity fails closed rather than being overwritten.
 
+Both the installer descriptor and composition catalog use only an explicit
+public signature envelope: `{ "algorithm": "ed25519", "key_id": "…",
+"signature": "…" }`. The signature is canonical unpadded base64url for the
+64-byte Ed25519 result; opaque strings, mixed algorithms, duplicate key IDs,
+unknown key IDs, and fewer than the reviewed threshold all fail before a
+cryptographic verifier runs. Key IDs are public routing identities, not public
+key material or credentials. The protected verifier resolves each ID through
+its independently protected trust root and must verify every counted signature
+under that exact policy. The current source identity remains `UNCONFIGURED`,
+so it contains no production key IDs or public keys and cannot publish.
+
 The catalog is a deliberately separate signed, expiring, monotonic feed. It contains immutable composition URLs/SHA-256 values and their installer requirements. Before any selection, the installer requires fresh feed-readback and trusted-clock evidence, verifies the catalog signature, channel, validity interval and locally persisted highest accepted sequence/digest, then verifies each manifest against the selected catalog-entry digest. A lower sequence, or different bytes under an already accepted sequence, fails closed. This is what lets one compatible installer discover a later Forge/EP/Workspace composition without needlessly replacing its binary; a composition requiring an unavailable capability still requires a newer installer first. An unavailable, expired, unsigned, stale, architecture-incompatible, or unverifiable feed blocks platform mutation. An explicit offline bundle is allowed only when installer and catalog evidence were verified in advance under the same policy and still satisfy freshness/anti-replay rules.
 
 The old process never starts component work while a newer verified installer is available. A crash/reboot after staging resumes the same non-secret handoff; it does not execute an arbitrary downloaded binary or silently continue with stale installer logic.
+
+The release-side counterpart is equally restartable: the unsigned candidate
+first becomes a durable, immutable `PREPARED` record under one operation ID,
+including its candidate manifest and per-architecture digests. A later
+qualification record must bind that exact prepared input as well as the signed
+descriptor and release archives. Retrying with changed source, policy,
+identity, capability, candidate bytes, or signed bytes under the same
+operation ID fails closed. `PREPARED`, `QUALIFIED`, `PUBLISHED`,
+`CLEANUP_PENDING`, and `RELEASE_COMPLETE` are distinct evidence states; no
+public side effect is inferred from an unsigned candidate or a lost response.
+
+### Component-combination selection index
+
+The catalog has a versioned, digest-bound selection-index payload,
+`forge-platform.component-combination-catalog/v1`, specified in
+[`universal-installer-component-combination-catalog.schema.json`](../../schemas/universal-installer-component-combination-catalog.schema.json).
+The signed outer `forge-platform.composition-catalog/v1` carries its explicit
+optional `component_combination_catalog` locator (`url` plus SHA-256). The
+optional field preserves parsing of older signed catalogs; trying to use the
+component-set selector without the locator fails closed. The production parser
+derives `CatalogPublicationBinding` only from a verified
+`CompositionCatalog`, then checks the index's exact bytes against that signed
+locator. It is not a second trust root and it is not an installer package. Its
+entries bind all of the following:
+
+- a composition identity, numeric selection sequence, exact manifest URL and
+  digest;
+- the exact component set, with an explicit installer capability set for every
+  component type;
+- a minimum installer version and the union of required installer capabilities;
+  and
+- explicit `upgrade_from` composition identities.
+
+The resolver selects only an **exact** requested component set and the highest
+published selection sequence with an explicit upgrade route. It never infers a
+role from a filename, selects a component superset, or bypasses a newer entry
+that needs an unavailable capability by silently offering an older tuple.
+Instead it returns `INSTALLER_UPDATE_REQUIRED`; the ordinary self-update gate
+must obtain and relaunch a trusted newer installer before the manifest is
+fetched. The locally retained catalog sequence/digest prevents replay or a
+different byte sequence under the same identity.
+
+This lets a later composition advertise, for example,
+`engineering-platform-execution-agent` with
+`component-provisioner/engineering-platform-execution-agent/v1`. It does not
+declare that component installable today and does not manufacture an EP
+provisioner. A newly released installer may select it only after it actually
+implements and advertises that capability; an older installer stops at the
+self-update gate. The model is deliberately generic so a future component does
+not require one installer package per Forge/EP/Workspace combination.
+
+The selection-index parser and behavior checks are source-level policy work.
+The protected publisher has not yet bound or published a real index, so no
+current GitHub Release, installer, or Mac installation is claimed by this
+contract.
 
 ## Native wizard and gates
 
@@ -107,7 +232,7 @@ Discovery produces a candidate only. Product APIs verify product, instance, fing
 
 ## Current source and remaining work
 
-Forge Platform now contains strict schemas and a tested policy kernel for signed-release selection, fresh/trusted-clock feed gates, catalog signature/sequence/digest anti-replay, context-bound composition selection, installer capability checks, preflight, Git/Python planning, provider gating, system-service declaration checks, and read-only composition diffs. It also contains a tested native SwiftUI wizard shell, a separate installer release-operation journal, and a source-only release workflow framework. That framework verifies an exact merged `main` candidate, requires its exact version-preparation receipt, requires a reviewed release-identity policy, packages an **unsigned** `.app` candidate, records the digest of the exact staged archive, and binds the later operation/descriptor handoff to the configured GitHub repository, tag, asset names, bundle identifier and Team identifier. Its signing/notarization and public-GitHub-Release environments deliberately fail closed until a real protected Apple signer, notarization adapter, descriptor trust root, and publisher are configured. The structural handoff verifier intentionally reports that cryptographic signature verification was not performed; it is never a publication authorization.
+Forge Platform now contains strict schemas and a tested policy kernel for signed-release selection, structured public signature envelopes and key-ID/threshold gating, fresh/trusted-clock feed gates, catalog signature/sequence/digest anti-replay, context-bound composition selection, installer capability checks, preflight, Git/Python planning, provider gating, system-service declaration checks, and read-only composition diffs. It also contains a tested native SwiftUI wizard shell, a separate installer release-operation journal with an immutable `PREPARED` candidate precursor, and a source-only release workflow framework. That framework verifies an exact merged `main` candidate, requires its exact version-preparation receipt, requires a reviewed release-identity policy, packages an **unsigned** `.app` candidate, records the digest of the exact staged archive, and binds the later operation/descriptor handoff to the configured GitHub repository, tag, asset names, bundle identifier and Team identifier. Its signing/notarization and public-GitHub-Release environments deliberately fail closed until a real protected Apple signer, notarization adapter, descriptor trust root, and publisher are configured. The structural handoff verifier enforces the public envelope shape and reviewed key-ID/threshold binding, but intentionally reports that cryptographic signature verification was not performed; it is never a publication authorization.
 
 Next owning increments are: connect the protected signer/notarization/publisher to the installer release framework and qualify an actual GitHub Release; native trusted bootstrap/handoff; EP then Forge/Workspace execute/resume/uninstall adapters; managed-tool/provider coordinators that retain no secrets; and installed-artifact clean-Mac, add/update/remove, migration/rollback, reboot-recovery, pairing, readiness, and summary qualification.
 
