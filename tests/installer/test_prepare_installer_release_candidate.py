@@ -105,6 +105,22 @@ class PrepareInstallerReleaseCandidateTests(unittest.TestCase):
             self.assertIn("publication is blocked", result.stderr)
             self.assertFalse(inputs["output"].exists())
 
+    def test_rejects_a_symlinked_reviewed_identity_before_it_can_select_candidate_policy(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            workspace = Path(temporary)
+            inputs = self._write_inputs(workspace)
+            identity = inputs["identity"]
+            assert isinstance(identity, Path)
+            linked_identity = workspace / "linked-reviewed-identity.json"
+            linked_identity.symlink_to(identity)
+            inputs["identity"] = linked_identity
+
+            result = self._run(inputs)
+
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("must not be selected through a symlink", result.stderr)
+            self.assertFalse(inputs["output"].exists())
+
     @staticmethod
     def _write_inputs(workspace: Path) -> dict[str, object]:
         workspace.mkdir(parents=True, exist_ok=True)

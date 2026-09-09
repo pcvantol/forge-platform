@@ -117,6 +117,22 @@ def _candidate_manifest(value: str) -> tuple[Path, bytes, Mapping[str, object]]:
     return path, raw, parsed
 
 
+def _reviewed_identity_path(value: Path) -> Path:
+    """Require an explicit regular policy file rather than a redirected path."""
+
+    supplied = Path(value).expanduser()
+    if supplied.is_symlink():
+        raise ValueError("reviewed installer release identity must not be selected through a symlink")
+    try:
+        resolved = supplied.resolve(strict=True)
+        metadata = resolved.stat()
+    except OSError as error:
+        raise ValueError("reviewed installer release identity is unavailable") from error
+    if not stat.S_ISREG(metadata.st_mode):
+        raise ValueError("reviewed installer release identity must be a regular file")
+    return resolved
+
+
 def _archive_digest(value: str, *, architecture: str) -> tuple[Path, str]:
     """Hash one immutable archive in bounded streaming reads."""
 
@@ -283,7 +299,7 @@ def prepare(
 ) -> InstallerReleasePreparation:
     if policy_revision != INSTALLER_RELEASE_POLICY_REVISION:
         raise ValueError("requested policy revision is not the active installer release policy")
-    identity = load_identity(require_ready=True, path=release_identity_path)
+    identity = load_identity(require_ready=True, path=_reviewed_identity_path(release_identity_path))
     if identity is None:
         raise ValueError("reviewed installer release identity is required")
     _, manifest_raw, manifest = _candidate_manifest(candidate_manifest_path)
