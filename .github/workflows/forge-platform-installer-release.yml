@@ -161,8 +161,9 @@ jobs:
             --bundle-identifier "$BUNDLE_IDENTIFIER"
           test -f release-input/ForgePlatformInstaller.app/Contents/Info.plist
           ARCHIVE="$ASSET_PREFIX$ARCHITECTURE.zip"
-          ditto -c -k --sequesterRsrc --keepParent \
-            release-input/ForgePlatformInstaller.app "release-input/$ARCHIVE"
+          python3 scripts/package_macos_installer_archive.py \
+            --app-bundle release-input/ForgePlatformInstaller.app \
+            --output "release-input/$ARCHIVE"
           ARCHIVE_DIGEST="sha256:$(shasum -a 256 "release-input/$ARCHIVE" | awk '{print $1}')"
           export ARCHITECTURE ARCHIVE ARCHIVE_DIGEST CHANNEL RELEASE_SEQUENCE POLICY_REVISION PROVENANCE_SHA256 RELEASE_TRUST_CONFIGURATION_SHA256 INSTALLER_VERSION SOURCE_SHA
           python3 - <<'PY'

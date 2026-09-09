@@ -21,6 +21,7 @@ python3 tests/installer/test_installer_release_identity.py
 python3 tests/installer/test_installer_release_trust.py
 python3 tests/installer/test_installer_release_provenance.py
 python3 tests/installer/test_package_macos_installer_app.py
+python3 tests/installer/test_package_macos_installer_archive.py
 python3 tests/installer/test_verify_installer_release_evidence.py
 python3 tests/installer/test_installer_release_workflow.py
 python3 scripts/validate_installer_version.py
