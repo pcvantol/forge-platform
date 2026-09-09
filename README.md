@@ -4,9 +4,10 @@ Forge Platform is the canonical, first-class repository for cross-product distri
 
 ## Status
 
-Repository foundation with an initial source-level component-operation delegation
-kernel. The universal installer is not yet implemented: this repository does
-not publish production artifacts or change product runtime behavior.
+Repository foundation with bounded source-level component-operation and
+release-composition evidence kernels. The universal installer is not yet
+implemented: this repository does not publish producer product artifacts or
+change product runtime behavior.
 
 ## Boundary
 
