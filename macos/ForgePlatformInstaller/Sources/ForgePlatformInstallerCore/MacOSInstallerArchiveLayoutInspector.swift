@@ -1,3 +1,4 @@
+import CryptoKit
 import Darwin
 import Foundation
 
@@ -189,6 +190,21 @@ public struct MacOSInstallerArchiveLayoutInspector: MacOSInstallerArchiveLayoutI
         }
         defer { _ = Darwin.close(descriptor) }
 
+        return try inspectOpenArchive(
+            descriptor,
+            expectedByteCount: expectedByteCount
+        ).inspection
+    }
+
+    /// Parses one archive through the already-open, no-follow descriptor and
+    /// returns the exact local-data offsets bound to its central-directory
+    /// entries.  The later stored-entry extractor calls this method on the
+    /// same descriptor from which it copies bytes; no URL is re-opened between
+    /// layout admission and extraction.
+    fileprivate func inspectOpenArchive(
+        _ descriptor: Int32,
+        expectedByteCount: UInt64
+    ) throws -> ZIPArchiveAdmission {
         let initialObservation = try secureArchiveObservation(descriptor)
         guard initialObservation.byteCount == expectedByteCount else {
             throw MacOSInstallerArchiveLayoutInspectorError.identityChanged
@@ -202,7 +218,7 @@ public struct MacOSInstallerArchiveLayoutInspector: MacOSInstallerArchiveLayoutI
             using: reader,
             endOfDirectory: endOfDirectory
         )
-        try validateLocalHeaders(
+        let localDataOffsets = try validateLocalHeaders(
             entries,
             using: reader,
             centralDirectoryOffset: endOfDirectory.centralDirectoryOffset
@@ -215,9 +231,13 @@ public struct MacOSInstallerArchiveLayoutInspector: MacOSInstallerArchiveLayoutI
         guard finalObservation == initialObservation else {
             throw MacOSInstallerArchiveLayoutInspectorError.identityChanged
         }
-        return ZIPArchiveInspection(
-            layout: layout,
-            observation: finalObservation
+        return ZIPArchiveAdmission(
+            inspection: ZIPArchiveInspection(
+                layout: layout,
+                observation: finalObservation
+            ),
+            entries: entries,
+            localDataOffsets: localDataOffsets
         )
     }
 
@@ -381,9 +401,11 @@ public struct MacOSInstallerArchiveLayoutInspector: MacOSInstallerArchiveLayoutI
         _ entries: [ZIPCentralDirectoryEntry],
         using reader: ZIPArchiveFileReader,
         centralDirectoryOffset: UInt64
-    ) throws {
+    ) throws -> [UInt64] {
         var localRanges: [ZIPByteRange] = []
         localRanges.reserveCapacity(entries.count)
+        var localDataOffsets: [UInt64] = []
+        localDataOffsets.reserveCapacity(entries.count)
 
         for entry in entries {
             guard entry.localHeaderOffset < centralDirectoryOffset else {
@@ -450,6 +472,7 @@ public struct MacOSInstallerArchiveLayoutInspector: MacOSInstallerArchiveLayoutI
                 throw MacOSInstallerArchiveLayoutInspectorError.invalidArchive
             }
             localRanges.append(ZIPByteRange(start: entry.localHeaderOffset, end: dataEnd))
+            localDataOffsets.append(dataOffset)
         }
 
         let orderedRanges = localRanges.sorted { left, right in
@@ -463,6 +486,7 @@ public struct MacOSInstallerArchiveLayoutInspector: MacOSInstallerArchiveLayoutI
                 throw MacOSInstallerArchiveLayoutInspectorError.invalidArchive
             }
         }
+        return localDataOffsets
     }
 
     private func validateMacOSAppLayout(
@@ -596,7 +620,7 @@ public struct MacOSInstallerArchiveLayoutInspector: MacOSInstallerArchiveLayoutI
         }
     }
 
-    private func secureArchiveObservation(_ descriptor: Int32) throws -> ZIPArchiveFileObservation {
+    fileprivate func secureArchiveObservation(_ descriptor: Int32) throws -> ZIPArchiveFileObservation {
         var details = stat()
         guard Darwin.fstat(descriptor, &details) == 0,
               (details.st_mode & mode_t(S_IFMT)) == mode_t(S_IFREG),
@@ -625,7 +649,7 @@ public enum MacOSInstallerArchiveLayoutInspectorConfigurationError: Error, Equat
     case invalidLimits
 }
 
-private enum MacOSInstallerArchiveLayoutInspectorError: Error {
+fileprivate enum MacOSInstallerArchiveLayoutInspectorError: Error {
     case invalidArchive
     case identityChanged
 }
@@ -665,7 +689,7 @@ private struct ZIPEndOfCentralDirectory {
     let entryCount: Int
 }
 
-private struct ZIPCentralDirectoryEntry {
+fileprivate struct ZIPCentralDirectoryEntry {
     let path: ZIPArchivePath
     let versionMadeBy: UInt16
     let versionNeeded: UInt16
@@ -679,7 +703,7 @@ private struct ZIPCentralDirectoryEntry {
     let rawFileName: Data
 }
 
-private struct ZIPArchivePath {
+fileprivate struct ZIPArchivePath {
     let canonical: String
     let components: [String]
     let isDirectory: Bool
@@ -754,7 +778,7 @@ private struct ZIPByteRange {
     let end: UInt64
 }
 
-private struct ZIPArchiveFileObservation: Equatable {
+fileprivate struct ZIPArchiveFileObservation: Equatable {
     let device: dev_t
     let inode: ino_t
     let byteCount: UInt64
@@ -764,12 +788,21 @@ private struct ZIPArchiveFileObservation: Equatable {
     let changeNanoseconds: Int
 }
 
-private struct ZIPArchiveInspection: Equatable {
+fileprivate struct ZIPArchiveInspection: Equatable {
     let layout: MacOSInstallerArchiveLayout
     let observation: ZIPArchiveFileObservation
 }
 
-private struct ZIPArchiveFileReader {
+/// Internal proof used only by the layout inspector and the stored-entry
+/// extractor in this source file.  It deliberately contains descriptor-bound
+/// offsets rather than URLs or destination paths.
+fileprivate struct ZIPArchiveAdmission {
+    let inspection: ZIPArchiveInspection
+    let entries: [ZIPCentralDirectoryEntry]
+    let localDataOffsets: [UInt64]
+}
+
+fileprivate struct ZIPArchiveFileReader {
     let descriptor: Int32
     let fileSize: UInt64
 
@@ -890,4 +923,1098 @@ private func checkedAdd(_ left: UInt64, _ right: UInt64) throws -> UInt64 {
         throw MacOSInstallerArchiveLayoutInspectorError.invalidArchive
     }
     return value
+}
+
+// MARK: - Stored-entry staged archive extraction
+
+/// Resolves one already staged installer archive to a private, fully written
+/// macOS app bundle.  The public boundary accepts only the opaque staged asset
+/// and the existing archive resolver; it deliberately has no URL, command,
+/// destination path, component-installation or launch input.
+///
+/// The extractor implements a deliberately narrow archive profile.  The
+/// layout inspector admits ZIP `stored` and `deflate` entries for read-only
+/// qualification, but this type extracts *only* `stored` entries.  Adding a
+/// decompressor requires its own bounded streaming and parser proof instead of
+/// silently widening this trust boundary.
+///
+/// `extractionRoot` is selected by trusted packaged-runtime assembly, never by
+/// wizard input or a product component.  It is canonicalised only through its
+/// existing parent and is then required to be an effective-user-owned `0700`
+/// directory.  All state below it is named from fixed constants or a hash of
+/// the opaque staged identity.
+public struct MacOSStagedInstallerArchiveExtractor: MacOSStagedInstallerBundleResolving {
+    public static let defaultMaximumArchiveBytes = MacOSInstallerArchiveLayoutInspector.defaultMaximumArchiveBytes
+    public static let defaultMaximumCentralDirectoryBytes = MacOSInstallerArchiveLayoutInspector.defaultMaximumCentralDirectoryBytes
+    public static let defaultMaximumEntryCount = MacOSInstallerArchiveLayoutInspector.defaultMaximumEntryCount
+    public static let defaultMaximumPathBytes = MacOSInstallerArchiveLayoutInspector.defaultMaximumPathBytes
+    public static let defaultMaximumTotalUncompressedBytes = MacOSInstallerArchiveLayoutInspector.defaultMaximumTotalUncompressedBytes
+
+    private static let extractionDirectoryName = "installer-update-extractions-v1"
+    private static let candidateDirectoryName = "candidate"
+    private static let readyDirectoryName = "ready"
+    private static let bindingFileName = "archive-binding-v1"
+    private static let maximumBindingBytes = 4 * 1024
+    private static let copyBufferBytes = 64 * 1024
+
+    private let extractionRoot: URL
+    private let archiveResolver: any MacOSInstallerArchiveStagingResolving
+    private let layoutInspector: MacOSInstallerArchiveLayoutInspector
+
+    public init(
+        extractionRoot: URL,
+        archiveResolver: any MacOSInstallerArchiveStagingResolving,
+        maximumArchiveBytes: Int = MacOSStagedInstallerArchiveExtractor.defaultMaximumArchiveBytes,
+        maximumCentralDirectoryBytes: Int = MacOSStagedInstallerArchiveExtractor.defaultMaximumCentralDirectoryBytes,
+        maximumEntryCount: Int = MacOSStagedInstallerArchiveExtractor.defaultMaximumEntryCount,
+        maximumPathBytes: Int = MacOSStagedInstallerArchiveExtractor.defaultMaximumPathBytes,
+        maximumTotalUncompressedBytes: UInt64 = MacOSStagedInstallerArchiveExtractor.defaultMaximumTotalUncompressedBytes
+    ) throws {
+        self.extractionRoot = Self.canonicalStateRoot(for: extractionRoot)
+        self.archiveResolver = archiveResolver
+        self.layoutInspector = try MacOSInstallerArchiveLayoutInspector(
+            maximumArchiveBytes: maximumArchiveBytes,
+            maximumCentralDirectoryBytes: maximumCentralDirectoryBytes,
+            maximumEntryCount: maximumEntryCount,
+            maximumPathBytes: maximumPathBytes,
+            maximumTotalUncompressedBytes: maximumTotalUncompressedBytes
+        )
+    }
+
+    /// Resolves only a complete `ready` bundle.  A failed extraction leaves a
+    /// private `candidate` directory deliberately unresolvable: this bounded
+    /// foundation neither hands it off nor performs a broad recursive cleanup.
+    /// A later operation-owned recovery increment can make the exact cleanup
+    /// decision with durable evidence; retries never return a candidate.
+    public func resolveStagedInstallerBundle(
+        _ stagedAsset: StagedInstallerAsset
+    ) async -> Result<URL, InstallerSelfUpdateFailure> {
+        do {
+            _ = try StagedInstallerAsset(
+                releaseAssetName: stagedAsset.releaseAssetName,
+                opaqueReference: stagedAsset.opaqueReference,
+                fileIdentity: stagedAsset.fileIdentity
+            )
+        } catch {
+            return .failure(InstallerSelfUpdateFailure(.stagedAssetIdentityChanged))
+        }
+
+        let initialURL: URL
+        switch await archiveResolver.resolveStagedInstallerArchive(stagedAsset) {
+        case .success(let resolvedURL):
+            initialURL = resolvedURL
+        case .failure(let failure):
+            return .failure(failure)
+        }
+
+        do {
+            let archiveDescriptor = try openArchive(at: initialURL)
+            defer { _ = Darwin.close(archiveDescriptor) }
+            let initialAdmission = try inspectStoredArchive(
+                descriptor: archiveDescriptor,
+                expectedByteCount: stagedAsset.fileIdentity.byteCount
+            )
+            let operationName = Self.operationDirectoryName(for: stagedAsset)
+
+            let stateRootDescriptor = try requirePrivateStateRoot()
+            defer { _ = Darwin.close(stateRootDescriptor) }
+            let extractionDescriptor = try openOrCreatePrivateDirectory(
+                named: Self.extractionDirectoryName,
+                in: stateRootDescriptor
+            )
+            defer { _ = Darwin.close(extractionDescriptor) }
+
+            if let existingOperationDescriptor = try openPrivateDirectoryIfPresent(
+                named: operationName,
+                in: extractionDescriptor
+            ) {
+                defer { _ = Darwin.close(existingOperationDescriptor) }
+                let readyURL = try await resolveExistingReadyBundle(
+                    stagedAsset: stagedAsset,
+                    initialURL: initialURL,
+                    initialArchiveDescriptor: archiveDescriptor,
+                    initialAdmission: initialAdmission,
+                    operationName: operationName,
+                    operationDescriptor: existingOperationDescriptor
+                )
+                return .success(readyURL)
+            }
+
+            let operationDescriptor = try createPrivateDirectory(
+                named: operationName,
+                in: extractionDescriptor
+            )
+            defer { _ = Darwin.close(operationDescriptor) }
+            let candidateDescriptor = try createPrivateDirectory(
+                named: Self.candidateDirectoryName,
+                in: operationDescriptor
+            )
+            do {
+                defer { _ = Darwin.close(candidateDescriptor) }
+                try extractStoredBundle(
+                    admission: initialAdmission,
+                    archiveDescriptor: archiveDescriptor,
+                    into: candidateDescriptor,
+                    stagedAsset: stagedAsset
+                )
+                try verifyExtractedBundle(
+                    in: candidateDescriptor,
+                    admission: initialAdmission,
+                    stagedAsset: stagedAsset
+                )
+                guard try layoutInspector.secureArchiveObservation(archiveDescriptor)
+                    == initialAdmission.inspection.observation else {
+                    throw MacOSStagedInstallerArchiveExtractionError.identityChanged
+                }
+            }
+
+            let finalAdmission = try await resolveFinalStoredArchive(
+                stagedAsset: stagedAsset,
+                initialURL: initialURL
+            )
+            guard zipArchiveAdmissionsMatch(initialAdmission, finalAdmission) else {
+                throw MacOSStagedInstallerArchiveExtractionError.identityChanged
+            }
+            try verifyExtractedBundleAtOperationPath(
+                operationDescriptor: operationDescriptor,
+                stateDirectoryName: Self.candidateDirectoryName,
+                admission: finalAdmission,
+                stagedAsset: stagedAsset
+            )
+            guard try layoutInspector.secureArchiveObservation(archiveDescriptor)
+                == initialAdmission.inspection.observation else {
+                throw MacOSStagedInstallerArchiveExtractionError.identityChanged
+            }
+            try promoteCandidate(in: operationDescriptor)
+            // `renameatx_np` is the only transition that makes a candidate
+            // addressable as ready.  Re-open the destination through a fresh
+            // no-follow descriptor before returning its URL so a same-user
+            // replacement of the source name cannot turn promotion into an
+            // unchecked URL handoff.
+            guard let readyDescriptor = try openPrivateDirectoryIfPresent(
+                named: Self.readyDirectoryName,
+                in: operationDescriptor
+            ) else {
+                throw MacOSStagedInstallerArchiveExtractionError.insecureFilesystem
+            }
+            defer { _ = Darwin.close(readyDescriptor) }
+            try verifyExtractedBundle(
+                in: readyDescriptor,
+                admission: finalAdmission,
+                stagedAsset: stagedAsset
+            )
+            guard try layoutInspector.secureArchiveObservation(archiveDescriptor)
+                == initialAdmission.inspection.observation else {
+                throw MacOSStagedInstallerArchiveExtractionError.identityChanged
+            }
+            return .success(readyBundleURL(
+                operationName: operationName,
+                appBundleRoot: finalAdmission.inspection.layout.appBundleRoot
+            ))
+        } catch MacOSInstallerArchiveLayoutInspectorError.identityChanged,
+                MacOSStagedInstallerArchiveExtractionError.identityChanged {
+            return .failure(InstallerSelfUpdateFailure(.stagedAssetIdentityChanged))
+        } catch {
+            return .failure(InstallerSelfUpdateFailure(.stagingFailed))
+        }
+    }
+
+    private func resolveExistingReadyBundle(
+        stagedAsset: StagedInstallerAsset,
+        initialURL: URL,
+        initialArchiveDescriptor: Int32,
+        initialAdmission: ZIPArchiveAdmission,
+        operationName: String,
+        operationDescriptor: Int32
+    ) async throws -> URL {
+        // A crash or rejected write can leave only `candidate`.  It is never a
+        // usable bundle, and its presence alongside `ready` is an unresolved
+        // state rather than an invitation to choose one arbitrarily.
+        if let candidate = try openPrivateDirectoryIfPresent(
+            named: Self.candidateDirectoryName,
+            in: operationDescriptor
+        ) {
+            _ = Darwin.close(candidate)
+            throw MacOSStagedInstallerArchiveExtractionError.incompleteCandidate
+        }
+        guard let readyDescriptor = try openPrivateDirectoryIfPresent(
+            named: Self.readyDirectoryName,
+            in: operationDescriptor
+        ) else {
+            throw MacOSStagedInstallerArchiveExtractionError.incompleteCandidate
+        }
+        defer { _ = Darwin.close(readyDescriptor) }
+
+        try verifyExtractedBundle(
+            in: readyDescriptor,
+            admission: initialAdmission,
+            stagedAsset: stagedAsset
+        )
+        guard try layoutInspector.secureArchiveObservation(initialArchiveDescriptor)
+            == initialAdmission.inspection.observation else {
+            throw MacOSStagedInstallerArchiveExtractionError.identityChanged
+        }
+
+        let finalAdmission = try await resolveFinalStoredArchive(
+            stagedAsset: stagedAsset,
+            initialURL: initialURL
+        )
+        guard zipArchiveAdmissionsMatch(initialAdmission, finalAdmission) else {
+            throw MacOSStagedInstallerArchiveExtractionError.identityChanged
+        }
+        try verifyExtractedBundle(
+            in: readyDescriptor,
+            admission: finalAdmission,
+            stagedAsset: stagedAsset
+        )
+        guard try layoutInspector.secureArchiveObservation(initialArchiveDescriptor)
+            == initialAdmission.inspection.observation else {
+            throw MacOSStagedInstallerArchiveExtractionError.identityChanged
+        }
+        return readyBundleURL(
+            operationName: operationName,
+            appBundleRoot: finalAdmission.inspection.layout.appBundleRoot
+        )
+    }
+
+    private func resolveFinalStoredArchive(
+        stagedAsset: StagedInstallerAsset,
+        initialURL: URL
+    ) async throws -> ZIPArchiveAdmission {
+        let finalURL: URL
+        switch await archiveResolver.resolveStagedInstallerArchive(stagedAsset) {
+        case .success(let resolvedURL):
+            finalURL = resolvedURL
+        case .failure:
+            throw MacOSStagedInstallerArchiveExtractionError.identityChanged
+        }
+        guard finalURL.standardizedFileURL == initialURL.standardizedFileURL else {
+            throw MacOSStagedInstallerArchiveExtractionError.identityChanged
+        }
+        let finalDescriptor = try openArchive(at: finalURL)
+        defer { _ = Darwin.close(finalDescriptor) }
+        let finalAdmission = try inspectStoredArchive(
+            descriptor: finalDescriptor,
+            expectedByteCount: stagedAsset.fileIdentity.byteCount
+        )
+        try verifyStoredArchivePayloads(
+            descriptor: finalDescriptor,
+            admission: finalAdmission
+        )
+        return finalAdmission
+    }
+
+    private func inspectStoredArchive(
+        descriptor: Int32,
+        expectedByteCount: UInt64
+    ) throws -> ZIPArchiveAdmission {
+        let admission = try layoutInspector.inspectOpenArchive(
+            descriptor,
+            expectedByteCount: expectedByteCount
+        )
+        guard admission.entries.allSatisfy({ $0.compression == .stored }) else {
+            throw MacOSStagedInstallerArchiveExtractionError.invalidArchive
+        }
+        return admission
+    }
+
+    private func extractStoredBundle(
+        admission: ZIPArchiveAdmission,
+        archiveDescriptor: Int32,
+        into candidateDescriptor: Int32,
+        stagedAsset: StagedInstallerAsset
+    ) throws {
+        let reader = ZIPArchiveFileReader(
+            descriptor: archiveDescriptor,
+            fileSize: admission.inspection.observation.byteCount
+        )
+        let directoryEntries = admission.entries
+            .filter { $0.path.isDirectory }
+            .sorted { left, right in
+                if left.path.components.count != right.path.components.count {
+                    return left.path.components.count < right.path.components.count
+                }
+                return left.path.canonical < right.path.canonical
+            }
+        var createdDirectories = Set<String>()
+        for entry in directoryEntries {
+            try createExactDirectoryPath(
+                entry.path.components,
+                in: candidateDescriptor,
+                createdDirectories: &createdDirectories
+            )
+        }
+
+        for (entry, dataOffset) in zip(admission.entries, admission.localDataOffsets) where !entry.path.isDirectory {
+            try writeStoredEntry(
+                entry,
+                dataOffset: dataOffset,
+                using: reader,
+                into: candidateDescriptor
+            )
+        }
+        let binding = Self.bindingData(
+            for: stagedAsset,
+            admission: admission
+        )
+        try writePrivateBinding(binding, in: candidateDescriptor)
+        try durableSync(candidateDescriptor)
+    }
+
+    private func verifyExtractedBundleAtOperationPath(
+        operationDescriptor: Int32,
+        stateDirectoryName: String,
+        admission: ZIPArchiveAdmission,
+        stagedAsset: StagedInstallerAsset
+    ) throws {
+        guard let stateDescriptor = try openPrivateDirectoryIfPresent(
+            named: stateDirectoryName,
+            in: operationDescriptor
+        ) else {
+            throw MacOSStagedInstallerArchiveExtractionError.insecureFilesystem
+        }
+        defer { _ = Darwin.close(stateDescriptor) }
+        try verifyExtractedBundle(
+            in: stateDescriptor,
+            admission: admission,
+            stagedAsset: stagedAsset
+        )
+    }
+
+    private func verifyExtractedBundle(
+        in stateDescriptor: Int32,
+        admission: ZIPArchiveAdmission,
+        stagedAsset: StagedInstallerAsset
+    ) throws {
+        let expectedBinding = Self.bindingData(for: stagedAsset, admission: admission)
+        let actualBinding = try readPrivateBinding(in: stateDescriptor)
+        guard actualBinding == expectedBinding else {
+            throw MacOSStagedInstallerArchiveExtractionError.insecureFilesystem
+        }
+
+        let directoryEntries = admission.entries
+            .filter { $0.path.isDirectory }
+            .sorted { $0.path.components.count < $1.path.components.count }
+        for entry in directoryEntries {
+            let descriptor = try openExactDirectoryPath(
+                entry.path.components,
+                in: stateDescriptor
+            )
+            _ = try securePrivateDirectoryObservation(descriptor)
+            _ = Darwin.close(descriptor)
+        }
+        for entry in admission.entries where !entry.path.isDirectory {
+            try verifyExtractedRegularFile(entry, in: stateDescriptor)
+        }
+    }
+
+    private func writeStoredEntry(
+        _ entry: ZIPCentralDirectoryEntry,
+        dataOffset: UInt64,
+        using reader: ZIPArchiveFileReader,
+        into rootDescriptor: Int32
+    ) throws {
+        guard let fileName = entry.path.components.last else {
+            throw MacOSStagedInstallerArchiveExtractionError.invalidArchive
+        }
+        let parentDescriptor = try openExactDirectoryPath(
+            Array(entry.path.components.dropLast()),
+            in: rootDescriptor
+        )
+        defer { _ = Darwin.close(parentDescriptor) }
+        let expectedMode: mode_t = (entry.externalAttributes >> 16) & 0o100 != 0 ? 0o700 : 0o600
+        let descriptor = fileName.withCString { name in
+            Darwin.openat(
+                parentDescriptor,
+                name,
+                O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC | O_NOFOLLOW_ANY,
+                mode_t(0o600)
+            )
+        }
+        guard descriptor >= 0 else {
+            throw MacOSStagedInstallerArchiveExtractionError.insecureFilesystem
+        }
+        defer { _ = Darwin.close(descriptor) }
+        guard Darwin.fchmod(descriptor, expectedMode) == 0 else {
+            throw MacOSStagedInstallerArchiveExtractionError.insecureFilesystem
+        }
+
+        var remaining = entry.uncompressedByteCount
+        var offset = dataOffset
+        var crc32 = ZIPCRC32()
+        while remaining > 0 {
+            let chunkByteCount = Int(min(UInt64(Self.copyBufferBytes), remaining))
+            let bytes = try reader.read(offset: offset, count: chunkByteCount)
+            try writeAll(bytes, to: descriptor)
+            crc32.update(bytes)
+            offset = try checkedAdd(offset, UInt64(bytes.count))
+            remaining -= UInt64(bytes.count)
+        }
+        guard crc32.checksum == entry.crc32 else {
+            throw MacOSStagedInstallerArchiveExtractionError.invalidArchive
+        }
+        try durableSync(descriptor)
+        _ = try securePrivateRegularFileObservation(
+            descriptor,
+            expectedMode: expectedMode,
+            expectedByteCount: entry.uncompressedByteCount
+        )
+        try durableSync(parentDescriptor)
+    }
+
+    private func verifyStoredArchivePayloads(
+        descriptor: Int32,
+        admission: ZIPArchiveAdmission
+    ) throws {
+        let reader = ZIPArchiveFileReader(
+            descriptor: descriptor,
+            fileSize: admission.inspection.observation.byteCount
+        )
+        for (entry, dataOffset) in zip(admission.entries, admission.localDataOffsets) where !entry.path.isDirectory {
+            var remaining = entry.uncompressedByteCount
+            var offset = dataOffset
+            var crc32 = ZIPCRC32()
+            while remaining > 0 {
+                let byteCount = Int(min(UInt64(Self.copyBufferBytes), remaining))
+                let bytes = try reader.read(offset: offset, count: byteCount)
+                crc32.update(bytes)
+                offset = try checkedAdd(offset, UInt64(bytes.count))
+                remaining -= UInt64(bytes.count)
+            }
+            guard crc32.checksum == entry.crc32 else {
+                throw MacOSStagedInstallerArchiveExtractionError.invalidArchive
+            }
+        }
+        guard try layoutInspector.secureArchiveObservation(descriptor)
+            == admission.inspection.observation else {
+            throw MacOSStagedInstallerArchiveExtractionError.identityChanged
+        }
+    }
+
+    private func verifyExtractedRegularFile(
+        _ entry: ZIPCentralDirectoryEntry,
+        in rootDescriptor: Int32
+    ) throws {
+        guard let fileName = entry.path.components.last else {
+            throw MacOSStagedInstallerArchiveExtractionError.invalidArchive
+        }
+        let parentDescriptor = try openExactDirectoryPath(
+            Array(entry.path.components.dropLast()),
+            in: rootDescriptor
+        )
+        defer { _ = Darwin.close(parentDescriptor) }
+        let descriptor = fileName.withCString { name in
+            Darwin.openat(parentDescriptor, name, O_RDONLY | O_CLOEXEC | O_NOFOLLOW_ANY)
+        }
+        guard descriptor >= 0 else {
+            throw MacOSStagedInstallerArchiveExtractionError.insecureFilesystem
+        }
+        defer { _ = Darwin.close(descriptor) }
+        let expectedMode: mode_t = (entry.externalAttributes >> 16) & 0o100 != 0 ? 0o700 : 0o600
+        let initialObservation = try securePrivateRegularFileObservation(
+            descriptor,
+            expectedMode: expectedMode,
+            expectedByteCount: entry.uncompressedByteCount
+        )
+        var remaining = entry.uncompressedByteCount
+        var crc32 = ZIPCRC32()
+        var buffer = [UInt8](repeating: 0, count: Self.copyBufferBytes)
+        while remaining > 0 {
+            let requested = Int(min(UInt64(buffer.count), remaining))
+            let byteCount = buffer.withUnsafeMutableBytes { rawBuffer -> ssize_t in
+                Darwin.read(descriptor, rawBuffer.baseAddress, requested)
+            }
+            if byteCount < 0 {
+                if errno == EINTR {
+                    continue
+                }
+                throw MacOSStagedInstallerArchiveExtractionError.insecureFilesystem
+            }
+            guard byteCount > 0 else {
+                throw MacOSStagedInstallerArchiveExtractionError.insecureFilesystem
+            }
+            let bytes = Data(buffer.prefix(Int(byteCount)))
+            crc32.update(bytes)
+            remaining -= UInt64(byteCount)
+        }
+        guard crc32.checksum == entry.crc32,
+              try securePrivateRegularFileObservation(
+                descriptor,
+                expectedMode: expectedMode,
+                expectedByteCount: entry.uncompressedByteCount
+              ) == initialObservation else {
+            throw MacOSStagedInstallerArchiveExtractionError.insecureFilesystem
+        }
+    }
+
+    private func createExactDirectoryPath(
+        _ components: [String],
+        in rootDescriptor: Int32,
+        createdDirectories: inout Set<String>
+    ) throws {
+        guard !components.isEmpty else {
+            throw MacOSStagedInstallerArchiveExtractionError.invalidArchive
+        }
+        var currentDescriptor = Darwin.dup(rootDescriptor)
+        guard currentDescriptor >= 0 else {
+            throw MacOSStagedInstallerArchiveExtractionError.insecureFilesystem
+        }
+        defer { _ = Darwin.close(currentDescriptor) }
+        var currentPath = ""
+        for component in components {
+            guard Self.isSafeExtractedPathComponent(component) else {
+                throw MacOSStagedInstallerArchiveExtractionError.invalidArchive
+            }
+            currentPath = currentPath.isEmpty ? component : "\(currentPath)/\(component)"
+            let mkdirResult = component.withCString { name in
+                Darwin.mkdirat(currentDescriptor, name, mode_t(0o700))
+            }
+            // The only permitted pre-existing directory is an explicitly
+            // created archive parent.  Any unexpected object/race fails
+            // before a child name is ever opened.
+            guard mkdirResult == 0 || (errno == EEXIST && createdDirectories.contains(currentPath)) else {
+                throw MacOSStagedInstallerArchiveExtractionError.insecureFilesystem
+            }
+            let nextDescriptor = component.withCString { name in
+                Darwin.openat(
+                    currentDescriptor,
+                    name,
+                    O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW_ANY
+                )
+            }
+            guard nextDescriptor >= 0 else {
+                throw MacOSStagedInstallerArchiveExtractionError.insecureFilesystem
+            }
+            if mkdirResult == 0 {
+                guard Darwin.fchmod(nextDescriptor, mode_t(0o700)) == 0 else {
+                    _ = Darwin.close(nextDescriptor)
+                    throw MacOSStagedInstallerArchiveExtractionError.insecureFilesystem
+                }
+                try durableSync(currentDescriptor)
+                try durableSync(nextDescriptor)
+                createdDirectories.insert(currentPath)
+            }
+            _ = try securePrivateDirectoryObservation(nextDescriptor)
+            _ = Darwin.close(currentDescriptor)
+            currentDescriptor = nextDescriptor
+        }
+    }
+
+    private func openExactDirectoryPath(
+        _ components: [String],
+        in rootDescriptor: Int32
+    ) throws -> Int32 {
+        var currentDescriptor = Darwin.dup(rootDescriptor)
+        guard currentDescriptor >= 0 else {
+            throw MacOSStagedInstallerArchiveExtractionError.insecureFilesystem
+        }
+        for component in components {
+            guard Self.isSafeExtractedPathComponent(component) else {
+                _ = Darwin.close(currentDescriptor)
+                throw MacOSStagedInstallerArchiveExtractionError.invalidArchive
+            }
+            let nextDescriptor = component.withCString { name in
+                Darwin.openat(
+                    currentDescriptor,
+                    name,
+                    O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW_ANY
+                )
+            }
+            _ = Darwin.close(currentDescriptor)
+            guard nextDescriptor >= 0 else {
+                throw MacOSStagedInstallerArchiveExtractionError.insecureFilesystem
+            }
+            do {
+                _ = try securePrivateDirectoryObservation(nextDescriptor)
+            } catch {
+                _ = Darwin.close(nextDescriptor)
+                throw error
+            }
+            currentDescriptor = nextDescriptor
+        }
+        return currentDescriptor
+    }
+
+    private func requirePrivateStateRoot() throws -> Int32 {
+        let creationResult = extractionRoot.withUnsafeFileSystemRepresentation { path -> Int32 in
+            guard let path else { return -1 }
+            return Darwin.mkdir(path, mode_t(0o700))
+        }
+        let wasCreated = creationResult == 0
+        guard wasCreated || errno == EEXIST else {
+            throw MacOSStagedInstallerArchiveExtractionError.insecureFilesystem
+        }
+        let descriptor = extractionRoot.withUnsafeFileSystemRepresentation { path -> Int32 in
+            guard let path else { return -1 }
+            return Darwin.open(path, O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW_ANY)
+        }
+        guard descriptor >= 0 else {
+            throw MacOSStagedInstallerArchiveExtractionError.insecureFilesystem
+        }
+        do {
+            if wasCreated {
+                guard Darwin.fchmod(descriptor, mode_t(0o700)) == 0 else {
+                    throw MacOSStagedInstallerArchiveExtractionError.insecureFilesystem
+                }
+            }
+            _ = try securePrivateDirectoryObservation(descriptor)
+            if wasCreated {
+                try durableSync(descriptor)
+            }
+            return descriptor
+        } catch {
+            _ = Darwin.close(descriptor)
+            throw error
+        }
+    }
+
+    private func openOrCreatePrivateDirectory(
+        named name: String,
+        in parentDescriptor: Int32
+    ) throws -> Int32 {
+        if let descriptor = try openPrivateDirectoryIfPresent(named: name, in: parentDescriptor) {
+            return descriptor
+        }
+        // A concurrent creator, or a failure after `mkdirat`, is not accepted
+        // opportunistically.  Failing closed here avoids treating a directory
+        // whose creation/durability sequence was interrupted as trustworthy.
+        return try createPrivateDirectory(named: name, in: parentDescriptor)
+    }
+
+    private func createPrivateDirectory(
+        named name: String,
+        in parentDescriptor: Int32
+    ) throws -> Int32 {
+        guard Self.isSafeInternalDirectoryName(name) else {
+            throw MacOSStagedInstallerArchiveExtractionError.insecureFilesystem
+        }
+        let mkdirResult = name.withCString { directoryName in
+            Darwin.mkdirat(parentDescriptor, directoryName, mode_t(0o700))
+        }
+        guard mkdirResult == 0 else {
+            throw MacOSStagedInstallerArchiveExtractionError.insecureFilesystem
+        }
+        let descriptor = name.withCString { directoryName in
+            Darwin.openat(
+                parentDescriptor,
+                directoryName,
+                O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW_ANY
+            )
+        }
+        guard descriptor >= 0 else {
+            throw MacOSStagedInstallerArchiveExtractionError.insecureFilesystem
+        }
+        do {
+            guard Darwin.fchmod(descriptor, mode_t(0o700)) == 0 else {
+                throw MacOSStagedInstallerArchiveExtractionError.insecureFilesystem
+            }
+            _ = try securePrivateDirectoryObservation(descriptor)
+            try durableSync(descriptor)
+            try durableSync(parentDescriptor)
+            return descriptor
+        } catch {
+            _ = Darwin.close(descriptor)
+            throw error
+        }
+    }
+
+    private func openPrivateDirectoryIfPresent(
+        named name: String,
+        in parentDescriptor: Int32
+    ) throws -> Int32? {
+        guard Self.isSafeInternalDirectoryName(name) else {
+            throw MacOSStagedInstallerArchiveExtractionError.insecureFilesystem
+        }
+        let descriptor = name.withCString { directoryName in
+            Darwin.openat(
+                parentDescriptor,
+                directoryName,
+                O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW_ANY
+            )
+        }
+        if descriptor < 0 {
+            guard errno == ENOENT else {
+                throw MacOSStagedInstallerArchiveExtractionError.insecureFilesystem
+            }
+            return nil
+        }
+        do {
+            _ = try securePrivateDirectoryObservation(descriptor)
+            return descriptor
+        } catch {
+            _ = Darwin.close(descriptor)
+            throw error
+        }
+    }
+
+    private func writePrivateBinding(
+        _ binding: Data,
+        in directoryDescriptor: Int32
+    ) throws {
+        guard !binding.isEmpty, binding.count <= Self.maximumBindingBytes else {
+            throw MacOSStagedInstallerArchiveExtractionError.invalidArchive
+        }
+        let descriptor = Self.bindingFileName.withCString { name in
+            Darwin.openat(
+                directoryDescriptor,
+                name,
+                O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC | O_NOFOLLOW_ANY,
+                mode_t(0o600)
+            )
+        }
+        guard descriptor >= 0 else {
+            throw MacOSStagedInstallerArchiveExtractionError.insecureFilesystem
+        }
+        defer { _ = Darwin.close(descriptor) }
+        guard Darwin.fchmod(descriptor, mode_t(0o600)) == 0 else {
+            throw MacOSStagedInstallerArchiveExtractionError.insecureFilesystem
+        }
+        try writeAll(binding, to: descriptor)
+        try durableSync(descriptor)
+        _ = try securePrivateRegularFileObservation(
+            descriptor,
+            expectedMode: mode_t(0o600),
+            expectedByteCount: UInt64(binding.count)
+        )
+        try durableSync(directoryDescriptor)
+    }
+
+    private func readPrivateBinding(in directoryDescriptor: Int32) throws -> Data {
+        let descriptor = Self.bindingFileName.withCString { name in
+            Darwin.openat(directoryDescriptor, name, O_RDONLY | O_CLOEXEC | O_NOFOLLOW_ANY)
+        }
+        guard descriptor >= 0 else {
+            throw MacOSStagedInstallerArchiveExtractionError.insecureFilesystem
+        }
+        defer { _ = Darwin.close(descriptor) }
+        let initialObservation = try securePrivateRegularFileObservation(
+            descriptor,
+            expectedMode: mode_t(0o600),
+            expectedByteCount: nil
+        )
+        guard initialObservation.byteCount > 0,
+              initialObservation.byteCount <= UInt64(Self.maximumBindingBytes),
+              initialObservation.byteCount <= UInt64(Int.max) else {
+            throw MacOSStagedInstallerArchiveExtractionError.insecureFilesystem
+        }
+        var data = Data()
+        data.reserveCapacity(Int(initialObservation.byteCount))
+        var buffer = [UInt8](repeating: 0, count: min(Self.copyBufferBytes, Int(initialObservation.byteCount)))
+        while data.count < Int(initialObservation.byteCount) {
+            let requestByteCount = min(buffer.count, Int(initialObservation.byteCount) - data.count)
+            let readByteCount = buffer.withUnsafeMutableBytes { rawBuffer -> ssize_t in
+                Darwin.read(descriptor, rawBuffer.baseAddress, requestByteCount)
+            }
+            if readByteCount < 0 {
+                if errno == EINTR {
+                    continue
+                }
+                throw MacOSStagedInstallerArchiveExtractionError.insecureFilesystem
+            }
+            guard readByteCount > 0 else {
+                throw MacOSStagedInstallerArchiveExtractionError.insecureFilesystem
+            }
+            data.append(contentsOf: buffer.prefix(Int(readByteCount)))
+        }
+        guard try securePrivateRegularFileObservation(
+            descriptor,
+            expectedMode: mode_t(0o600),
+            expectedByteCount: initialObservation.byteCount
+        ) == initialObservation else {
+            throw MacOSStagedInstallerArchiveExtractionError.insecureFilesystem
+        }
+        return data
+    }
+
+    private func promoteCandidate(in operationDescriptor: Int32) throws {
+        let renameResult = Self.candidateDirectoryName.withCString { candidateName in
+            Self.readyDirectoryName.withCString { readyName in
+                Darwin.renameatx_np(
+                    operationDescriptor,
+                    candidateName,
+                    operationDescriptor,
+                    readyName,
+                    UInt32(RENAME_EXCL)
+                )
+            }
+        }
+        guard renameResult == 0 else {
+            throw MacOSStagedInstallerArchiveExtractionError.insecureFilesystem
+        }
+        try durableSync(operationDescriptor)
+    }
+
+    private func readyBundleURL(operationName: String, appBundleRoot: String) -> URL {
+        extractionRoot
+            .appendingPathComponent(Self.extractionDirectoryName, isDirectory: true)
+            .appendingPathComponent(operationName, isDirectory: true)
+            .appendingPathComponent(Self.readyDirectoryName, isDirectory: true)
+            .appendingPathComponent(appBundleRoot, isDirectory: true)
+    }
+
+    private func openArchive(at url: URL) throws -> Int32 {
+        guard url.isFileURL else {
+            throw MacOSStagedInstallerArchiveExtractionError.identityChanged
+        }
+        let descriptor = url.withUnsafeFileSystemRepresentation { path -> Int32 in
+            guard let path else { return -1 }
+            return Darwin.open(path, O_RDONLY | O_CLOEXEC | O_NOFOLLOW_ANY)
+        }
+        guard descriptor >= 0 else {
+            throw MacOSStagedInstallerArchiveExtractionError.identityChanged
+        }
+        return descriptor
+    }
+
+    private static func operationDirectoryName(for stagedAsset: StagedInstallerAsset) -> String {
+        var material = Data("forge-platform-installer-staged-extraction-v1".utf8)
+        appendBindingField(stagedAsset.releaseAssetName, to: &material)
+        appendBindingField(stagedAsset.opaqueReference, to: &material)
+        appendBindingField(stagedAsset.fileIdentity.volumeReference, to: &material)
+        appendBindingField(stagedAsset.fileIdentity.fileReference, to: &material)
+        appendBindingField(String(stagedAsset.fileIdentity.byteCount), to: &material)
+        let digest = SHA256.hash(data: material)
+        return "archive-" + digest.map { String(format: "%02x", $0) }.joined()
+    }
+
+    private static func bindingData(
+        for stagedAsset: StagedInstallerAsset,
+        admission: ZIPArchiveAdmission
+    ) -> Data {
+        let observation = admission.inspection.observation
+        var data = Data("forge-platform-installer-extraction-binding-v1".utf8)
+        appendBindingField(stagedAsset.releaseAssetName, to: &data)
+        appendBindingField(stagedAsset.opaqueReference, to: &data)
+        appendBindingField(stagedAsset.fileIdentity.volumeReference, to: &data)
+        appendBindingField(stagedAsset.fileIdentity.fileReference, to: &data)
+        appendBindingField(String(stagedAsset.fileIdentity.byteCount), to: &data)
+        appendBindingField(String(observation.device), to: &data)
+        appendBindingField(String(observation.inode), to: &data)
+        appendBindingField(String(observation.byteCount), to: &data)
+        appendBindingField(String(observation.modificationSeconds), to: &data)
+        appendBindingField(String(observation.modificationNanoseconds), to: &data)
+        appendBindingField(String(observation.changeSeconds), to: &data)
+        appendBindingField(String(observation.changeNanoseconds), to: &data)
+        appendBindingField(admission.inspection.layout.appBundleRoot, to: &data)
+        return data
+    }
+
+    private static func appendBindingField(_ field: String, to data: inout Data) {
+        let bytes = Data(field.utf8)
+        var byteCount = UInt64(bytes.count).bigEndian
+        withUnsafeBytes(of: &byteCount) { data.append(contentsOf: $0) }
+        data.append(bytes)
+    }
+
+    private static func canonicalStateRoot(for input: URL) -> URL {
+        let standardized = input.standardizedFileURL
+        let parent = standardized.deletingLastPathComponent()
+        let resolvedParentPath: String? = parent.withUnsafeFileSystemRepresentation { path in
+            guard let path, let resolved = Darwin.realpath(path, nil) else {
+                return nil
+            }
+            defer { Darwin.free(resolved) }
+            return String(cString: resolved)
+        }
+        guard let resolvedParentPath else {
+            return standardized
+        }
+        return URL(fileURLWithPath: resolvedParentPath, isDirectory: true)
+            .appendingPathComponent(standardized.lastPathComponent, isDirectory: true)
+    }
+
+    private static func isSafeInternalDirectoryName(_ value: String) -> Bool {
+        !value.isEmpty
+            && value != "."
+            && value != ".."
+            && !value.contains("/")
+            && !value.contains("\\")
+            && value.unicodeScalars.allSatisfy { scalar in
+                (scalar.value >= 48 && scalar.value <= 57)
+                    || (scalar.value >= 65 && scalar.value <= 90)
+                    || (scalar.value >= 97 && scalar.value <= 122)
+                    || scalar.value == 45
+                    || scalar.value == 46
+                    || scalar.value == 95
+            }
+    }
+
+    private static func isSafeExtractedPathComponent(_ value: String) -> Bool {
+        guard !value.isEmpty,
+              value != ".",
+              value != "..",
+              !value.contains("/"),
+              !value.contains("\\"),
+              !value.contains("\u{0}") else {
+            return false
+        }
+        return value.unicodeScalars.allSatisfy { scalar in
+            (scalar.value >= 48 && scalar.value <= 57)
+                || (scalar.value >= 65 && scalar.value <= 90)
+                || (scalar.value >= 97 && scalar.value <= 122)
+                || scalar.value == 32
+                || scalar.value == 43
+                || scalar.value == 45
+                || scalar.value == 46
+                || scalar.value == 95
+        }
+    }
+}
+
+private enum MacOSStagedInstallerArchiveExtractionError: Error {
+    case invalidArchive
+    case identityChanged
+    case insecureFilesystem
+    case incompleteCandidate
+}
+
+private struct PrivateDirectoryObservation: Equatable {
+    let device: dev_t
+    let inode: ino_t
+    let modificationSeconds: Int
+    let modificationNanoseconds: Int
+    let changeSeconds: Int
+    let changeNanoseconds: Int
+}
+
+private struct PrivateRegularFileObservation: Equatable {
+    let device: dev_t
+    let inode: ino_t
+    let byteCount: UInt64
+    let modificationSeconds: Int
+    let modificationNanoseconds: Int
+    let changeSeconds: Int
+    let changeNanoseconds: Int
+}
+
+private func securePrivateDirectoryObservation(_ descriptor: Int32) throws -> PrivateDirectoryObservation {
+    var details = stat()
+    guard Darwin.fstat(descriptor, &details) == 0,
+          (details.st_mode & mode_t(S_IFMT)) == mode_t(S_IFDIR),
+          details.st_uid == Darwin.geteuid(),
+          (details.st_mode & mode_t(0o7777)) == mode_t(0o700) else {
+        throw MacOSStagedInstallerArchiveExtractionError.insecureFilesystem
+    }
+    return PrivateDirectoryObservation(
+        device: details.st_dev,
+        inode: details.st_ino,
+        modificationSeconds: details.st_mtimespec.tv_sec,
+        modificationNanoseconds: details.st_mtimespec.tv_nsec,
+        changeSeconds: details.st_ctimespec.tv_sec,
+        changeNanoseconds: details.st_ctimespec.tv_nsec
+    )
+}
+
+private func securePrivateRegularFileObservation(
+    _ descriptor: Int32,
+    expectedMode: mode_t,
+    expectedByteCount: UInt64?
+) throws -> PrivateRegularFileObservation {
+    var details = stat()
+    guard Darwin.fstat(descriptor, &details) == 0,
+          (details.st_mode & mode_t(S_IFMT)) == mode_t(S_IFREG),
+          details.st_uid == Darwin.geteuid(),
+          details.st_nlink == 1,
+          (details.st_mode & mode_t(0o7777)) == expectedMode,
+          details.st_size >= 0 else {
+        throw MacOSStagedInstallerArchiveExtractionError.insecureFilesystem
+    }
+    let byteCount = UInt64(details.st_size)
+    guard expectedByteCount == nil || expectedByteCount == byteCount else {
+        throw MacOSStagedInstallerArchiveExtractionError.insecureFilesystem
+    }
+    return PrivateRegularFileObservation(
+        device: details.st_dev,
+        inode: details.st_ino,
+        byteCount: byteCount,
+        modificationSeconds: details.st_mtimespec.tv_sec,
+        modificationNanoseconds: details.st_mtimespec.tv_nsec,
+        changeSeconds: details.st_ctimespec.tv_sec,
+        changeNanoseconds: details.st_ctimespec.tv_nsec
+    )
+}
+
+private func writeAll(_ data: Data, to descriptor: Int32) throws {
+    guard !data.isEmpty else {
+        return
+    }
+    try data.withUnsafeBytes { (buffer: UnsafeRawBufferPointer) in
+        guard let baseAddress = buffer.baseAddress else {
+            throw MacOSStagedInstallerArchiveExtractionError.insecureFilesystem
+        }
+        var written = 0
+        while written < buffer.count {
+            let result = Darwin.write(
+                descriptor,
+                baseAddress.advanced(by: written),
+                buffer.count - written
+            )
+            if result < 0 {
+                if errno == EINTR {
+                    continue
+                }
+                throw MacOSStagedInstallerArchiveExtractionError.insecureFilesystem
+            }
+            guard result > 0 else {
+                throw MacOSStagedInstallerArchiveExtractionError.insecureFilesystem
+            }
+            written += Int(result)
+        }
+    }
+}
+
+private func durableSync(_ descriptor: Int32) throws {
+    guard Darwin.fsync(descriptor) == 0 else {
+        throw MacOSStagedInstallerArchiveExtractionError.insecureFilesystem
+    }
+}
+
+private func zipArchiveAdmissionsMatch(
+    _ left: ZIPArchiveAdmission,
+    _ right: ZIPArchiveAdmission
+) -> Bool {
+    guard left.inspection == right.inspection,
+          left.localDataOffsets == right.localDataOffsets,
+          left.entries.count == right.entries.count else {
+        return false
+    }
+    return zip(left.entries, right.entries).allSatisfy { first, second in
+        first.path.canonical == second.path.canonical
+            && first.path.components == second.path.components
+            && first.path.isDirectory == second.path.isDirectory
+            && first.versionMadeBy == second.versionMadeBy
+            && first.versionNeeded == second.versionNeeded
+            && first.generalPurposeFlags == second.generalPurposeFlags
+            && first.compression == second.compression
+            && first.crc32 == second.crc32
+            && first.compressedByteCount == second.compressedByteCount
+            && first.uncompressedByteCount == second.uncompressedByteCount
+            && first.externalAttributes == second.externalAttributes
+            && first.localHeaderOffset == second.localHeaderOffset
+            && first.rawFileName == second.rawFileName
+    }
+}
+
+private struct ZIPCRC32 {
+    private static let table: [UInt32] = (0..<256).map { value in
+        var remainder = UInt32(value)
+        for _ in 0..<8 {
+            remainder = (remainder & 1) == 1
+                ? 0xedb8_8320 ^ (remainder >> 1)
+                : remainder >> 1
+        }
+        return remainder
+    }
+
+    private var value: UInt32 = 0xffff_ffff
+
+    mutating func update(_ data: Data) {
+        for byte in data {
+            value = Self.table[Int((value ^ UInt32(byte)) & 0xff)] ^ (value >> 8)
+        }
+    }
+
+    var checksum: UInt32 {
+        value ^ 0xffff_ffff
+    }
 }
