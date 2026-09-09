@@ -12,4 +12,4 @@ For Engineering Platform, Forge Platform passes the exact selected artifact iden
 
 ## Consequences
 
-Forge Platform will verify trusted artifact digest and supported signature/provenance evidence, use least privilege, and avoid repository secrets. It does not compile, repackage, or install product source as a hidden monolith. Concrete manifests, endpoints, privileged installation behavior, and platform-specific installers remain future work.
+Forge Platform will verify trusted artifact digest and supported signature/provenance evidence, use least privilege, and avoid repository secrets. It does not compile, repackage, or install product source as a hidden monolith. The source-level component-operation delegation kernel binds an exact qualified artifact to a product-owned operation and preserves its receipt. Durable operation storage, inter-process locking, concrete product endpoints, privileged installation behavior, and platform-specific installers remain future work.

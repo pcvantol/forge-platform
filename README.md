@@ -4,7 +4,9 @@ Forge Platform is the canonical, first-class repository for cross-product distri
 
 ## Status
 
-Repository foundation only. The universal installer is not implemented, and this repository does not publish production artifacts or change product runtime behavior.
+Repository foundation with an initial source-level component-operation delegation
+kernel. The universal installer is not yet implemented: this repository does
+not publish production artifacts or change product runtime behavior.
 
 ## Boundary
 
@@ -17,6 +19,7 @@ Forge Platform consumes qualified, versioned artifacts published by product repo
 - [Governed Knowledge Learning Loop](docs/architecture/KNOWLEDGE_LEARNING_LOOP.md)
 - [Architecture Decision Records](docs/architecture/adr/README.md)
 - [Cross-repository ownership matrix](docs/architecture/OWNERSHIP_MATRIX.md)
+- [Component-operation delegation contract](docs/architecture/COMPONENT_OPERATION_DELEGATION_CONTRACT.md)
 - [Roadmap](docs/roadmap/README.md)
 - [MVP 1.0 roadmap](docs/roadmap/MVP_1_0.md)
 - [Development and bootstrap](docs/development/README.md)
