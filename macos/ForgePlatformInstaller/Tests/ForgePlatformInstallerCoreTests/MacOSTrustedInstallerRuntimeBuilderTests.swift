@@ -98,6 +98,18 @@ final class MacOSTrustedInstallerRuntimeBuilderTests: XCTestCase {
         }
     }
 
+    func testRejectsRelativeFileURLEvenWhenItResolvesToAnExistingPrivateRoot() throws {
+        let root = try makeSecureTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let relativeRoot = URL(
+            fileURLWithPath: root.lastPathComponent,
+            relativeTo: root.deletingLastPathComponent()
+        )
+
+        XCTAssertNotNil(relativeRoot.baseURL)
+        assertInvalidStateRoot(relativeRoot)
+    }
+
     private func assertInvalidStateRoot(_ root: URL) {
         XCTAssertThrowsError(
             try MacOSTrustedInstallerRuntimeBuilder(stateRoot: root)

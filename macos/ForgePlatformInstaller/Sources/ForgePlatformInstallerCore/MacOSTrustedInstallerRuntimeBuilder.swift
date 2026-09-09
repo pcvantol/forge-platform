@@ -142,7 +142,12 @@ private enum MacOSInstallerHostArchitecture {
 
 private enum MacOSInstallerOwnedStateRoot {
     static func validatedCanonicalURL(from input: URL) throws -> URL {
-        guard input.isFileURL else {
+        // `URL(fileURLWithPath: "relative", relativeTo: ...)` exposes an
+        // absolute-looking `.path` after Foundation resolves its base.  The
+        // installer must not silently adopt that ambient base directory as a
+        // trusted state location, so require a genuinely absolute file URL
+        // before inspecting any filesystem metadata.
+        guard input.isFileURL, input.baseURL == nil else {
             throw MacOSTrustedInstallerRuntimeBuilderConfigurationError.invalidInstallerStateRoot
         }
 
