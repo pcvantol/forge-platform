@@ -349,6 +349,81 @@ final class GitHubInstallerReleaseFeedTests: XCTestCase {
         XCTAssertEqual(result, .failure(InstallerSelfUpdateFailure(.recoveryLoadFailed)))
     }
 
+    func testFileAcceptanceStoreFailsClosedForSymlinkedStateRoot() async throws {
+        let base = FileManager.default.temporaryDirectory
+            .appendingPathComponent("forge-platform-installer-acceptance-symlink-root-\(UUID().uuidString)", isDirectory: true)
+        let root = base.appendingPathComponent("state", isDirectory: true)
+        let target = base.appendingPathComponent("target", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: base) }
+        try FileManager.default.createDirectory(
+            at: target,
+            withIntermediateDirectories: true,
+            attributes: [.posixPermissions: 0o700]
+        )
+        try FileManager.default.createSymbolicLink(at: root, withDestinationURL: target)
+
+        let result = await FileInstallerReleaseAcceptanceStore(rootDirectory: root)
+            .saveHighestAcceptedInstallerRelease(try validAcceptance())
+
+        guard case .failure(let failure) = result else {
+            return XCTFail("A symlinked acceptance-state root must fail closed")
+        }
+        XCTAssertEqual(failure, InstallerSelfUpdateFailure(.recoveryPersistenceFailed))
+    }
+
+    func testFileAcceptanceStoreFailsClosedForPermissiveStateRoot() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("forge-platform-installer-acceptance-permissive-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        try FileManager.default.createDirectory(
+            at: root,
+            withIntermediateDirectories: true,
+            attributes: [.posixPermissions: 0o700]
+        )
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: root.path)
+
+        let result = await FileInstallerReleaseAcceptanceStore(rootDirectory: root)
+            .saveHighestAcceptedInstallerRelease(try validAcceptance())
+
+        guard case .failure(let failure) = result else {
+            return XCTFail("A permissive acceptance-state root must fail closed")
+        }
+        XCTAssertEqual(failure, InstallerSelfUpdateFailure(.recoveryPersistenceFailed))
+    }
+
+    func testFileAcceptanceStoreFailsClosedForSymlinkedOrNonExactAnchor() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("forge-platform-installer-acceptance-invalid-file-\(UUID().uuidString)", isDirectory: true)
+        let unrelated = root.appendingPathComponent("unrelated.json", isDirectory: false)
+        let anchor = root.appendingPathComponent("highest-accepted-installer-release.json", isDirectory: false)
+        defer { try? FileManager.default.removeItem(at: root) }
+        try FileManager.default.createDirectory(
+            at: root,
+            withIntermediateDirectories: true,
+            attributes: [.posixPermissions: 0o700]
+        )
+        try Data("{\"sequence\":7,\"descriptorSHA256\":\"\(String(repeating: "a", count: 64))\",\"unexpected\":true}".utf8).write(to: unrelated)
+        try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: unrelated.path)
+        try FileManager.default.createSymbolicLink(at: anchor, withDestinationURL: unrelated)
+
+        let symlinkedResult = await FileInstallerReleaseAcceptanceStore(rootDirectory: root)
+            .loadHighestAcceptedInstallerRelease()
+        XCTAssertEqual(symlinkedResult, .failure(InstallerSelfUpdateFailure(.recoveryLoadFailed)))
+
+        try FileManager.default.removeItem(at: anchor)
+        try FileManager.default.moveItem(at: unrelated, to: anchor)
+        let nonExactResult = await FileInstallerReleaseAcceptanceStore(rootDirectory: root)
+            .loadHighestAcceptedInstallerRelease()
+        XCTAssertEqual(nonExactResult, .failure(InstallerSelfUpdateFailure(.recoveryLoadFailed)))
+    }
+
+    private func validAcceptance() throws -> InstallerReleaseAcceptance {
+        try InstallerReleaseAcceptance(
+            sequence: 7,
+            descriptorSHA256: String(repeating: "a", count: 64)
+        )
+    }
+
     private func makeFixture() throws -> DescriptorFixture {
         let privateKeys = [Curve25519.Signing.PrivateKey(), Curve25519.Signing.PrivateKey()]
         let publicKeys = try zip(["key-alpha", "key-bravo"], privateKeys).map { keyID, privateKey in

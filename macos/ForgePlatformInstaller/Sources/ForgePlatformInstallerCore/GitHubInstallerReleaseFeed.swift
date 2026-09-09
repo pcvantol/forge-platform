@@ -109,28 +109,27 @@ public actor InMemoryInstallerReleaseAcceptanceStore: InstallerReleaseAcceptance
 /// rather than an opportunity to silently forget an accepted release.
 public struct FileInstallerReleaseAcceptanceStore: InstallerReleaseAcceptanceStoring {
     private static let fileName = "highest-accepted-installer-release.json"
+    private static let maximumAnchorBytes = 64 * 1024
 
     private let rootDirectory: URL
 
     public init(rootDirectory: URL) {
-        self.rootDirectory = rootDirectory.standardizedFileURL.resolvingSymlinksInPath()
+        self.rootDirectory = Self.canonicalRootDirectory(for: rootDirectory)
     }
 
     public func loadHighestAcceptedInstallerRelease() async -> Result<InstallerReleaseAcceptance?, InstallerSelfUpdateFailure> {
         do {
-            let manager = FileManager.default
-            guard manager.fileExists(atPath: acceptanceURL.path) else {
+            guard let rootDescriptor = try openSecureRootDirectory(createIfMissing: false) else {
                 return .success(nil)
             }
-            guard try isSecureRegularFile(at: acceptanceURL) else {
-                throw FileInstallerReleaseAcceptanceStoreError.insecure
+            defer { _ = Darwin.close(rootDescriptor) }
+            guard let data = try readSecureRegularFileIfPresent(
+                named: Self.fileName,
+                in: rootDescriptor
+            ) else {
+                return .success(nil)
             }
-            let decoded = try JSONDecoder().decode(InstallerReleaseAcceptance.self, from: Data(contentsOf: acceptanceURL))
-            let validated = try InstallerReleaseAcceptance(
-                sequence: decoded.sequence,
-                descriptorSHA256: decoded.descriptorSHA256
-            )
-            return .success(validated)
+            return .success(try decodeAcceptance(data))
         } catch {
             return .failure(InstallerSelfUpdateFailure(.recoveryLoadFailed))
         }
@@ -140,53 +139,265 @@ public struct FileInstallerReleaseAcceptanceStore: InstallerReleaseAcceptanceSto
         _ acceptance: InstallerReleaseAcceptance
     ) async -> Result<Void, InstallerSelfUpdateFailure> {
         do {
-            try ensureSecureRootDirectory()
             let validated = try InstallerReleaseAcceptance(
                 sequence: acceptance.sequence,
                 descriptorSHA256: acceptance.descriptorSHA256
             )
-            let encoder = JSONEncoder()
-            encoder.outputFormatting = [.sortedKeys]
-            let data = try encoder.encode(validated)
-            try data.write(to: acceptanceURL, options: .atomic)
-            try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: acceptanceURL.path)
-            guard try isSecureRegularFile(at: acceptanceURL) else {
-                throw FileInstallerReleaseAcceptanceStoreError.insecure
-            }
+            let rootDescriptor = try requireSecureRootDirectory()
+            defer { _ = Darwin.close(rootDescriptor) }
+            try writeAtomically(try encodeAcceptance(validated), named: Self.fileName, in: rootDescriptor)
             return .success(())
         } catch {
             return .failure(InstallerSelfUpdateFailure(.recoveryPersistenceFailed))
         }
     }
 
-    private var acceptanceURL: URL {
-        rootDirectory.appendingPathComponent(Self.fileName, isDirectory: false)
-    }
-
-    private func ensureSecureRootDirectory() throws {
-        let manager = FileManager.default
-        try manager.createDirectory(
-            at: rootDirectory,
-            withIntermediateDirectories: true,
-            attributes: [.posixPermissions: 0o700]
-        )
-        let attributes = try manager.attributesOfItem(atPath: rootDirectory.path)
-        guard attributes[.type] as? FileAttributeType == .typeDirectory,
-              attributes[.ownerAccountID] as? NSNumber == NSNumber(value: Darwin.geteuid()),
-              let permissions = attributes[.posixPermissions] as? NSNumber,
-              permissions.intValue & 0o077 == 0 else {
+    private func decodeAcceptance(_ data: Data) throws -> InstallerReleaseAcceptance {
+        guard !data.isEmpty, data.count <= Self.maximumAnchorBytes else {
             throw FileInstallerReleaseAcceptanceStoreError.insecure
         }
+        var reader = try StrictJSONResourceReader(data: data)
+        let root = try reader.parseDocument()
+        guard let fields = root.objectValue,
+              Set(fields.keys) == Set(["sequence", "descriptorSHA256"]),
+              let sequence = fields["sequence"]?.positiveUInt64Value,
+              let descriptorSHA256 = fields["descriptorSHA256"]?.stringValue else {
+            throw FileInstallerReleaseAcceptanceStoreError.insecure
+        }
+        return try InstallerReleaseAcceptance(
+            sequence: sequence,
+            descriptorSHA256: descriptorSHA256
+        )
     }
 
-    private func isSecureRegularFile(at url: URL) throws -> Bool {
-        let attributes = try FileManager.default.attributesOfItem(atPath: url.path)
-        guard attributes[.type] as? FileAttributeType == .typeRegular,
-              attributes[.ownerAccountID] as? NSNumber == NSNumber(value: Darwin.geteuid()),
-              let permissions = attributes[.posixPermissions] as? NSNumber else {
+    private func encodeAcceptance(_ acceptance: InstallerReleaseAcceptance) throws -> Data {
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys]
+        let data = try encoder.encode(acceptance)
+        guard !data.isEmpty, data.count <= Self.maximumAnchorBytes else {
+            throw FileInstallerReleaseAcceptanceStoreError.insecure
+        }
+        return data
+    }
+
+    private func requireSecureRootDirectory() throws -> Int32 {
+        guard let descriptor = try openSecureRootDirectory(createIfMissing: true) else {
+            throw FileInstallerReleaseAcceptanceStoreError.insecure
+        }
+        return descriptor
+    }
+
+    private func openSecureRootDirectory(createIfMissing: Bool) throws -> Int32? {
+        if createIfMissing {
+            let result = rootDirectory.withUnsafeFileSystemRepresentation { path -> Int32 in
+                guard let path else { return -1 }
+                return Darwin.mkdir(path, mode_t(0o700))
+            }
+            if result != 0 && errno != EEXIST {
+                throw FileInstallerReleaseAcceptanceStoreError.insecure
+            }
+        }
+        let descriptor = rootDirectory.withUnsafeFileSystemRepresentation { path -> Int32 in
+            guard let path else { return -1 }
+            return Darwin.open(path, O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW_ANY)
+        }
+        guard descriptor >= 0 else {
+            if !createIfMissing && errno == ENOENT {
+                return nil
+            }
+            throw FileInstallerReleaseAcceptanceStoreError.insecure
+        }
+        guard isSecureDirectory(descriptor) else {
+            _ = Darwin.close(descriptor)
+            throw FileInstallerReleaseAcceptanceStoreError.insecure
+        }
+        return descriptor
+    }
+
+    private func readSecureRegularFileIfPresent(named name: String, in directoryDescriptor: Int32) throws -> Data? {
+        let descriptor = name.withCString { fileName in
+            Darwin.openat(directoryDescriptor, fileName, O_RDONLY | O_CLOEXEC | O_NOFOLLOW_ANY)
+        }
+        guard descriptor >= 0 else {
+            if errno == ENOENT {
+                return nil
+            }
+            throw FileInstallerReleaseAcceptanceStoreError.insecure
+        }
+        defer { _ = Darwin.close(descriptor) }
+        let initialDetails = try secureRegularFileDetails(descriptor)
+        guard initialDetails.st_size > 0,
+              initialDetails.st_size <= off_t(Self.maximumAnchorBytes) else {
+            throw FileInstallerReleaseAcceptanceStoreError.insecure
+        }
+        return try readBoundedData(
+            from: descriptor,
+            maximumBytes: Self.maximumAnchorBytes,
+            initialDetails: initialDetails
+        )
+    }
+
+    private func writeAtomically(_ data: Data, named name: String, in directoryDescriptor: Int32) throws {
+        guard !data.isEmpty, data.count <= Self.maximumAnchorBytes else {
+            throw FileInstallerReleaseAcceptanceStoreError.insecure
+        }
+        try validateExistingRegularFileIfPresent(named: name, in: directoryDescriptor)
+        let temporaryName = ".\(name).tmp-\(UUID().uuidString.lowercased())"
+        let descriptor = temporaryName.withCString { fileName in
+            Darwin.openat(
+                directoryDescriptor,
+                fileName,
+                O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC | O_NOFOLLOW_ANY,
+                mode_t(0o600)
+            )
+        }
+        guard descriptor >= 0 else {
+            throw FileInstallerReleaseAcceptanceStoreError.insecure
+        }
+        var renamed = false
+        defer {
+            _ = Darwin.close(descriptor)
+            if !renamed {
+                _ = temporaryName.withCString { fileName in
+                    Darwin.unlinkat(directoryDescriptor, fileName, 0)
+                }
+            }
+        }
+        guard Darwin.fchmod(descriptor, mode_t(0o600)) == 0 else {
+            throw FileInstallerReleaseAcceptanceStoreError.insecure
+        }
+        _ = try secureRegularFileDetails(descriptor)
+        try writeAll(data, to: descriptor)
+        guard Darwin.fsync(descriptor) == 0 else {
+            throw FileInstallerReleaseAcceptanceStoreError.insecure
+        }
+        try validateExistingRegularFileIfPresent(named: name, in: directoryDescriptor)
+        let renameResult = temporaryName.withCString { sourceName in
+            name.withCString { destinationName in
+                Darwin.renameat(directoryDescriptor, sourceName, directoryDescriptor, destinationName)
+            }
+        }
+        guard renameResult == 0, Darwin.fsync(directoryDescriptor) == 0 else {
+            throw FileInstallerReleaseAcceptanceStoreError.insecure
+        }
+        renamed = true
+        try validateExistingRegularFileIfPresent(named: name, in: directoryDescriptor)
+    }
+
+    private func validateExistingRegularFileIfPresent(named name: String, in directoryDescriptor: Int32) throws {
+        let descriptor = name.withCString { fileName in
+            Darwin.openat(directoryDescriptor, fileName, O_RDONLY | O_CLOEXEC | O_NOFOLLOW_ANY)
+        }
+        guard descriptor >= 0 else {
+            if errno == ENOENT {
+                return
+            }
+            throw FileInstallerReleaseAcceptanceStoreError.insecure
+        }
+        defer { _ = Darwin.close(descriptor) }
+        _ = try secureRegularFileDetails(descriptor)
+    }
+
+    private func secureRegularFileDetails(_ descriptor: Int32) throws -> stat {
+        var details = stat()
+        guard Darwin.fstat(descriptor, &details) == 0,
+              (details.st_mode & mode_t(S_IFMT)) == mode_t(S_IFREG),
+              details.st_uid == Darwin.geteuid(),
+              details.st_nlink == 1,
+              (details.st_mode & mode_t(0o7777)) == mode_t(0o600) else {
+            throw FileInstallerReleaseAcceptanceStoreError.insecure
+        }
+        return details
+    }
+
+    private func isSecureDirectory(_ descriptor: Int32) -> Bool {
+        var details = stat()
+        guard Darwin.fstat(descriptor, &details) == 0 else {
             return false
         }
-        return permissions.intValue & 0o077 == 0
+        return (details.st_mode & mode_t(S_IFMT)) == mode_t(S_IFDIR)
+            && details.st_uid == Darwin.geteuid()
+            && (details.st_mode & mode_t(0o7777)) == mode_t(0o700)
+    }
+
+    private func readBoundedData(
+        from descriptor: Int32,
+        maximumBytes: Int,
+        initialDetails: stat
+    ) throws -> Data {
+        var data = Data()
+        var buffer = [UInt8](repeating: 0, count: 8192)
+        while true {
+            let count = buffer.withUnsafeMutableBytes { rawBuffer in
+                Darwin.read(descriptor, rawBuffer.baseAddress, rawBuffer.count)
+            }
+            if count == 0 {
+                break
+            }
+            if count < 0 {
+                if errno == EINTR {
+                    continue
+                }
+                throw FileInstallerReleaseAcceptanceStoreError.insecure
+            }
+            data.append(contentsOf: buffer.prefix(Int(count)))
+            guard data.count <= maximumBytes else {
+                throw FileInstallerReleaseAcceptanceStoreError.insecure
+            }
+        }
+        var finalDetails = stat()
+        guard Darwin.fstat(descriptor, &finalDetails) == 0,
+              finalDetails.st_dev == initialDetails.st_dev,
+              finalDetails.st_ino == initialDetails.st_ino,
+              finalDetails.st_size == initialDetails.st_size,
+              finalDetails.st_mtimespec.tv_sec == initialDetails.st_mtimespec.tv_sec,
+              finalDetails.st_mtimespec.tv_nsec == initialDetails.st_mtimespec.tv_nsec else {
+            throw FileInstallerReleaseAcceptanceStoreError.insecure
+        }
+        return data
+    }
+
+    private func writeAll(_ data: Data, to descriptor: Int32) throws {
+        try data.withUnsafeBytes { (rawBuffer: UnsafeRawBufferPointer) in
+            guard let baseAddress = rawBuffer.baseAddress else {
+                throw FileInstallerReleaseAcceptanceStoreError.insecure
+            }
+            var written = 0
+            while written < rawBuffer.count {
+                let result = Darwin.write(
+                    descriptor,
+                    baseAddress.advanced(by: written),
+                    rawBuffer.count - written
+                )
+                if result < 0 {
+                    if errno == EINTR {
+                        continue
+                    }
+                    throw FileInstallerReleaseAcceptanceStoreError.insecure
+                }
+                guard result > 0 else {
+                    throw FileInstallerReleaseAcceptanceStoreError.insecure
+                }
+                written += Int(result)
+            }
+        }
+    }
+
+    private static func canonicalRootDirectory(for input: URL) -> URL {
+        let standardized = input.standardizedFileURL
+        let parent = standardized.deletingLastPathComponent()
+        let resolvedParentPath: String? = parent.withUnsafeFileSystemRepresentation { parentPath in
+            guard let parentPath, let resolvedPath = Darwin.realpath(parentPath, nil) else {
+                return nil
+            }
+            defer { Darwin.free(resolvedPath) }
+            return String(cString: resolvedPath)
+        }
+        guard let resolvedParentPath else {
+            return standardized
+        }
+        return URL(fileURLWithPath: resolvedParentPath, isDirectory: true)
+            .appendingPathComponent(standardized.lastPathComponent, isDirectory: true)
     }
 }
 
