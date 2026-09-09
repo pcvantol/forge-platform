@@ -13,6 +13,7 @@ python3 tests/component_operations/test_component_operations.py
 python3 tests/component_operations/test_durable_component_operations.py
 python3 tests/component_operations/test_ep_oi3_readback_decoder.py
 python3 tests/installer/test_universal_installer.py
+python3 tests/installer/test_component_combination_catalog.py
 python3 tests/installer/test_installer_version_preparation.py
 python3 tests/installer/test_installer_release_operation.py
 python3 tests/installer/test_prepare_installer_release_candidate.py

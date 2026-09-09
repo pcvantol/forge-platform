@@ -67,6 +67,46 @@ operation ID fails closed. `PREPARED`, `QUALIFIED`, `PUBLISHED`,
 `CLEANUP_PENDING`, and `RELEASE_COMPLETE` are distinct evidence states; no
 public side effect is inferred from an unsigned candidate or a lost response.
 
+### Component-combination selection index
+
+The catalog has a versioned, digest-bound selection-index payload,
+`forge-platform.component-combination-catalog/v1`, specified in
+[`universal-installer-component-combination-catalog.schema.json`](../../schemas/universal-installer-component-combination-catalog.schema.json).
+It is an immutable payload whose URL and SHA-256 must be bound by the already
+verified signed catalog; it is not a second trust root and it is not an
+installer package. Its entries bind all of the following:
+
+- a composition identity, numeric selection sequence, exact manifest URL and
+  digest;
+- the exact component set, with an explicit installer capability set for every
+  component type;
+- a minimum installer version and the union of required installer capabilities;
+  and
+- explicit `upgrade_from` composition identities.
+
+The resolver selects only an **exact** requested component set and the highest
+published selection sequence with an explicit upgrade route. It never infers a
+role from a filename, selects a component superset, or bypasses a newer entry
+that needs an unavailable capability by silently offering an older tuple.
+Instead it returns `INSTALLER_UPDATE_REQUIRED`; the ordinary self-update gate
+must obtain and relaunch a trusted newer installer before the manifest is
+fetched. The locally retained catalog sequence/digest prevents replay or a
+different byte sequence under the same identity.
+
+This lets a later composition advertise, for example,
+`engineering-platform-execution-agent` with
+`component-provisioner/engineering-platform-execution-agent/v1`. It does not
+declare that component installable today and does not manufacture an EP
+provisioner. A newly released installer may select it only after it actually
+implements and advertises that capability; an older installer stops at the
+self-update gate. The model is deliberately generic so a future component does
+not require one installer package per Forge/EP/Workspace combination.
+
+The selection-index parser and behavior checks are source-level policy work.
+The protected publisher has not yet bound or published a real index, so no
+current GitHub Release, installer, or Mac installation is claimed by this
+contract.
+
 ## Native wizard and gates
 
 The macOS application is a native SwiftUI shell over a bounded trusted coordinator. The UI never constructs a shell command from input, stores a credential, selects a product runtime, writes a product database, creates a product venv, or registers a service itself.
