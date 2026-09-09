@@ -97,7 +97,7 @@ public final class GitHubReleaseDescriptorTransport: NSObject, GitHubInstallerRe
         let session = URLSession(configuration: configuration, delegate: redirectDelegate, delegateQueue: nil)
         defer { session.invalidateAndCancel() }
 
-        let (data, urlResponse) = try await session.data(for: request)
+        let (bytes, urlResponse) = try await session.bytes(for: request)
         guard let response = urlResponse as? HTTPURLResponse,
               response.statusCode == 200,
               let responseURL = response.url,
@@ -111,8 +111,21 @@ public final class GitHubReleaseDescriptorTransport: NSObject, GitHubInstallerRe
            declaredLength < 0 || declaredLength > maximumBytes {
             throw GitHubReleaseDescriptorTransportError.responseTooLarge
         }
-        guard data.count <= maximumBytes else {
-            throw GitHubReleaseDescriptorTransportError.responseTooLarge
+        var data = Data()
+        data.reserveCapacity(min(maximumBytes, 16 * 1024))
+        for try await byte in bytes {
+            // `URLSession.data(for:)` first buffers an untrusted response in
+            // full and only then lets us inspect its size. Descriptors are
+            // deliberately small, so stop the network stream at the declared
+            // policy limit instead of permitting an unbounded GitHub/CDN body
+            // to become process memory.
+            guard data.count < maximumBytes else {
+                throw GitHubReleaseDescriptorTransportError.responseTooLarge
+            }
+            data.append(byte)
+        }
+        guard !data.isEmpty else {
+            throw GitHubReleaseDescriptorTransportError.invalidResponse
         }
         return GitHubReleaseHTTPResponse(data: data, observedAt: observedAt)
     }
