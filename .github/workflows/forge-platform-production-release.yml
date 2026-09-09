@@ -15,9 +15,9 @@ on:
 permissions:
   contents: read
 
-# A platform release has one immutable version/tag identity. A later run may
-# resume the same evidence-bound operation, but it cannot cancel a publisher
-# between its registry write and readback.
+# A platform release has one immutable version/tag identity. A later run can
+# only resume the same evidence-bound operation; it never cancels a publisher
+# between publication and readback.
 concurrency:
   group: forge-platform-production-release
   cancel-in-progress: false
@@ -29,6 +29,7 @@ jobs:
       version: ${{ steps.context.outputs.version }}
       source_sha: ${{ steps.context.outputs.source_sha }}
       composition_manifest: ${{ steps.context.outputs.composition_manifest }}
+      operation_id: ${{ steps.context.outputs.operation_id }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v5
         with:
@@ -47,9 +48,11 @@ jobs:
           test "$SOURCE_SHA" = "$(git rev-parse HEAD)"
           test "$SOURCE_SHA" = "$(git rev-parse origin/main)"
           VERSION="$(python3 -c 'import json; print(json.load(open("product-version.json"))["version"])')"
+          OPERATION_ID="forge-platform-$VERSION-$SOURCE_SHA"
           printf 'version=%s\n' "$VERSION" >> "$GITHUB_OUTPUT"
           printf 'source_sha=%s\n' "$SOURCE_SHA" >> "$GITHUB_OUTPUT"
           printf 'composition_manifest=%s\n' "$MANIFEST" >> "$GITHUB_OUTPUT"
+          printf 'operation_id=%s\n' "$OPERATION_ID" >> "$GITHUB_OUTPUT"
 
   qualify-composition:
     needs: release-context
@@ -64,15 +67,16 @@ jobs:
           VERSION: ${{ needs.release-context.outputs.version }}
           SOURCE_SHA: ${{ needs.release-context.outputs.source_sha }}
           MANIFEST: ${{ needs.release-context.outputs.composition_manifest }}
+          OPERATION_ID: ${{ needs.release-context.outputs.operation_id }}
         run: |
           set -euo pipefail
           sh scripts/validate.sh
           python3 scripts/qualify_release_composition.py --manifest "$MANIFEST" --version "$VERSION" --source-sha "$SOURCE_SHA" --verify-artifacts
-          mkdir release-assets
+          mkdir release-input
           COMPOSITION="forge-platform-composition-$VERSION-$SOURCE_SHA.json"
           QUALIFIED="forge-platform-release-qualified-$VERSION-$SOURCE_SHA.json"
-          cp "$MANIFEST" "release-assets/$COMPOSITION"
-          export COMPOSITION QUALIFIED COMPOSITION_DIGEST="sha256:$(sha256sum "release-assets/$COMPOSITION" | cut -d' ' -f1)"
+          cp -- "$MANIFEST" "release-input/$COMPOSITION"
+          export COMPOSITION QUALIFIED COMPOSITION_DIGEST="sha256:$(sha256sum "release-input/$COMPOSITION" | cut -d' ' -f1)"
           PYTHONPATH=. python3 - <<'PY'
           from dataclasses import asdict
           import json
@@ -81,27 +85,28 @@ jobs:
           from forge_platform.release_operation import ReleaseOperation
 
           operation = ReleaseOperation.create(
-              operation_id=f"forge-platform-{os.environ['VERSION']}-{os.environ['SOURCE_SHA']}",
+              operation_id=os.environ["OPERATION_ID"],
               product="forge-platform", component="composition", version=os.environ["VERSION"],
-              policy_revision="forge-platform-production-release-v2", source_revision=os.environ["SOURCE_SHA"],
+              policy_revision="forge-platform-production-release-v3", source_revision=os.environ["SOURCE_SHA"],
               artifacts={"composition_manifest": os.environ["COMPOSITION_DIGEST"]},
           )
           qualified = operation.transition("QUALIFIED", evidence={
               "exact_main_sha": os.environ["SOURCE_SHA"],
               "artifact_digests": dict(operation.artifacts),
               "composition_asset": os.environ["COMPOSITION"],
+              "qualification_marker": "forge-platform-composition-artifact-compatibility-v3",
           })
-          Path("release-assets", os.environ["QUALIFIED"]).write_text(
-              json.dumps(asdict(qualified), indent=2, sort_keys=True) + "\n", encoding="utf-8"
+          Path("release-input", os.environ["QUALIFIED"]).write_text(
+              json.dumps(asdict(qualified), indent=2, sort_keys=True, allow_nan=False) + "\n", encoding="utf-8"
           )
           PY
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: forge-platform-release-${{ needs.release-context.outputs.version }}-${{ needs.release-context.outputs.source_sha }}
-          path: release-assets/
+          name: forge-platform-qualified-${{ needs.release-context.outputs.version }}-${{ needs.release-context.outputs.source_sha }}
+          path: release-input/
           if-no-files-found: error
 
-  publish-or-verify-published-evidence:
+  retain-qualified-release-operation:
     needs: [release-context, qualify-composition]
     runs-on: ubuntu-24.04
     permissions:
@@ -112,13 +117,96 @@ jobs:
           ref: ${{ needs.release-context.outputs.source_sha }}
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
-          name: forge-platform-release-${{ needs.release-context.outputs.version }}-${{ needs.release-context.outputs.source_sha }}
-          path: release-assets
-      - name: Publish or read back the exact composition, then retain PUBLISHED evidence
+          name: forge-platform-qualified-${{ needs.release-context.outputs.version }}-${{ needs.release-context.outputs.source_sha }}
+          path: release-input
+      - name: Retain the exact QUALIFIED operation before public composition bytes
         env:
           GH_TOKEN: ${{ github.token }}
           VERSION: ${{ needs.release-context.outputs.version }}
           SOURCE_SHA: ${{ needs.release-context.outputs.source_sha }}
+          OPERATION_ID: ${{ needs.release-context.outputs.operation_id }}
+        run: |
+          set -euo pipefail
+          TAG="forge-platform-v$VERSION"
+          COMPOSITION="forge-platform-composition-$VERSION-$SOURCE_SHA.json"
+          QUALIFIED="forge-platform-release-qualified-$VERSION-$SOURCE_SHA.json"
+          export TAG COMPOSITION QUALIFIED
+          PYTHONPATH=. python3 - <<'PY'
+          import hashlib
+          import json
+          import os
+          from pathlib import Path
+          from forge_platform.release_operation import ReleaseOperation
+
+          composition = Path("release-input", os.environ["COMPOSITION"])
+          qualified = ReleaseOperation.parse(json.loads(Path("release-input", os.environ["QUALIFIED"]).read_text(encoding="utf-8")))
+          digest = "sha256:" + hashlib.sha256(composition.read_bytes()).hexdigest()
+          if (
+              qualified.state != "QUALIFIED"
+              or qualified.operation_id != os.environ["OPERATION_ID"]
+              or qualified.product != "forge-platform"
+              or qualified.component != "composition"
+              or qualified.version != os.environ["VERSION"]
+              or qualified.policy_revision != "forge-platform-production-release-v3"
+              or qualified.source_revision != os.environ["SOURCE_SHA"]
+              or qualified.artifacts != {"composition_manifest": digest}
+              or qualified.qualification != {
+                  "exact_main_sha": os.environ["SOURCE_SHA"],
+                  "artifact_digests": {"composition_manifest": digest},
+                  "composition_asset": os.environ["COMPOSITION"],
+                  "qualification_marker": "forge-platform-composition-artifact-compatibility-v3",
+              }
+          ):
+              raise SystemExit("qualified release record does not bind the exact main composition identity")
+          PY
+          created=false
+          if gh release view "$TAG" --json targetCommitish,isDraft >/dev/null 2>&1; then
+            test "$(gh release view "$TAG" --json targetCommitish --jq .targetCommitish)" = "$SOURCE_SHA"
+          else
+            gh release create "$TAG" --draft --target "$SOURCE_SHA" --title "Forge Platform $VERSION" --generate-notes
+            created=true
+          fi
+          mkdir qualified-readback
+          assets="$(gh release view "$TAG" --json assets --jq '.assets[].name')"
+          if printf '%s\n' "$assets" | grep -Fqx "$QUALIFIED"; then
+            gh release download "$TAG" --pattern "$QUALIFIED" --dir qualified-readback
+            cmp "release-input/$QUALIFIED" "qualified-readback/$QUALIFIED"
+          else
+            if test "$created" != true; then
+              echo 'existing release has no durable QUALIFIED provenance' >&2
+              exit 1
+            fi
+            gh release upload "$TAG" "release-input/$QUALIFIED"
+            gh release download "$TAG" --pattern "$QUALIFIED" --dir qualified-readback
+            cmp "release-input/$QUALIFIED" "qualified-readback/$QUALIFIED"
+          fi
+          rm -rf -- qualified-readback
+          test ! -e qualified-readback
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: forge-platform-retained-qualified-${{ needs.release-context.outputs.version }}-${{ needs.release-context.outputs.source_sha }}
+          path: release-input/
+          if-no-files-found: error
+
+  publish-or-verify-published-evidence:
+    needs: [release-context, qualify-composition, retain-qualified-release-operation]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v5
+        with:
+          ref: ${{ needs.release-context.outputs.source_sha }}
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: forge-platform-retained-qualified-${{ needs.release-context.outputs.version }}-${{ needs.release-context.outputs.source_sha }}
+          path: release-input
+      - name: Publish or read back exact composition bytes and retain PUBLISHED evidence
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ needs.release-context.outputs.version }}
+          SOURCE_SHA: ${{ needs.release-context.outputs.source_sha }}
+          OPERATION_ID: ${{ needs.release-context.outputs.operation_id }}
         run: |
           set -euo pipefail
           TAG="forge-platform-v$VERSION"
@@ -126,22 +214,34 @@ jobs:
           QUALIFIED="forge-platform-release-qualified-$VERSION-$SOURCE_SHA.json"
           PUBLISHED="forge-platform-release-published-$VERSION-$SOURCE_SHA.json"
           export TAG COMPOSITION QUALIFIED PUBLISHED
-          if gh release view "$TAG" --json targetCommitish >/dev/null 2>&1; then
-            test "$(gh release view "$TAG" --json targetCommitish --jq .targetCommitish)" = "$SOURCE_SHA"
-          else
-            gh release create "$TAG" "release-assets/$COMPOSITION" --target "$SOURCE_SHA" --title "Forge Platform $VERSION" --generate-notes
-          fi
-          mkdir registry-readback
+          test "$(gh release view "$TAG" --json targetCommitish --jq .targetCommitish)" = "$SOURCE_SHA"
+          mkdir operation-readback
+          gh release download "$TAG" --pattern "$QUALIFIED" --dir operation-readback
+          cmp "release-input/$QUALIFIED" "operation-readback/$QUALIFIED"
           assets="$(gh release view "$TAG" --json assets --jq '.assets[].name')"
-          if printf '%s\n' "$assets" | grep -Fqx "$COMPOSITION"; then
-            gh release download "$TAG" --pattern "$COMPOSITION" --dir registry-readback
-            cmp "release-assets/$COMPOSITION" "registry-readback/$COMPOSITION"
-          else
-            gh release upload "$TAG" "release-assets/$COMPOSITION"
-            gh release download "$TAG" --pattern "$COMPOSITION" --dir registry-readback
-            cmp "release-assets/$COMPOSITION" "registry-readback/$COMPOSITION"
+          is_draft="$(gh release view "$TAG" --json isDraft --jq .isDraft)"
+          case "$is_draft" in true|false) ;; *) echo 'release draft state is invalid' >&2; exit 1;; esac
+          published_present=false
+          if printf '%s\n' "$assets" | grep -Fqx "$PUBLISHED"; then published_present=true; fi
+          if test "$is_draft" = false && test "$published_present" = false; then
+            echo 'public release lacks durable PUBLISHED provenance' >&2
+            exit 1
           fi
-          export READBACK_DIGEST="sha256:$(sha256sum "registry-readback/$COMPOSITION" | cut -d' ' -f1)"
+          composition_present=false
+          if printf '%s\n' "$assets" | grep -Fqx "$COMPOSITION"; then composition_present=true; fi
+          if test "$published_present" = true && test "$composition_present" = false; then
+            echo 'PUBLISHED release lacks its immutable composition asset' >&2
+            exit 1
+          fi
+          if test "$composition_present" = true; then
+            gh release download "$TAG" --pattern "$COMPOSITION" --dir operation-readback
+            cmp "release-input/$COMPOSITION" "operation-readback/$COMPOSITION"
+          else
+            gh release upload "$TAG" "release-input/$COMPOSITION"
+            gh release download "$TAG" --pattern "$COMPOSITION" --dir operation-readback
+            cmp "release-input/$COMPOSITION" "operation-readback/$COMPOSITION"
+          fi
+          export READBACK_DIGEST="sha256:$(sha256sum "operation-readback/$COMPOSITION" | cut -d' ' -f1)"
           PYTHONPATH=. python3 - <<'PY'
           from dataclasses import asdict
           import json
@@ -149,41 +249,53 @@ jobs:
           from pathlib import Path
           from forge_platform.release_operation import ReleaseOperation
 
-          qualified = ReleaseOperation.parse(json.loads(Path("release-assets", os.environ["QUALIFIED"]).read_text(encoding="utf-8")))
-          if qualified.state != "QUALIFIED":
-              raise SystemExit("qualified release record has an invalid state")
-          if qualified.artifacts.get("composition_manifest") != os.environ["READBACK_DIGEST"]:
-              raise SystemExit("registry readback does not match qualified composition bytes")
+          qualified = ReleaseOperation.parse(json.loads(Path("release-input", os.environ["QUALIFIED"]).read_text(encoding="utf-8")))
+          if (
+              qualified.state != "QUALIFIED"
+              or qualified.operation_id != os.environ["OPERATION_ID"]
+              or qualified.source_revision != os.environ["SOURCE_SHA"]
+              or qualified.artifacts.get("composition_manifest") != os.environ["READBACK_DIGEST"]
+          ):
+              raise SystemExit("registry readback does not match the durable qualified composition identity")
           published = qualified.transition("PUBLISHED", evidence={
               "registry": "github-release",
               "tag": os.environ["TAG"],
               "composition_asset": os.environ["COMPOSITION"],
               "artifact_digests": dict(qualified.artifacts),
               "readback": "PASS",
+              "release_visibility": "PUBLIC",
           })
-          Path("release-assets", os.environ["PUBLISHED"]).write_text(
-              json.dumps(asdict(published), indent=2, sort_keys=True) + "\n", encoding="utf-8"
+          Path("release-input", os.environ["PUBLISHED"]).write_text(
+              json.dumps(asdict(published), indent=2, sort_keys=True, allow_nan=False) + "\n", encoding="utf-8"
           )
           PY
-          mkdir published-readback
-          assets="$(gh release view "$TAG" --json assets --jq '.assets[].name')"
-          if printf '%s\n' "$assets" | grep -Fqx "$PUBLISHED"; then
-            gh release download "$TAG" --pattern "$PUBLISHED" --dir published-readback
-            cmp "release-assets/$PUBLISHED" "published-readback/$PUBLISHED"
+          if test "$published_present" = true; then
+            gh release download "$TAG" --pattern "$PUBLISHED" --dir operation-readback
+            cmp "release-input/$PUBLISHED" "operation-readback/$PUBLISHED"
           else
-            gh release upload "$TAG" "release-assets/$PUBLISHED"
+            gh release upload "$TAG" "release-input/$PUBLISHED"
+            gh release download "$TAG" --pattern "$PUBLISHED" --dir operation-readback
+            cmp "release-input/$PUBLISHED" "operation-readback/$PUBLISHED"
           fi
-          rm -rf registry-readback published-readback
-          test ! -e registry-readback
-          test ! -e published-readback
+          if test "$is_draft" = true; then
+            gh release edit "$TAG" --draft=false
+          fi
+          test "$(gh release view "$TAG" --json isDraft --jq .isDraft)" = false
+          mkdir public-readback
+          gh release download "$TAG" --pattern "$COMPOSITION" --pattern "$PUBLISHED" --dir public-readback
+          cmp "release-input/$COMPOSITION" "public-readback/$COMPOSITION"
+          cmp "release-input/$PUBLISHED" "public-readback/$PUBLISHED"
+          rm -rf -- operation-readback public-readback
+          test ! -e operation-readback
+          test ! -e public-readback
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: forge-platform-published-${{ needs.release-context.outputs.version }}-${{ needs.release-context.outputs.source_sha }}
-          path: release-assets/
+          path: release-input/
           if-no-files-found: error
 
   record-release-complete:
-    needs: [release-context, qualify-composition, publish-or-verify-published-evidence]
+    needs: [release-context, retain-qualified-release-operation, publish-or-verify-published-evidence]
     runs-on: ubuntu-24.04
     permissions:
       contents: write
@@ -194,21 +306,29 @@ jobs:
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: forge-platform-published-${{ needs.release-context.outputs.version }}-${{ needs.release-context.outputs.source_sha }}
-          path: release-assets
-      - name: Read PUBLISHED evidence, clean operation files, and retain RELEASE_COMPLETE
+          path: published-input
+      - name: Read PUBLISHED evidence, clean operation-local files, and retain RELEASE_COMPLETE
         env:
           GH_TOKEN: ${{ github.token }}
           VERSION: ${{ needs.release-context.outputs.version }}
           SOURCE_SHA: ${{ needs.release-context.outputs.source_sha }}
+          OPERATION_ID: ${{ needs.release-context.outputs.operation_id }}
         run: |
           set -euo pipefail
           TAG="forge-platform-v$VERSION"
           COMPOSITION="forge-platform-composition-$VERSION-$SOURCE_SHA.json"
+          QUALIFIED="forge-platform-release-qualified-$VERSION-$SOURCE_SHA.json"
           PUBLISHED="forge-platform-release-published-$VERSION-$SOURCE_SHA.json"
+          PENDING="forge-platform-release-cleanup-pending-$VERSION-$SOURCE_SHA.json"
           COMPLETE="forge-platform-release-complete-$VERSION-$SOURCE_SHA.json"
-          export TAG COMPOSITION PUBLISHED COMPLETE
-          mkdir release-evidence
-          gh release download "$TAG" --pattern "$COMPOSITION" --pattern "$PUBLISHED" --dir release-evidence
+          export TAG COMPOSITION QUALIFIED PUBLISHED PENDING COMPLETE
+          test "$(gh release view "$TAG" --json targetCommitish --jq .targetCommitish)" = "$SOURCE_SHA"
+          test "$(gh release view "$TAG" --json isDraft --jq .isDraft)" = false
+          mkdir operation-readback release-outcomes
+          gh release download "$TAG" --pattern "$COMPOSITION" --pattern "$QUALIFIED" --pattern "$PUBLISHED" --dir operation-readback
+          cmp "published-input/$COMPOSITION" "operation-readback/$COMPOSITION"
+          cmp "published-input/$QUALIFIED" "operation-readback/$QUALIFIED"
+          cmp "published-input/$PUBLISHED" "operation-readback/$PUBLISHED"
           PYTHONPATH=. python3 - <<'PY'
           from dataclasses import asdict
           import hashlib
@@ -217,43 +337,95 @@ jobs:
           from pathlib import Path
           from forge_platform.release_operation import ReleaseOperation
 
-          composition = Path("release-evidence", os.environ["COMPOSITION"])
-          published = ReleaseOperation.parse(json.loads(Path("release-evidence", os.environ["PUBLISHED"]).read_text(encoding="utf-8")))
-          expected_digest = "sha256:" + hashlib.sha256(composition.read_bytes()).hexdigest()
+          composition = Path("operation-readback", os.environ["COMPOSITION"])
+          qualified = ReleaseOperation.parse(json.loads(Path("operation-readback", os.environ["QUALIFIED"]).read_text(encoding="utf-8")))
+          published = ReleaseOperation.parse(json.loads(Path("operation-readback", os.environ["PUBLISHED"]).read_text(encoding="utf-8")))
+          digest = "sha256:" + hashlib.sha256(composition.read_bytes()).hexdigest()
+          expected_receipt = {
+              "registry": "github-release",
+              "tag": os.environ["TAG"],
+              "composition_asset": os.environ["COMPOSITION"],
+              "artifact_digests": {"composition_manifest": digest},
+              "readback": "PASS",
+              "release_visibility": "PUBLIC",
+          }
           if (
-              published.state != "PUBLISHED"
+              qualified.state != "QUALIFIED"
+              or qualified.operation_id != os.environ["OPERATION_ID"]
+              or qualified.source_revision != os.environ["SOURCE_SHA"]
+              or qualified.artifacts != {"composition_manifest": digest}
+              or published.state != "PUBLISHED"
+              or not qualified == ReleaseOperation.parse(json.loads(Path("published-input", os.environ["QUALIFIED"]).read_text(encoding="utf-8")))
               or published.product != "forge-platform"
               or published.component != "composition"
               or published.version != os.environ["VERSION"]
               or published.source_revision != os.environ["SOURCE_SHA"]
-              or published.artifacts.get("composition_manifest") != expected_digest
-              or published.publication_receipt != {
-                  "registry": "github-release",
-                  "tag": os.environ["TAG"],
-                  "composition_asset": os.environ["COMPOSITION"],
-                  "artifact_digests": {"composition_manifest": expected_digest},
-                  "readback": "PASS",
-              }
+              or published.artifacts != {"composition_manifest": digest}
+              or published.publication_receipt != expected_receipt
           ):
               raise SystemExit("published receipt does not match the read-back composition identity")
-          complete = published.transition("RELEASE_COMPLETE", evidence={
-              "result": "COMPLETE", "temporary_paths": ["release-evidence", "completion-existing"],
+          targets = [
+              "operation-readback",
+              f"published-input/{os.environ['COMPOSITION']}",
+              f"published-input/{os.environ['QUALIFIED']}",
+              f"published-input/{os.environ['PUBLISHED']}",
+          ]
+          pending = published.transition("CLEANUP_PENDING", evidence={
+              "result": "CLEANUP_PENDING", "targets": targets,
           })
-          Path(os.environ["COMPLETE"]).write_text(
-              json.dumps(asdict(complete), indent=2, sort_keys=True) + "\n", encoding="utf-8"
+          complete = published.transition("RELEASE_COMPLETE", evidence={
+              "result": "CLEANUP_COMPLETE", "targets": targets,
+          })
+          Path("release-outcomes", os.environ["PENDING"]).write_text(
+              json.dumps(asdict(pending), indent=2, sort_keys=True, allow_nan=False) + "\n", encoding="utf-8"
+          )
+          Path("release-outcomes", os.environ["COMPLETE"]).write_text(
+              json.dumps(asdict(complete), indent=2, sort_keys=True, allow_nan=False) + "\n", encoding="utf-8"
           )
           PY
-          upload=true
-          mkdir completion-existing
           assets="$(gh release view "$TAG" --json assets --jq '.assets[].name')"
+          pending_present=false
+          if printf '%s\n' "$assets" | grep -Fqx "$PENDING"; then
+            pending_present=true
+            mkdir pending-readback
+            gh release download "$TAG" --pattern "$PENDING" --dir pending-readback
+            cmp "release-outcomes/$PENDING" "pending-readback/$PENDING"
+          fi
+          cleanup_failed=false
+          for target in operation-readback pending-readback "published-input/$COMPOSITION" "published-input/$QUALIFIED" "published-input/$PUBLISHED"; do
+            if ! rm -rf -- "$target" || test -e "$target"; then cleanup_failed=true; fi
+          done
+          if test -d published-input && ! rmdir published-input; then cleanup_failed=true; fi
+          if test "$cleanup_failed" = true; then
+            if test "$pending_present" = true; then
+              mkdir pending-confirmation
+              gh release download "$TAG" --pattern "$PENDING" --dir pending-confirmation
+              cmp "release-outcomes/$PENDING" "pending-confirmation/$PENDING"
+              rm -rf -- pending-confirmation
+              test ! -e pending-confirmation
+            else
+              gh release upload "$TAG" "release-outcomes/$PENDING"
+            fi
+            echo 'operation-local cleanup is pending; resume the same release operation' >&2
+            exit 1
+          fi
+          test ! -e operation-readback
+          test ! -e pending-readback
+          test ! -e published-input
+          complete_present=false
           if printf '%s\n' "$assets" | grep -Fqx "$COMPLETE"; then
-            gh release download "$TAG" --pattern "$COMPLETE" --dir completion-existing
-            cmp "$COMPLETE" "completion-existing/$COMPLETE"
-            upload=false
+            complete_present=true
+            mkdir complete-readback
+            gh release download "$TAG" --pattern "$COMPLETE" --dir complete-readback
+            cmp "release-outcomes/$COMPLETE" "complete-readback/$COMPLETE"
+            rm -rf -- complete-readback
+            test ! -e complete-readback
           fi
-          rm -rf release-evidence completion-existing
-          test ! -e release-evidence
-          test ! -e completion-existing
-          if test "$upload" = true; then
-            gh release upload "$TAG" "$COMPLETE"
+          if test "$complete_present" = false; then
+            gh release upload "$TAG" "release-outcomes/$COMPLETE"
           fi
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: forge-platform-release-complete-${{ needs.release-context.outputs.version }}-${{ needs.release-context.outputs.source_sha }}
+          path: release-outcomes/forge-platform-release-complete-*.json
+          if-no-files-found: error

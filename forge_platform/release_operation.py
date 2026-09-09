@@ -4,7 +4,9 @@ Forge Platform releases a qualified composition of independently published
 product artifacts.  This journal deliberately records that composition only:
 it does not publish a producer package, select a runtime, or install anything.
 It makes a lost publication response recoverable and keeps ``PUBLISHED``
-separate from post-publication cleanup and ``RELEASE_COMPLETE``.
+separate from post-publication cleanup and ``RELEASE_COMPLETE``.  The caller
+persists the resulting records in its release evidence store; this module does
+not publish an artifact or install a product runtime.
 """
 
 from __future__ import annotations
@@ -162,7 +164,7 @@ def _atomic_json(path: Path, value: object) -> None:
     descriptor, temporary_name = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
     try:
         with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
-            json.dump(value, stream, sort_keys=True, separators=(",", ":"))
+            json.dump(value, stream, sort_keys=True, separators=(",", ":"), allow_nan=False)
             stream.write("\n")
             stream.flush()
             os.fsync(stream.fileno())
@@ -195,10 +197,11 @@ class ReleaseOperationStore:
         if self._lock_descriptor is not None:
             raise ReleaseOperationError("this release operation store already owns the release lock")
         self.root.mkdir(mode=0o700, parents=True, exist_ok=True)
+        descriptor = os.open(self._lock, os.O_WRONLY | os.O_CREAT, 0o600)
         try:
-            descriptor = os.open(self._lock, os.O_WRONLY | os.O_CREAT, 0o600)
             fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except (FileExistsError, BlockingIOError) as error:
+        except BlockingIOError as error:
+            os.close(descriptor)
             raise ReleaseOperationError("another release operation owns the release lock") from error
         try:
             os.ftruncate(descriptor, 0)
@@ -219,6 +222,10 @@ class ReleaseOperationStore:
             os.close(self._lock_descriptor)
             self._lock_descriptor, self._lock_owner = None, None
 
+    def _require_lock(self, operation_id: str) -> None:
+        if self._lock_descriptor is None or self._lock_owner != operation_id:
+            raise ReleaseOperationError("release operation must own the release lock")
+
     def load(self, operation_id: str) -> ReleaseOperation | None:
         path = self._path(operation_id)
         if not path.exists():
@@ -229,19 +236,104 @@ class ReleaseOperationStore:
             raise ReleaseOperationError("release operation record is unreadable") from error
 
     def save(self, operation: ReleaseOperation) -> ReleaseOperation:
+        self._require_lock(operation.operation_id)
         existing = self.load(operation.operation_id)
         if existing is not None and existing != operation:
             raise ReleaseOperationError("release operation record is immutable; save only an identical recovery record")
         _atomic_json(self._path(operation.operation_id), asdict(operation))
         return operation
 
+    @staticmethod
+    def same_identity(left: ReleaseOperation, right: ReleaseOperation) -> bool:
+        """Compare immutable facts without accepting later-state drift."""
+        return (
+            left.operation_id,
+            left.product,
+            left.component,
+            left.version,
+            left.policy_revision,
+            left.source_revision,
+            dict(left.artifacts),
+        ) == (
+            right.operation_id,
+            right.product,
+            right.component,
+            right.version,
+            right.policy_revision,
+            right.source_revision,
+            dict(right.artifacts),
+        )
+
+    def prepare_qualified(self, operation: ReleaseOperation, *, evidence: Mapping[str, object]) -> ReleaseOperation:
+        """Create or resume an exact pre-publication operation.
+
+        This is deliberately callable before any registry or release side
+        effect.  A retry can recover only the same version, source, policy and
+        composition bytes; it cannot silently adopt a different candidate.
+        """
+        self._require_lock(operation.operation_id)
+        existing = self.load(operation.operation_id)
+        if existing is None:
+            existing = self.save(operation)
+        elif not self.same_identity(existing, operation):
+            raise ReleaseOperationError("release operation ID already binds different immutable identity")
+        if existing.state == "PREPARED":
+            return self.replace(existing, existing.transition("QUALIFIED", evidence=evidence))
+        if existing.state not in {"QUALIFIED", "PUBLISHED", "CLEANUP_PENDING", "RELEASE_COMPLETE"}:
+            raise ReleaseOperationError("release operation cannot resume from its current state")
+        if existing.qualification != dict(evidence):
+            raise ReleaseOperationError("release operation qualification evidence changed during recovery")
+        return existing
+
+    def mark_published(self, operation: ReleaseOperation, *, evidence: Mapping[str, object]) -> ReleaseOperation:
+        """Record a verified public-composition readback under one identity."""
+        self._require_lock(operation.operation_id)
+        current = self.load(operation.operation_id)
+        if current is None or not self.same_identity(current, operation):
+            raise ReleaseOperationError("release operation does not bind the exact requested identity")
+        if current.state == "QUALIFIED":
+            current = self.replace(current, current.transition("PUBLISHED", evidence=evidence))
+        elif current.state not in {"PUBLISHED", "CLEANUP_PENDING", "RELEASE_COMPLETE"}:
+            raise ReleaseOperationError("release operation cannot be published from its current state")
+        elif current.publication_receipt != dict(evidence):
+            raise ReleaseOperationError("published release receipt changed during recovery")
+        self.record_publication(current)
+        return current
+
+    def mark_cleanup_pending(self, operation: ReleaseOperation, *, evidence: Mapping[str, object]) -> ReleaseOperation:
+        """Record a failed exact cleanup list for a later controlled retry."""
+        self._require_lock(operation.operation_id)
+        current = self.load(operation.operation_id)
+        if current is None or not self.same_identity(current, operation):
+            raise ReleaseOperationError("release operation does not bind the exact requested identity")
+        if current.state == "PUBLISHED":
+            return self.replace(current, current.transition("CLEANUP_PENDING", evidence=evidence))
+        if current.state == "CLEANUP_PENDING" and current.cleanup == dict(evidence):
+            return current
+        raise ReleaseOperationError("release operation cannot record this cleanup-pending result")
+
+    def complete(self, operation: ReleaseOperation, *, evidence: Mapping[str, object]) -> ReleaseOperation:
+        """Terminalize only after the declared operation-local cleanup passes."""
+        self._require_lock(operation.operation_id)
+        current = self.load(operation.operation_id)
+        if current is None or not self.same_identity(current, operation):
+            raise ReleaseOperationError("release operation does not bind the exact requested identity")
+        if current.state in {"PUBLISHED", "CLEANUP_PENDING"}:
+            current = self.replace(current, current.transition("RELEASE_COMPLETE", evidence=evidence))
+        elif current.state != "RELEASE_COMPLETE" or current.cleanup != dict(evidence):
+            raise ReleaseOperationError("release operation cannot complete from its current state")
+        self.record_publication(current)
+        return current
+
     def replace(self, previous: ReleaseOperation, current: ReleaseOperation) -> ReleaseOperation:
-        if current.operation_id != previous.operation_id or self.load(previous.operation_id) != previous:
+        self._require_lock(previous.operation_id)
+        if not self.same_identity(previous, current) or self.load(previous.operation_id) != previous:
             raise ReleaseOperationError("release operation changed before transition")
         _atomic_json(self._path(current.operation_id), asdict(current))
         return current
 
     def record_publication(self, operation: ReleaseOperation) -> None:
+        self._require_lock(operation.operation_id)
         if operation.state not in {"PUBLISHED", "CLEANUP_PENDING", "RELEASE_COMPLETE"}:
             raise ReleaseOperationError("only a published release may reserve its immutable identity")
         path = self.root / "published" / f"{operation.product}-{operation.component}-{operation.version}.json"
