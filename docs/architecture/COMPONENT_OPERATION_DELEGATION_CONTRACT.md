@@ -17,6 +17,9 @@ migration, rollback and cleanup. Forge Platform does not accept direct
 interpreter, PATH, runtime, database, CENTRAL, migration, backup, service or
 command instructions through this boundary.
 
-The initial in-process coordinator is a source-level kernel. The future
-universal installer must supply durable operation storage and inter-process
-locking, then consume the product receipts without replacing product engines.
+The durable coordinator writes one private, atomic coordination record per
+safe operation ID and uses a non-blocking per-operation process lock. It stores
+only the operation fingerprint and product receipt, never the product request
+or credentials. A future universal installer must provide its deployment-level
+retention and abandoned-operation recovery policy while continuing to consume
+product receipts without replacing product engines.
