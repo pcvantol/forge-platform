@@ -25,10 +25,10 @@ final class InstallerWizardViewModel: ObservableObject {
     private let coordinator: any InstallerWizardCoordinator
 
     init(
-        state: InstallerWizardState? = nil,
+        state: InstallerWizardState,
         coordinator: any InstallerWizardCoordinator
     ) {
-        self.state = state ?? InstallerWizardState(currentInstallerVersion: InstallerBuild.currentVersion)
+        self.state = state
         self.coordinator = coordinator
     }
 
@@ -81,10 +81,18 @@ final class InstallerWizardViewModel: ObservableObject {
 }
 
 enum InstallerBuild {
-    /// The actual packaged build pipeline will derive this from signed release
-    /// metadata. Keeping it local to the shell makes no claim about an
-    /// installed product or a published GitHub Release.
-    static let currentVersion = try! InstallerVersion("0.1.0")
+    /// A released app gets its version from the code-signed Info.plist laid
+    /// down by the candidate packager. Source runs without a signed app bundle
+    /// deliberately return `nil`, so they cannot enter the trusted updater or
+    /// platform wizard under a hard-coded development version.
+    static var currentVersion: InstallerVersion? {
+        guard let version = Bundle.main.object(
+            forInfoDictionaryKey: "CFBundleShortVersionString"
+        ) as? String else {
+            return nil
+        }
+        return try? InstallerVersion(version)
+    }
 }
 
 struct InstallerWizardView: View {

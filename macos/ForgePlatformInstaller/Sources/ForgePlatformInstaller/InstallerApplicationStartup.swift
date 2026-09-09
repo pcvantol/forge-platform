@@ -30,7 +30,10 @@ final class InstallerApplicationStartupModel: ObservableObject {
         }
         hasStarted = true
         let startupBoundary = startupBoundary
-        let currentVersion = InstallerBuild.currentVersion
+        guard let currentVersion = InstallerBuild.currentVersion else {
+            state = .blocked("De code-ondertekende installerversie ontbreekt of is niet geldig.")
+            return
+        }
 
         Task { [weak self] in
             let outcome = await startupBoundary.start(currentVersion: currentVersion)
