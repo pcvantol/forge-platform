@@ -52,10 +52,18 @@ REQUIRED = (
     "macos/ForgePlatformInstaller/Sources/ForgePlatformInstallerCore/InstallerDomain.swift",
     "macos/ForgePlatformInstaller/Tests/ForgePlatformInstallerCoreTests/InstallerDomainTests.swift",
     ".github/workflows/macos-installer-validation.yml",
+    ".github/workflows/forge-platform-installer-release.yml",
     "installer-version.json",
     "scripts/validate_installer_version.py",
     "scripts/advance_installer_version.py",
     "tests/installer/test_installer_version_preparation.py",
+    "scripts/package_macos_installer_app.py",
+    "scripts/verify_installer_release_evidence.py",
+    "forge_platform/installer_release_operation.py",
+    "tests/installer/test_installer_release_operation.py",
+    "tests/installer/test_package_macos_installer_app.py",
+    "tests/installer/test_verify_installer_release_evidence.py",
+    "tests/installer/test_installer_release_workflow.py",
 )
 
 

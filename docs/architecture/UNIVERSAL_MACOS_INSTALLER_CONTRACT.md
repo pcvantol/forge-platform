@@ -17,6 +17,11 @@ There is deliberately **not** one installer package per Forge/EP/Workspace combi
 
 Product version, installer version, composition identity, protocol/schema versions, source revision, and artifact digest remain separate values. `installer-version.json` is the sole source for the native installer version/channel/capability projection; it is deliberately independent of Forge Platform's `product-version.json` composition-release version.
 
+An installer release reserves the distinct GitHub tag
+`forge-platform-installer-vX.Y.Z`. The signed channel remains immutable
+descriptor metadata rather than a tag suffix, so stable and candidate work can
+never publish different bytes under one installer-version identity.
+
 ## Mandatory self-update
 
 ```text
@@ -97,8 +102,8 @@ Discovery produces a candidate only. Product APIs verify product, instance, fing
 
 ## Current source and remaining work
 
-Forge Platform now contains strict schemas and a tested policy kernel for signed-release selection, fresh/trusted-clock feed gates, catalog signature/sequence/digest anti-replay, context-bound composition selection, installer capability checks, preflight, Git/Python planning, provider gating, system-service declaration checks, and read-only composition diffs. It also contains a tested native SwiftUI wizard shell. Those sources intentionally have no production release descriptor, root key, code-signing identity, notarized app, privileged helper, live tool bootstrap, provider credential flow, product adapter, service mutation, database action, or published installer GitHub Release.
+Forge Platform now contains strict schemas and a tested policy kernel for signed-release selection, fresh/trusted-clock feed gates, catalog signature/sequence/digest anti-replay, context-bound composition selection, installer capability checks, preflight, Git/Python planning, provider gating, system-service declaration checks, and read-only composition diffs. It also contains a tested native SwiftUI wizard shell, a separate installer release-operation journal, and a source-only release workflow framework. That framework verifies an exact merged `main` candidate, deterministically packages an **unsigned** `.app` candidate, produces a digest-pinned archive, and records the expected signed-descriptor/operation handoff shape. Its signing/notarization and public-GitHub-Release environments deliberately fail closed until a real protected Apple signer, notarization adapter, descriptor trust root, and publisher are configured. The structural handoff verifier does not claim to cryptographically verify an opaque descriptor signature.
 
-Next owning increments are: a signed/notarized installer release pipeline and native trusted bootstrap/handoff; EP then Forge/Workspace execute/resume/uninstall adapters; managed-tool/provider coordinators that retain no secrets; and installed-artifact clean-Mac, add/update/remove, migration/rollback, reboot-recovery, pairing, readiness, and summary qualification.
+Next owning increments are: connect the protected signer/notarization/publisher to the installer release framework and qualify an actual GitHub Release; native trusted bootstrap/handoff; EP then Forge/Workspace execute/resume/uninstall adapters; managed-tool/provider coordinators that retain no secrets; and installed-artifact clean-Mac, add/update/remove, migration/rollback, reboot-recovery, pairing, readiness, and summary qualification.
 
 Until those increments have their own evidence, this is `SOURCE_FIXED` for the installer foundation only, not `INSTALLATION_VERIFIED`, `SINGLE_OPERATIONAL_INSTALLATION_VERIFIED`, or release/publication authority.

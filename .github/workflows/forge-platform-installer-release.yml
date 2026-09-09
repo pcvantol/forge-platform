@@ -1,0 +1,209 @@
+name: Forge Platform installer release framework
+
+on:
+  workflow_dispatch:
+    inputs:
+      source_sha:
+        description: Exact already-merged origin/main commit to qualify
+        required: true
+        type: string
+      request_publication:
+        description: Request the protected signing/notarization/publication gates
+        required: true
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+
+# The native installer has its own tag and durable operation identity. It must
+# never contend with the separately versioned Forge Platform composition flow.
+concurrency:
+  group: forge-platform-installer-release
+  cancel-in-progress: false
+
+jobs:
+  release-context:
+    runs-on: ubuntu-24.04
+    outputs:
+      installer_version: ${{ steps.context.outputs.installer_version }}
+      channel: ${{ steps.context.outputs.channel }}
+      source_sha: ${{ steps.context.outputs.source_sha }}
+      tag: ${{ steps.context.outputs.tag }}
+      operation_id: ${{ steps.context.outputs.operation_id }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v5
+        with:
+          ref: ${{ inputs.source_sha }}
+          fetch-depth: 0
+      - id: context
+        env:
+          SOURCE_SHA: ${{ inputs.source_sha }}
+        run: |
+          set -euo pipefail
+          python3 - "$SOURCE_SHA" <<'PY'
+          import re
+          import sys
+
+          if re.fullmatch(r"[0-9a-f]{40,64}", sys.argv[1]) is None:
+              raise SystemExit("source_sha must be a full lowercase Git revision")
+          PY
+          test -z "$(git status --porcelain)"
+          git fetch --no-tags origin main
+          test "$SOURCE_SHA" = "$(git rev-parse HEAD)"
+          test "$SOURCE_SHA" = "$(git rev-parse origin/main)"
+          python3 scripts/validate_installer_version.py
+          INSTALLER_VERSION="$(python3 -c 'import json; print(json.load(open("installer-version.json"))["version"])')"
+          CHANNEL="$(python3 -c 'import json; print(json.load(open("installer-version.json"))["channel"])')"
+          TAG="forge-platform-installer-v$INSTALLER_VERSION"
+          OPERATION_ID="forge-platform-installer-$INSTALLER_VERSION-$SOURCE_SHA"
+          printf 'installer_version=%s\n' "$INSTALLER_VERSION" >> "$GITHUB_OUTPUT"
+          printf 'channel=%s\n' "$CHANNEL" >> "$GITHUB_OUTPUT"
+          printf 'source_sha=%s\n' "$SOURCE_SHA" >> "$GITHUB_OUTPUT"
+          printf 'tag=%s\n' "$TAG" >> "$GITHUB_OUTPUT"
+          printf 'operation_id=%s\n' "$OPERATION_ID" >> "$GITHUB_OUTPUT"
+
+  build-unsigned-app-candidate:
+    needs: release-context
+    runs-on: macos-14
+    outputs:
+      architecture: ${{ steps.candidate.outputs.architecture }}
+      archive: ${{ steps.candidate.outputs.archive }}
+      archive_digest: ${{ steps.candidate.outputs.archive_digest }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v5
+        with:
+          ref: ${{ needs.release-context.outputs.source_sha }}
+          fetch-depth: 0
+      - id: candidate
+        env:
+          CHANNEL: ${{ needs.release-context.outputs.channel }}
+          INSTALLER_VERSION: ${{ needs.release-context.outputs.installer_version }}
+          SOURCE_SHA: ${{ needs.release-context.outputs.source_sha }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$SOURCE_SHA"
+          git fetch --no-tags origin main
+          test "$SOURCE_SHA" = "$(git rev-parse origin/main)"
+          sh scripts/validate.sh
+          case "$(uname -m)" in
+            arm64|x86_64) ARCHITECTURE="$(uname -m)" ;;
+            *) echo 'unsupported macOS runner architecture' >&2; exit 1 ;;
+          esac
+          cd macos/ForgePlatformInstaller
+          swift test
+          BINARY_DIRECTORY="$(swift build -c release --show-bin-path)"
+          cd ../..
+          test -x "$BINARY_DIRECTORY/ForgePlatformInstaller"
+          mkdir release-input
+          python3 scripts/package_macos_installer_app.py \
+            --executable "$BINARY_DIRECTORY/ForgePlatformInstaller" \
+            --output release-input/ForgePlatformInstaller.app \
+            --bundle-identifier com.pcvantol.forge-platform-installer
+          test -f release-input/ForgePlatformInstaller.app/Contents/Info.plist
+          ARCHIVE="ForgePlatformInstaller-macos-$ARCHITECTURE.zip"
+          ditto -c -k --sequesterRsrc --keepParent \
+            release-input/ForgePlatformInstaller.app "release-input/$ARCHIVE"
+          ARCHIVE_DIGEST="sha256:$(shasum -a 256 "release-input/$ARCHIVE" | awk '{print $1}')"
+          export ARCHITECTURE ARCHIVE ARCHIVE_DIGEST CHANNEL INSTALLER_VERSION SOURCE_SHA
+          python3 - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          manifest = json.loads(Path("installer-version.json").read_text(encoding="utf-8"))
+          candidate = {
+              "schema": "forge-platform.installer-candidate/v1",
+              "product": "forge-platform-installer",
+              "source_revision": os.environ["SOURCE_SHA"],
+              "version": os.environ["INSTALLER_VERSION"],
+              "channel": os.environ["CHANNEL"],
+              "capabilities": manifest["capabilities"],
+              "archives": {
+                  os.environ["ARCHITECTURE"]: {
+                      "name": os.environ["ARCHIVE"],
+                      "digest": os.environ["ARCHIVE_DIGEST"],
+                      "packaging": "UNSIGNED_APP_CANDIDATE",
+                  }
+              },
+          }
+          Path("release-input", "installer-candidate.json").write_text(
+              json.dumps(candidate, indent=2, sort_keys=True, allow_nan=False) + "\n",
+              encoding="utf-8",
+          )
+          PY
+          printf 'architecture=%s\n' "$ARCHITECTURE" >> "$GITHUB_OUTPUT"
+          printf 'archive=%s\n' "$ARCHIVE" >> "$GITHUB_OUTPUT"
+          printf 'archive_digest=%s\n' "$ARCHIVE_DIGEST" >> "$GITHUB_OUTPUT"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: forge-platform-installer-candidate-${{ needs.release-context.outputs.installer_version }}-${{ needs.release-context.outputs.source_sha }}
+          path: release-input/
+          if-no-files-found: error
+
+  sign-notarize-and-qualify:
+    # A workflow approval is deliberately not a substitute for an Apple
+    # Developer ID, notarization credential, descriptor trust root, or exact
+    # signed-release evidence. This protected gate currently fails closed.
+    if: ${{ inputs.request_publication }}
+    needs: [release-context, build-unsigned-app-candidate]
+    runs-on: macos-14
+    environment:
+      name: forge-platform-installer-signing
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v5
+        with:
+          ref: ${{ needs.release-context.outputs.source_sha }}
+          fetch-depth: 0
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: forge-platform-installer-candidate-${{ needs.release-context.outputs.installer_version }}-${{ needs.release-context.outputs.source_sha }}
+          path: release-input
+      - name: Refuse unsigned candidates before protected signing and notarization
+        run: |
+          set -euo pipefail
+          test -d release-input/ForgePlatformInstaller.app
+          test -f release-input/installer-candidate.json
+          echo 'No protected Apple signing/notarization and descriptor-trust implementation is configured.' >&2
+          echo 'A future protected executor must emit a signed .app archive, signed descriptor, and exact durable installer release operation.' >&2
+          exit 1
+
+  verify-signed-evidence-and-publish:
+    # This stage is intentionally unreachable until the preceding protected
+    # signer is implemented. It names the exact evidence handoff expected from
+    # that signer, then still refuses public GitHub publication in source.
+    if: ${{ inputs.request_publication && needs.sign-notarize-and-qualify.result == 'success' }}
+    needs: [release-context, build-unsigned-app-candidate, sign-notarize-and-qualify]
+    runs-on: macos-14
+    environment:
+      name: forge-platform-installer-publication
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v5
+        with:
+          ref: ${{ needs.release-context.outputs.source_sha }}
+          fetch-depth: 0
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: forge-platform-installer-signed-${{ needs.release-context.outputs.installer_version }}-${{ needs.release-context.outputs.source_sha }}
+          path: signed-release-input
+      - name: Verify exact signed descriptor, archive bytes, and durable operation
+        env:
+          ARCHITECTURE: ${{ needs.build-unsigned-app-candidate.outputs.architecture }}
+          ARCHIVE: ${{ needs.build-unsigned-app-candidate.outputs.archive }}
+          SOURCE_SHA: ${{ needs.release-context.outputs.source_sha }}
+        run: |
+          set -euo pipefail
+          python3 scripts/verify_installer_release_evidence.py \
+            --operation signed-release-input/installer-release-operation.json \
+            --descriptor signed-release-input/installer-release-descriptor.json \
+            --archive "$ARCHITECTURE=signed-release-input/$ARCHIVE" \
+            --source-sha "$SOURCE_SHA"
+      - name: Refuse public GitHub Release publication until a protected publisher is implemented
+        run: |
+          echo 'The public GitHub Release publisher is intentionally not configured in source.' >&2
+          echo 'No installer artifact, descriptor, or release record was published by this workflow.' >&2
+          exit 1
