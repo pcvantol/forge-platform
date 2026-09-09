@@ -4,9 +4,11 @@
 
 ## Decision
 
-Forge Platform installs and composes independently published Forge Runtime, Workspace Server, Workspace Client, Engineering Platform Server, and Engineering Platform Project Agent artifacts. It owns component selection, deployment presets, artifact acquisition and verification, validated compatibility/release composition, topology bootstrap, update, repair, uninstall, diagnostics, and receipts.
+Forge Platform composes independently published Forge Runtime, Workspace Server, Workspace Client, Engineering Platform Server, and Engineering Platform Project Agent artifacts. It owns component selection, deployment presets, artifact acquisition and verification, validated compatibility/release composition, topology bootstrap, lifecycle choreography, and composition receipts.
 
-Each product repository owns its own artifact build/publication, version, product behavior, and protocol implementation. Forge Platform releases are tested compositions, not monorepo source versions. The installer provides independent Server and Local roles and the Complete Forge Platform, Server, Developer Workstation, and Custom conceptual presets.
+Each product repository owns its own artifact build/publication, version, product behavior, protocol implementation, and product-specific installation provisioner. Forge Platform releases are tested compositions, not monorepo source versions. The installer provides independent Server and Local roles and the Complete Forge Platform, Server, Developer Workstation, and Custom conceptual presets.
+
+For Engineering Platform, Forge Platform passes the exact selected artifact identity and requested role to the EP-owned installation provisioner and consumes its resulting installation record, health proof, and cleanup receipt. It must not create a second EP runtime chooser, service-registration path, migration engine, cleanup engine, or direct database writer. In particular, a Forge Platform PATH lookup is diagnostic evidence only and cannot select an EP operational runtime.
 
 ## Consequences
 

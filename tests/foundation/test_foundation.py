@@ -69,6 +69,13 @@ def main() -> None:
     ):
         if required_term not in architecture:
             raise SystemExit(f"architecture is missing canonical term: {required_term}")
+    for required_term in (
+        "EP-owned provisioner",
+        "never selects an EP runtime through `PATH`",
+        "parallel EP operational environment",
+    ):
+        if required_term not in architecture:
+            raise SystemExit(f"architecture is missing EP installation boundary: {required_term}")
     learning_loop = (ROOT / "docs/architecture/KNOWLEDGE_LEARNING_LOOP.md").read_text()
     for required_term in (
         "KB CURRENTLY CLI/REPOSITORY CAPABILITY",

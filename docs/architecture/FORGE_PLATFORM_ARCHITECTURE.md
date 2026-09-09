@@ -145,7 +145,7 @@ Same-repository parallel execution through multiple worktrees, declared disjoint
 
 ## Deployment, artifacts, and installer roles
 
-Forge Platform owns universal installation, deployment profiles, component selection, manifests, validated compatibility matrix, artifact acquisition/verification, topology bootstrap, upgrades, repair, uninstall, installer/updater UX, and installation receipts.
+Forge Platform owns universal composition, deployment profiles, component selection, manifests, validated compatibility matrix, artifact acquisition/verification, topology bootstrap, installer/updater UX, and composition receipts. It orchestrates product-owned installation provisioners; it does not duplicate a product's runtime-selection, service, migration, recovery, verification, or cleanup engine.
 
 It consumes independently published artifacts and does not compile or repackage product source as a hidden monolith:
 
@@ -157,6 +157,8 @@ It consumes independently published artifacts and does not compile or repackage 
 | Forge Platform | Validated composition and distribution of those artifacts |
 
 A Forge Platform release is a tested composition, not a monorepo source version. Each product owns its version and protocol implementation; Forge Platform owns the cross-product compatibility declaration used for a platform release/install.
+
+For an Engineering Platform component, Forge Platform supplies an exact qualified artifact digest and requested role to the EP-owned provisioner, then consumes the returned EP installation record and health/cleanup evidence. It never selects an EP runtime through `PATH`, writes EP service registrations or databases, or leaves a parallel EP operational environment behind.
 
 ### CENTRAL transition and future relocation boundary
 
