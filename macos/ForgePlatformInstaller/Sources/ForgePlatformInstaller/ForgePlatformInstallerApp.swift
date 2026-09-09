@@ -4,11 +4,11 @@ import ForgePlatformInstallerCore
 
 @main
 struct ForgePlatformInstallerApp: App {
-    @StateObject private var viewModel = InstallerWizardViewModel()
+    @StateObject private var startupModel = InstallerApplicationStartupModel()
 
     var body: some Scene {
         WindowGroup("Forge Platform Installer") {
-            InstallerWizardView(viewModel: viewModel)
+            InstallerApplicationRootView(startupModel: startupModel)
                 .frame(minWidth: 960, minHeight: 680)
         }
     }
@@ -26,7 +26,7 @@ final class InstallerWizardViewModel: ObservableObject {
 
     init(
         state: InstallerWizardState? = nil,
-        coordinator: any InstallerWizardCoordinator = UnavailableInstallerWizardCoordinator()
+        coordinator: any InstallerWizardCoordinator
     ) {
         self.state = state ?? InstallerWizardState(currentInstallerVersion: InstallerBuild.currentVersion)
         self.coordinator = coordinator
@@ -80,7 +80,7 @@ final class InstallerWizardViewModel: ObservableObject {
     }
 }
 
-private enum InstallerBuild {
+enum InstallerBuild {
     /// The actual packaged build pipeline will derive this from signed release
     /// metadata. Keeping it local to the shell makes no claim about an
     /// installed product or a published GitHub Release.

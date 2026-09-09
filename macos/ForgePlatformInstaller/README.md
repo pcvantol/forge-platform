@@ -29,6 +29,16 @@ replacement. Required providers cannot be bypassed: every manifest-required
 provider must be selected and in the `verified` state before the wizard can
 continue.
 
+The released app is wired through `ReleasedInstallerStartupBoundary`: it does
+not construct a wizard with `UnavailableInstallerWizardCoordinator`, and it
+does not offer a manual update bypass. The boundary first requires a sealed
+release-trust resource, builds a trusted runtime from it, and calls automatic
+startup enforcement. Only a `current` result creates the wizard; a relaunch or
+any missing/invalid trust configuration stays on a fail-closed status screen.
+Interrupted installer-only work is recorded in a separate non-secret recovery
+journal with typed staged-file identity and handoff-receipt evidence. It is not
+a product database or a component installation journal.
+
 The default coordinator fails closed. This package deliberately ships no real
 release URL, signing key, credential, shell invocation, privileged helper or
 product adapter. A production composition must inject implementations for the

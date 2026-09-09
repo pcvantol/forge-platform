@@ -8,12 +8,14 @@ final class SelfUpdateCoordinatorTests: XCTestCase {
         let staging = StagingSpy(result: .success(try makeStagedAsset()))
         let verifier = ArtifactVerifierSpy()
         let handoff = AtomicHandoffSpy(result: .success(()))
+        let recoveryStore = RecoveryStoreSpy()
         let coordinator = makeCoordinator(
             feed: FeedSpy(result: .success(release)),
-            inspector: InspectorSpy(responses: [.success(current), .success(current), .success(current)]),
+            inspector: InspectorSpy(responses: [.success(current), .success(current), .success(current), .success(current)]),
             staging: staging,
             verifier: verifier,
-            handoff: handoff
+            handoff: handoff,
+            recoveryStore: recoveryStore
         )
 
         let check = await coordinator.checkForUpdate(currentVersion: current.version)
@@ -25,12 +27,14 @@ final class SelfUpdateCoordinatorTests: XCTestCase {
         let verifierCalls = await verifier.calls()
         let handoffCallCount = await handoff.callCount()
         let handedOffRelease = await handoff.lastRelease()
+        let receiptCount = await recoveryStore.receiptCount()
         XCTAssertEqual(update, .relaunching)
         XCTAssertEqual(stagedReleaseCount, 1)
         XCTAssertEqual(discardedAssets, [])
         XCTAssertEqual(verifierCalls, [.sha256, .codeSignature, .notarization])
         XCTAssertEqual(handoffCallCount, 1)
         XCTAssertEqual(handedOffRelease, release)
+        XCTAssertEqual(receiptCount, 1)
     }
 
     func testStartupEnforcementAutomaticallyRelaunchesNewerVerifiedInstaller() async throws {
@@ -40,7 +44,7 @@ final class SelfUpdateCoordinatorTests: XCTestCase {
         let handoff = AtomicHandoffSpy(result: .success(()))
         let coordinator = makeCoordinator(
             feed: FeedSpy(result: .success(release)),
-            inspector: InspectorSpy(responses: [.success(current), .success(current), .success(current)]),
+            inspector: InspectorSpy(responses: [.success(current), .success(current), .success(current), .success(current)]),
             staging: staging,
             handoff: handoff
         )
@@ -167,7 +171,7 @@ final class SelfUpdateCoordinatorTests: XCTestCase {
         let handoff = AtomicHandoffSpy(result: .success(()))
         let coordinator = makeCoordinator(
             feed: FeedSpy(result: .success(release)),
-            inspector: InspectorSpy(responses: [.success(current), .success(current), .success(current)]),
+            inspector: InspectorSpy(responses: [.success(current), .success(current), .success(current), .success(current)]),
             staging: staging,
             verifier: verifier,
             handoff: handoff
@@ -285,6 +289,115 @@ final class SelfUpdateCoordinatorTests: XCTestCase {
         XCTAssertEqual(handoffCallCount, 0)
     }
 
+    func testStagedFileIdentityChangeAfterHashVerificationDiscardsAssetAndBlocksHandoff() async throws {
+        let current = try makeCurrentIdentity(version: "1.0.0", sequence: 10)
+        let release = try makeReleaseRecord(version: "1.1.0", sequence: 11)
+        let stagedAsset = try makeStagedAsset()
+        let changedIdentity = try StagedInstallerFileIdentity(
+            volumeReference: "volume-1",
+            fileReference: "file-2",
+            byteCount: stagedAsset.fileIdentity.byteCount
+        )
+        let staging = StagingSpy(
+            result: .success(stagedAsset),
+            identityResponses: [.success(stagedAsset.fileIdentity), .success(changedIdentity)]
+        )
+        let verifier = ArtifactVerifierSpy()
+        let handoff = AtomicHandoffSpy(result: .success(()))
+        let recoveryStore = RecoveryStoreSpy()
+        let coordinator = makeCoordinator(
+            feed: FeedSpy(result: .success(release)),
+            inspector: InspectorSpy(responses: [.success(current), .success(current)]),
+            staging: staging,
+            verifier: verifier,
+            handoff: handoff,
+            recoveryStore: recoveryStore
+        )
+
+        _ = await coordinator.checkForUpdate(currentVersion: current.version)
+        let result = await coordinator.handOffSelfUpdate(release.release)
+        let discardedAssets = await staging.discardedAssets()
+        let verifierCalls = await verifier.calls()
+        let handoffCallCount = await handoff.callCount()
+        let pendingRecovery = await recoveryStore.pendingRecord()
+
+        XCTAssertEqual(
+            result,
+            .failed(InstallerSelfUpdateFailureCode.stagedAssetIdentityChanged.userFacingMessage)
+        )
+        XCTAssertEqual(discardedAssets, [stagedAsset])
+        XCTAssertEqual(verifierCalls, [.sha256])
+        XCTAssertEqual(handoffCallCount, 0)
+        XCTAssertNil(pendingRecovery)
+    }
+
+    func testStartupRecoveryCleansInterruptedStagedAssetBeforeCheckingFeed() async throws {
+        let current = try makeCurrentIdentity(version: "1.0.0", sequence: 10)
+        let release = try makeReleaseRecord(version: "1.1.0", sequence: 11)
+        let operation = try InstallerSelfUpdateOperationIdentity(
+            release: release,
+            operationIdentifier: "recovery-operation-1"
+        )
+        let stagedAsset = try makeStagedAsset()
+        let recoveryRecord = try InstallerSelfUpdateRecoveryRecord(
+            operation: operation,
+            phase: .verifiedForHandoff,
+            stagedAsset: stagedAsset
+        )
+        let staging = StagingSpy(result: .success(stagedAsset))
+        let recoveryStore = RecoveryStoreSpy(pending: recoveryRecord)
+        let coordinator = makeCoordinator(
+            feed: FeedSpy(result: .failure(InstallerSelfUpdateFailure(.releaseFeedUnavailable))),
+            inspector: InspectorSpy(responses: [.success(current)]),
+            staging: staging,
+            recoveryStore: recoveryStore
+        )
+
+        let result = await coordinator.checkForUpdate(currentVersion: current.version)
+        let discardedAssets = await staging.discardedAssets()
+        let pendingRecovery = await recoveryStore.pendingRecord()
+
+        XCTAssertEqual(
+            result,
+            .rejected(InstallerSelfUpdateFailureCode.releaseFeedUnavailable.userFacingMessage)
+        )
+        XCTAssertEqual(discardedAssets, [stagedAsset])
+        XCTAssertNil(pendingRecovery)
+    }
+
+    func testRecoveryDoesNotDeleteAssetAfterCrashAtAtomicHandoffBoundary() async throws {
+        let current = try makeCurrentIdentity(version: "1.0.0", sequence: 10)
+        let release = try makeReleaseRecord(version: "1.1.0", sequence: 11)
+        let operation = try InstallerSelfUpdateOperationIdentity(
+            release: release,
+            operationIdentifier: "handoff-boundary-operation-1"
+        )
+        let recoveryRecord = try InstallerSelfUpdateRecoveryRecord(
+            operation: operation,
+            phase: .handoffAttempting
+        )
+        let stagedAsset = try makeStagedAsset()
+        let staging = StagingSpy(result: .success(stagedAsset))
+        let recoveryStore = RecoveryStoreSpy(pending: recoveryRecord)
+        let coordinator = makeCoordinator(
+            feed: FeedSpy(result: .failure(InstallerSelfUpdateFailure(.releaseFeedUnavailable))),
+            inspector: InspectorSpy(responses: [.success(current)]),
+            staging: staging,
+            recoveryStore: recoveryStore
+        )
+
+        let result = await coordinator.checkForUpdate(currentVersion: current.version)
+        let discardedAssets = await staging.discardedAssets()
+        let pendingRecovery = await recoveryStore.pendingRecord()
+
+        XCTAssertEqual(
+            result,
+            .rejected(InstallerSelfUpdateFailureCode.handoffReceiptPersistencePending.userFacingMessage)
+        )
+        XCTAssertEqual(discardedAssets, [])
+        XCTAssertEqual(pendingRecovery?.phase, .handoffAttempting)
+    }
+
     func testOlderOrReplayedReleaseCannotReplaceNewerInstaller() async throws {
         let current = try makeCurrentIdentity(version: "1.1.0", sequence: 11)
         let release = try makeReleaseRecord(version: "1.0.0", sequence: 10)
@@ -306,7 +419,8 @@ final class SelfUpdateCoordinatorTests: XCTestCase {
         let release = try makeReleaseRecord(version: "1.1.0", sequence: 11)
         let unexpectedAsset = try StagedInstallerAsset(
             releaseAssetName: "UnexpectedInstaller.zip",
-            opaqueReference: "stage-unexpected"
+            opaqueReference: "stage-unexpected",
+            fileIdentity: try makeStagedFileIdentity()
         )
         let staging = StagingSpy(result: .success(unexpectedAsset))
         let verifier = ArtifactVerifierSpy()
@@ -344,7 +458,7 @@ final class SelfUpdateCoordinatorTests: XCTestCase {
         )
         let coordinator = makeCoordinator(
             feed: FeedSpy(result: .success(release)),
-            inspector: InspectorSpy(responses: [.success(current), .success(current), .success(current)]),
+            inspector: InspectorSpy(responses: [.success(current), .success(current), .success(current), .success(current)]),
             staging: staging,
             handoff: handoff
         )
@@ -362,17 +476,47 @@ final class SelfUpdateCoordinatorTests: XCTestCase {
         XCTAssertEqual(handoffCallCount, 1)
     }
 
+    func testAtomicHandoffWithMismatchedReceiptFailsClosedWithoutDeletingPotentiallyActivatedAsset() async throws {
+        let current = try makeCurrentIdentity(version: "1.0.0", sequence: 10)
+        let release = try makeReleaseRecord(version: "1.1.0", sequence: 11)
+        let stagedAsset = try makeStagedAsset()
+        let staging = StagingSpy(result: .success(stagedAsset))
+        let handoff = AtomicHandoffSpy(result: .success(()), invalidReceipt: true)
+        let recoveryStore = RecoveryStoreSpy()
+        let coordinator = makeCoordinator(
+            feed: FeedSpy(result: .success(release)),
+            inspector: InspectorSpy(responses: [.success(current), .success(current), .success(current), .success(current)]),
+            staging: staging,
+            handoff: handoff,
+            recoveryStore: recoveryStore
+        )
+
+        _ = await coordinator.checkForUpdate(currentVersion: current.version)
+        let result = await coordinator.handOffSelfUpdate(release.release)
+        let discardedAssets = await staging.discardedAssets()
+        let pendingRecovery = await recoveryStore.pendingRecord()
+
+        XCTAssertEqual(
+            result,
+            .failed(InstallerSelfUpdateFailureCode.handoffReceiptInvalid.userFacingMessage)
+        )
+        XCTAssertEqual(discardedAssets, [])
+        XCTAssertEqual(pendingRecovery?.phase, .handoffReceiptPending)
+    }
+
     func testStagingReferencesRejectPathsAndShellLikeValues() {
         XCTAssertThrowsError(
             try StagedInstallerAsset(
                 releaseAssetName: "ForgePlatformInstaller.app.zip",
-                opaqueReference: "../tmp/installer"
+                opaqueReference: "../tmp/installer",
+                fileIdentity: try makeStagedFileIdentity()
             )
         )
         XCTAssertThrowsError(
             try StagedInstallerAsset(
                 releaseAssetName: "ForgePlatformInstaller.app.zip",
-                opaqueReference: "stage;open"
+                opaqueReference: "stage;open",
+                fileIdentity: try makeStagedFileIdentity()
             )
         )
     }
@@ -382,14 +526,16 @@ final class SelfUpdateCoordinatorTests: XCTestCase {
         inspector: any CurrentInstallerBundleInspecting,
         staging: any InstallerUpdateStaging,
         verifier: any StagedInstallerArtifactVerifying = ArtifactVerifierSpy(),
-        handoff: any InstallerAtomicHandoffPerforming = AtomicHandoffSpy(result: .success(()))
+        handoff: any InstallerAtomicHandoffPerforming = AtomicHandoffSpy(result: .success(())),
+        recoveryStore: any InstallerSelfUpdateRecoveryStoring = RecoveryStoreSpy()
     ) -> VerifiedInstallerSelfUpdateCoordinator {
         VerifiedInstallerSelfUpdateCoordinator(
             releaseFeed: feed,
             currentBundleInspector: inspector,
             staging: staging,
             artifactVerifier: verifier,
-            atomicHandoff: handoff
+            atomicHandoff: handoff,
+            recoveryStore: recoveryStore
         )
     }
 
@@ -440,7 +586,16 @@ final class SelfUpdateCoordinatorTests: XCTestCase {
     private func makeStagedAsset() throws -> StagedInstallerAsset {
         try StagedInstallerAsset(
             releaseAssetName: "ForgePlatformInstaller.app.zip",
-            opaqueReference: "stage-1"
+            opaqueReference: "stage-1",
+            fileIdentity: try makeStagedFileIdentity()
+        )
+    }
+
+    private func makeStagedFileIdentity() throws -> StagedInstallerFileIdentity {
+        try StagedInstallerFileIdentity(
+            volumeReference: "volume-1",
+            fileReference: "file-1",
+            byteCount: 4096
         )
     }
 }
@@ -480,11 +635,16 @@ private actor InspectorSpy: CurrentInstallerBundleInspecting {
 
 private actor StagingSpy: InstallerUpdateStaging {
     private let result: Result<StagedInstallerAsset, InstallerSelfUpdateFailure>
+    private var identityResponses: [Result<StagedInstallerFileIdentity, InstallerSelfUpdateFailure>]
     private var stagedReleases: [VerifiedInstallerReleaseRecord] = []
     private var discarded: [StagedInstallerAsset] = []
 
-    init(result: Result<StagedInstallerAsset, InstallerSelfUpdateFailure>) {
+    init(
+        result: Result<StagedInstallerAsset, InstallerSelfUpdateFailure>,
+        identityResponses: [Result<StagedInstallerFileIdentity, InstallerSelfUpdateFailure>] = []
+    ) {
         self.result = result
+        self.identityResponses = identityResponses
     }
 
     func stageInstallerUpdate(
@@ -499,6 +659,15 @@ private actor StagingSpy: InstallerUpdateStaging {
     ) async -> Result<Void, InstallerSelfUpdateFailure> {
         discarded.append(stagedAsset)
         return .success(())
+    }
+
+    func inspectStagedInstallerAssetIdentity(
+        _ stagedAsset: StagedInstallerAsset
+    ) async -> Result<StagedInstallerFileIdentity, InstallerSelfUpdateFailure> {
+        guard !identityResponses.isEmpty else {
+            return .success(stagedAsset.fileIdentity)
+        }
+        return identityResponses.removeFirst()
     }
 
     func stagedReleaseCount() -> Int {
@@ -563,19 +732,54 @@ private actor ArtifactVerifierSpy: StagedInstallerArtifactVerifying {
 
 private actor AtomicHandoffSpy: InstallerAtomicHandoffPerforming {
     private let result: Result<Void, InstallerSelfUpdateFailure>
+    private let invalidReceipt: Bool
     private var releases: [VerifiedInstallerReleaseRecord] = []
 
-    init(result: Result<Void, InstallerSelfUpdateFailure>) {
+    init(
+        result: Result<Void, InstallerSelfUpdateFailure>,
+        invalidReceipt: Bool = false
+    ) {
         self.result = result
+        self.invalidReceipt = invalidReceipt
     }
 
     func handOffAtomicallyAndRelaunch(
+        operation: InstallerSelfUpdateOperationIdentity,
         currentBundle: CurrentInstallerBundleIdentity,
         stagedAsset: StagedInstallerAsset,
         release: VerifiedInstallerReleaseRecord
-    ) async -> Result<Void, InstallerSelfUpdateFailure> {
+    ) async -> Result<InstallerSelfUpdateHandoffReceipt, InstallerSelfUpdateFailure> {
         releases.append(release)
-        return result
+        switch result {
+        case .success:
+            do {
+                let receiptOperation: InstallerSelfUpdateOperationIdentity
+                if invalidReceipt {
+                    receiptOperation = try InstallerSelfUpdateOperationIdentity(
+                        operationIdentifier: "mismatched-operation",
+                        installerVersion: operation.installerVersion,
+                        releaseSequence: operation.releaseSequence,
+                        sourceRevision: operation.sourceRevision,
+                        artifactSHA256: operation.artifactSHA256,
+                        expectedCodeDirectorySHA256: operation.expectedCodeDirectorySHA256,
+                        metadataSHA256: operation.metadataSHA256,
+                        bundleIdentifier: operation.bundleIdentifier,
+                        teamIdentifier: operation.teamIdentifier
+                    )
+                } else {
+                    receiptOperation = operation
+                }
+                return .success(try InstallerSelfUpdateHandoffReceipt(
+                    operation: receiptOperation,
+                    handoffReference: "handoff-1",
+                    activatedCodeDirectorySHA256: operation.expectedCodeDirectorySHA256
+                ))
+            } catch {
+                return .failure(InstallerSelfUpdateFailure(.handoffReceiptInvalid))
+            }
+        case .failure(let failure):
+            return .failure(failure)
+        }
     }
 
     func callCount() -> Int {
@@ -584,5 +788,50 @@ private actor AtomicHandoffSpy: InstallerAtomicHandoffPerforming {
 
     func lastRelease() -> VerifiedInstallerReleaseRecord? {
         releases.last
+    }
+}
+
+private actor RecoveryStoreSpy: InstallerSelfUpdateRecoveryStoring {
+    private var pending: InstallerSelfUpdateRecoveryRecord?
+    private var receipts: [InstallerSelfUpdateHandoffReceipt] = []
+
+    init(pending: InstallerSelfUpdateRecoveryRecord? = nil) {
+        self.pending = pending
+    }
+
+    func loadPendingSelfUpdate() async -> Result<InstallerSelfUpdateRecoveryRecord?, InstallerSelfUpdateFailure> {
+        .success(pending)
+    }
+
+    func savePendingSelfUpdate(
+        _ record: InstallerSelfUpdateRecoveryRecord
+    ) async -> Result<Void, InstallerSelfUpdateFailure> {
+        pending = record
+        return .success(())
+    }
+
+    func clearPendingSelfUpdate(
+        for operation: InstallerSelfUpdateOperationIdentity
+    ) async -> Result<Void, InstallerSelfUpdateFailure> {
+        guard pending == nil || pending?.operation == operation else {
+            return .failure(InstallerSelfUpdateFailure(.recoveryPersistenceFailed))
+        }
+        pending = nil
+        return .success(())
+    }
+
+    func persistHandoffReceipt(
+        _ receipt: InstallerSelfUpdateHandoffReceipt
+    ) async -> Result<Void, InstallerSelfUpdateFailure> {
+        receipts.append(receipt)
+        return .success(())
+    }
+
+    func pendingRecord() -> InstallerSelfUpdateRecoveryRecord? {
+        pending
+    }
+
+    func receiptCount() -> Int {
+        receipts.count
     }
 }

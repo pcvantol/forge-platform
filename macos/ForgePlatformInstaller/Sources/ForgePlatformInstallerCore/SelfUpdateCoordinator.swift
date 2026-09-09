@@ -6,6 +6,8 @@ import Foundation
 public enum InstallerSelfUpdateFailureCode: String, Equatable, Sendable {
     case releaseFeedUnavailable
     case releaseMetadataRejected
+    case sealedReleaseTrustConfigurationAbsent
+    case trustedUpdaterUnavailable
     case currentBundleUnavailable
     case currentBundleIdentityMismatch
     case currentBundleChanged
@@ -15,10 +17,15 @@ public enum InstallerSelfUpdateFailureCode: String, Equatable, Sendable {
     case noVerifiedPendingUpdate
     case stagingFailed
     case stagedAssetMismatch
+    case stagedAssetIdentityChanged
     case sha256VerificationFailed
     case codeSignatureVerificationFailed
     case notarizationVerificationFailed
     case stagingCleanupFailed
+    case recoveryLoadFailed
+    case recoveryPersistenceFailed
+    case handoffReceiptInvalid
+    case handoffReceiptPersistencePending
     case atomicHandoffFailed
 
     var userFacingMessage: String {
@@ -27,6 +34,10 @@ public enum InstallerSelfUpdateFailureCode: String, Equatable, Sendable {
             return "De geverifieerde GitHub Release-feed is niet beschikbaar."
         case .releaseMetadataRejected:
             return "Het releasebewijs is niet geldig of niet vertrouwd."
+        case .sealedReleaseTrustConfigurationAbsent:
+            return "De verzegelde release-trustconfiguratie ontbreekt of is niet geldig."
+        case .trustedUpdaterUnavailable:
+            return "Er is geen vertrouwde installer-updater beschikbaar voor deze release."
         case .currentBundleUnavailable:
             return "De identiteit van deze installer kon niet worden gecontroleerd."
         case .currentBundleIdentityMismatch:
@@ -45,6 +56,8 @@ public enum InstallerSelfUpdateFailureCode: String, Equatable, Sendable {
             return "De installer-update kon niet veilig worden voorbereid."
         case .stagedAssetMismatch:
             return "Het voorbereide updatebestand hoort niet bij de geverifieerde release."
+        case .stagedAssetIdentityChanged:
+            return "Het voorbereide updatebestand is tijdens verificatie gewijzigd."
         case .sha256VerificationFailed:
             return "De SHA-256-controle van de installer-update is mislukt."
         case .codeSignatureVerificationFailed:
@@ -53,6 +66,14 @@ public enum InstallerSelfUpdateFailureCode: String, Equatable, Sendable {
             return "De notarization-controle van de installer-update is niet geldig."
         case .stagingCleanupFailed:
             return "De mislukte installer-update kon niet volledig worden opgeruimd."
+        case .recoveryLoadFailed:
+            return "De niet-geheime installer-herstelstatus kon niet veilig worden gelezen."
+        case .recoveryPersistenceFailed:
+            return "De installer-herstelstatus kon niet duurzaam worden vastgelegd."
+        case .handoffReceiptInvalid:
+            return "De atomische installer-overdracht leverde geen geldig ontvangstbewijs op."
+        case .handoffReceiptPersistencePending:
+            return "De installer-overdracht is uitgevoerd, maar het ontvangstbewijs wacht op duurzaam herstel."
         case .atomicHandoffFailed:
             return "De installer-update kon niet atomair worden geactiveerd en herstart."
         }
@@ -77,6 +98,9 @@ public enum InstallerSelfUpdateMetadataError: Error, Equatable, Sendable {
     case invalidDigest(String)
     case invalidSourceRevision(String)
     case invalidReleaseSequence
+    case invalidFileIdentity
+    case invalidOperationIdentifier(String)
+    case invalidRecoveryRecord
     case releasePageMismatch
     case releaseAssetMismatch
 }
@@ -224,13 +248,39 @@ public struct CurrentInstallerBundleIdentity: Equatable, Sendable {
     }
 }
 
+/// Immutable file-system identity captured by the installer-owned stager.  It
+/// is intentionally an opaque volume/file tuple plus byte count, not a path:
+/// callers cannot redirect verification to a user-provided location.
+public struct StagedInstallerFileIdentity: Codable, Equatable, Sendable {
+    public let volumeReference: String
+    public let fileReference: String
+    public let byteCount: UInt64
+
+    public init(volumeReference: String, fileReference: String, byteCount: UInt64) throws {
+        guard InstallerSelfUpdateValidation.isOpaqueReference(volumeReference),
+              InstallerSelfUpdateValidation.isOpaqueReference(fileReference),
+              byteCount > 0 else {
+            throw InstallerSelfUpdateMetadataError.invalidFileIdentity
+        }
+        self.volumeReference = volumeReference
+        self.fileReference = fileReference
+        self.byteCount = byteCount
+    }
+}
+
 /// Opaque staging identity.  It deliberately cannot carry a filesystem path or
-/// a shell expression into the core coordinator.
-public struct StagedInstallerAsset: Equatable, Sendable {
+/// a shell expression into the core coordinator.  The stager also supplies an
+/// immutable file identity which is checked before and after every verifier.
+public struct StagedInstallerAsset: Codable, Equatable, Sendable {
     public let releaseAssetName: String
     public let opaqueReference: String
+    public let fileIdentity: StagedInstallerFileIdentity
 
-    public init(releaseAssetName: String, opaqueReference: String) throws {
+    public init(
+        releaseAssetName: String,
+        opaqueReference: String,
+        fileIdentity: StagedInstallerFileIdentity
+    ) throws {
         guard InstallerSelfUpdateValidation.isInstallerArchiveName(releaseAssetName) else {
             throw InstallerSelfUpdateMetadataError.invalidAssetName(releaseAssetName)
         }
@@ -239,6 +289,7 @@ public struct StagedInstallerAsset: Equatable, Sendable {
         }
         self.releaseAssetName = releaseAssetName
         self.opaqueReference = opaqueReference
+        self.fileIdentity = fileIdentity
     }
 }
 
@@ -264,6 +315,13 @@ public protocol InstallerUpdateStaging: Sendable {
     func discardStagedInstallerUpdate(
         _ stagedAsset: StagedInstallerAsset
     ) async -> Result<Void, InstallerSelfUpdateFailure>
+
+    /// Re-reads the immutable file identity without exposing a raw path.  The
+    /// coordinator calls this before verification, after every verifier and
+    /// immediately before handoff to reject a staged-file replacement.
+    func inspectStagedInstallerAssetIdentity(
+        _ stagedAsset: StagedInstallerAsset
+    ) async -> Result<StagedInstallerFileIdentity, InstallerSelfUpdateFailure>
 }
 
 /// Performs independent integrity checks on a staged installer bundle.  Each
@@ -291,10 +349,11 @@ public protocol StagedInstallerArtifactVerifying: Sendable {
 /// the old process to exit.  Product component updates remain outside this API.
 public protocol InstallerAtomicHandoffPerforming: Sendable {
     func handOffAtomicallyAndRelaunch(
+        operation: InstallerSelfUpdateOperationIdentity,
         currentBundle: CurrentInstallerBundleIdentity,
         stagedAsset: StagedInstallerAsset,
         release: VerifiedInstallerReleaseRecord
-    ) async -> Result<Void, InstallerSelfUpdateFailure>
+    ) async -> Result<InstallerSelfUpdateHandoffReceipt, InstallerSelfUpdateFailure>
 }
 
 /// Result of enforcing the startup invariant: this process may only proceed
@@ -311,12 +370,13 @@ public enum InstallerSelfUpdateEnforcementResult: Equatable, Sendable {
 /// It has no product-component, venv, migration, service, provider, or database
 /// authority.  Every collaborator is injected so the security-sensitive native
 /// operations can be tested without real URLs, credentials, or system changes.
-public actor VerifiedInstallerSelfUpdateCoordinator: InstallerWizardCoordinator {
+public actor VerifiedInstallerSelfUpdateCoordinator: TrustedInstallerRuntime {
     private let releaseFeed: any SignedInstallerReleaseFeedVerifying
     private let currentBundleInspector: any CurrentInstallerBundleInspecting
     private let staging: any InstallerUpdateStaging
     private let artifactVerifier: any StagedInstallerArtifactVerifying
     private let atomicHandoff: any InstallerAtomicHandoffPerforming
+    private let recoveryStore: any InstallerSelfUpdateRecoveryStoring
 
     private var pendingUpdate: PendingUpdate?
 
@@ -325,17 +385,26 @@ public actor VerifiedInstallerSelfUpdateCoordinator: InstallerWizardCoordinator 
         currentBundleInspector: any CurrentInstallerBundleInspecting,
         staging: any InstallerUpdateStaging,
         artifactVerifier: any StagedInstallerArtifactVerifying,
-        atomicHandoff: any InstallerAtomicHandoffPerforming
+        atomicHandoff: any InstallerAtomicHandoffPerforming,
+        recoveryStore: any InstallerSelfUpdateRecoveryStoring
     ) {
         self.releaseFeed = releaseFeed
         self.currentBundleInspector = currentBundleInspector
         self.staging = staging
         self.artifactVerifier = artifactVerifier
         self.atomicHandoff = atomicHandoff
+        self.recoveryStore = recoveryStore
     }
 
     public func checkForUpdate(currentVersion: InstallerVersion) async -> SelfUpdateCheckResult {
         pendingUpdate = nil
+
+        switch await recoverInterruptedUpdate() {
+        case .success:
+            break
+        case .failure(let failure):
+            return rejected(failure.code)
+        }
 
         switch await releaseFeed.latestVerifiedInstallerRelease() {
         case .success(let latestRelease):
@@ -398,7 +467,25 @@ public actor VerifiedInstallerSelfUpdateCoordinator: InstallerWizardCoordinator 
             return rejected(.rollbackAttempt)
         }
 
-        pendingUpdate = PendingUpdate(release: latestRelease, checkedCurrentBundle: currentBundle)
+        let operation: InstallerSelfUpdateOperationIdentity
+        do {
+            operation = try InstallerSelfUpdateOperationIdentity(release: latestRelease)
+            let recoveryRecord = try InstallerSelfUpdateRecoveryRecord(
+                operation: operation,
+                phase: .updateRequired
+            )
+            guard case .success = await recoveryStore.savePendingSelfUpdate(recoveryRecord) else {
+                return rejected(.recoveryPersistenceFailed)
+            }
+        } catch {
+            return rejected(.recoveryPersistenceFailed)
+        }
+
+        pendingUpdate = PendingUpdate(
+            release: latestRelease,
+            checkedCurrentBundle: currentBundle,
+            operation: operation
+        )
         return .verifiedGitHubRelease(latestRelease.release)
     }
 
@@ -425,16 +512,74 @@ public actor VerifiedInstallerSelfUpdateCoordinator: InstallerWizardCoordinator 
         }
 
         guard stagedAsset.releaseAssetName == pendingUpdate.release.githubAsset.assetName else {
-            return await discardAndFail(stagedAsset, because: .stagedAssetMismatch)
+            return await discardUnrecordedAndFail(stagedAsset, because: .stagedAssetMismatch)
+        }
+        guard await persistRecovery(
+            operation: pendingUpdate.operation,
+            phase: .stagedForVerification,
+            stagedAsset: stagedAsset
+        ) else {
+            return await discardUnrecordedAndFail(stagedAsset, because: .recoveryPersistenceFailed)
+        }
+        guard await stagedAssetIdentityIsCurrent(stagedAsset) else {
+            return await discardAndFail(
+                stagedAsset,
+                operation: pendingUpdate.operation,
+                because: .stagedAssetIdentityChanged
+            )
         }
         guard case .success = await artifactVerifier.verifySHA256(of: stagedAsset, for: pendingUpdate.release) else {
-            return await discardAndFail(stagedAsset, because: .sha256VerificationFailed)
+            return await discardAndFail(
+                stagedAsset,
+                operation: pendingUpdate.operation,
+                because: .sha256VerificationFailed
+            )
+        }
+        guard await stagedAssetIdentityIsCurrent(stagedAsset) else {
+            return await discardAndFail(
+                stagedAsset,
+                operation: pendingUpdate.operation,
+                because: .stagedAssetIdentityChanged
+            )
         }
         guard case .success = await artifactVerifier.verifyCodeSignature(of: stagedAsset, for: pendingUpdate.release) else {
-            return await discardAndFail(stagedAsset, because: .codeSignatureVerificationFailed)
+            return await discardAndFail(
+                stagedAsset,
+                operation: pendingUpdate.operation,
+                because: .codeSignatureVerificationFailed
+            )
+        }
+        guard await stagedAssetIdentityIsCurrent(stagedAsset) else {
+            return await discardAndFail(
+                stagedAsset,
+                operation: pendingUpdate.operation,
+                because: .stagedAssetIdentityChanged
+            )
         }
         guard case .success = await artifactVerifier.verifyNotarization(of: stagedAsset, for: pendingUpdate.release) else {
-            return await discardAndFail(stagedAsset, because: .notarizationVerificationFailed)
+            return await discardAndFail(
+                stagedAsset,
+                operation: pendingUpdate.operation,
+                because: .notarizationVerificationFailed
+            )
+        }
+        guard await stagedAssetIdentityIsCurrent(stagedAsset) else {
+            return await discardAndFail(
+                stagedAsset,
+                operation: pendingUpdate.operation,
+                because: .stagedAssetIdentityChanged
+            )
+        }
+        guard await persistRecovery(
+            operation: pendingUpdate.operation,
+            phase: .verifiedForHandoff,
+            stagedAsset: stagedAsset
+        ) else {
+            return await discardAndFail(
+                stagedAsset,
+                operation: pendingUpdate.operation,
+                because: .recoveryPersistenceFailed
+            )
         }
 
         let currentBundleBeforeHandoff: CurrentInstallerBundleIdentity
@@ -442,22 +587,94 @@ public actor VerifiedInstallerSelfUpdateCoordinator: InstallerWizardCoordinator 
         case .success(let inspectedBundle):
             currentBundleBeforeHandoff = inspectedBundle
         case .failure:
-            return await discardAndFail(stagedAsset, because: .currentBundleUnavailable)
+            return await discardAndFail(
+                stagedAsset,
+                operation: pendingUpdate.operation,
+                because: .currentBundleUnavailable
+            )
         }
         guard currentBundleBeforeHandoff == currentBundle else {
-            return await discardAndFail(stagedAsset, because: .currentBundleChanged)
+            return await discardAndFail(
+                stagedAsset,
+                operation: pendingUpdate.operation,
+                because: .currentBundleChanged
+            )
+        }
+        guard await stagedAssetIdentityIsCurrent(stagedAsset) else {
+            return await discardAndFail(
+                stagedAsset,
+                operation: pendingUpdate.operation,
+                because: .stagedAssetIdentityChanged
+            )
+        }
+        guard await persistRecovery(
+            operation: pendingUpdate.operation,
+            phase: .handoffAttempting
+        ) else {
+            return await discardAndFail(
+                stagedAsset,
+                operation: pendingUpdate.operation,
+                because: .recoveryPersistenceFailed
+            )
+        }
+        let finalCurrentBundle: CurrentInstallerBundleIdentity
+        switch await currentBundleInspector.inspectCurrentInstallerBundle() {
+        case .success(let inspectedBundle):
+            finalCurrentBundle = inspectedBundle
+        case .failure:
+            return await discardAndFail(
+                stagedAsset,
+                operation: pendingUpdate.operation,
+                because: .currentBundleUnavailable
+            )
+        }
+        guard finalCurrentBundle == currentBundle else {
+            return await discardAndFail(
+                stagedAsset,
+                operation: pendingUpdate.operation,
+                because: .currentBundleChanged
+            )
+        }
+        guard await stagedAssetIdentityIsCurrent(stagedAsset) else {
+            return await discardAndFail(
+                stagedAsset,
+                operation: pendingUpdate.operation,
+                because: .stagedAssetIdentityChanged
+            )
         }
 
         switch await atomicHandoff.handOffAtomicallyAndRelaunch(
-            currentBundle: currentBundleBeforeHandoff,
+            operation: pendingUpdate.operation,
+            currentBundle: finalCurrentBundle,
             stagedAsset: stagedAsset,
             release: pendingUpdate.release
         ) {
-        case .success:
+        case .success(let receipt):
+            guard receipt.isValid(for: pendingUpdate.operation) else {
+                _ = await persistRecovery(
+                    operation: pendingUpdate.operation,
+                    phase: .handoffReceiptPending
+                )
+                return failed(.handoffReceiptInvalid)
+            }
+            guard case .success = await recoveryStore.persistHandoffReceipt(receipt) else {
+                _ = await persistRecovery(
+                    operation: pendingUpdate.operation,
+                    phase: .handoffReceiptPending
+                )
+                return failed(.handoffReceiptPersistencePending)
+            }
+            guard case .success = await recoveryStore.clearPendingSelfUpdate(for: pendingUpdate.operation) else {
+                return failed(.handoffReceiptPersistencePending)
+            }
             self.pendingUpdate = nil
             return .relaunching
         case .failure:
-            return await discardAndFail(stagedAsset, because: .atomicHandoffFailed)
+            return await discardAndFail(
+                stagedAsset,
+                operation: pendingUpdate.operation,
+                because: .atomicHandoffFailed
+            )
         }
     }
 
@@ -495,12 +712,102 @@ public actor VerifiedInstallerSelfUpdateCoordinator: InstallerWizardCoordinator 
             && release.sequence > currentBundle.acceptedReleaseSequence
     }
 
-    private func discardAndFail(
+    private func recoverInterruptedUpdate() async -> Result<Void, InstallerSelfUpdateFailure> {
+        let recoveryRecord: InstallerSelfUpdateRecoveryRecord
+        switch await recoveryStore.loadPendingSelfUpdate() {
+        case .success(nil):
+            return .success(())
+        case .success(.some(let record)):
+            recoveryRecord = record
+        case .failure(let failure):
+            return .failure(failure)
+        }
+
+        switch recoveryRecord.phase {
+        case .updateRequired:
+            return await recoveryStore.clearPendingSelfUpdate(for: recoveryRecord.operation)
+        case .handoffAttempting, .handoffReceiptPending:
+            return .failure(InstallerSelfUpdateFailure(.handoffReceiptPersistencePending))
+        case .stagedForVerification, .verifiedForHandoff, .cleanupPending:
+            guard let stagedAsset = recoveryRecord.stagedAsset else {
+                return .failure(InstallerSelfUpdateFailure(.recoveryLoadFailed))
+            }
+            if recoveryRecord.phase != .cleanupPending {
+                guard await persistRecovery(
+                    operation: recoveryRecord.operation,
+                    phase: .cleanupPending,
+                    stagedAsset: stagedAsset
+                ) else {
+                    return .failure(InstallerSelfUpdateFailure(.recoveryPersistenceFailed))
+                }
+            }
+            switch await staging.discardStagedInstallerUpdate(stagedAsset) {
+            case .success:
+                return await recoveryStore.clearPendingSelfUpdate(for: recoveryRecord.operation)
+            case .failure(let failure):
+                return .failure(failure)
+            }
+        }
+    }
+
+    private func stagedAssetIdentityIsCurrent(_ stagedAsset: StagedInstallerAsset) async -> Bool {
+        switch await staging.inspectStagedInstallerAssetIdentity(stagedAsset) {
+        case .success(let observedIdentity):
+            return observedIdentity == stagedAsset.fileIdentity
+        case .failure:
+            return false
+        }
+    }
+
+    private func persistRecovery(
+        operation: InstallerSelfUpdateOperationIdentity,
+        phase: InstallerSelfUpdateRecoveryPhase,
+        stagedAsset: StagedInstallerAsset? = nil
+    ) async -> Bool {
+        do {
+            let record = try InstallerSelfUpdateRecoveryRecord(
+                operation: operation,
+                phase: phase,
+                stagedAsset: stagedAsset
+            )
+            guard case .success = await recoveryStore.savePendingSelfUpdate(record) else {
+                return false
+            }
+            return true
+        } catch {
+            return false
+        }
+    }
+
+    private func discardUnrecordedAndFail(
         _ stagedAsset: StagedInstallerAsset,
         because code: InstallerSelfUpdateFailureCode
     ) async -> SelfUpdateHandoffResult {
         switch await staging.discardStagedInstallerUpdate(stagedAsset) {
         case .success:
+            return failed(code)
+        case .failure:
+            return failed(.stagingCleanupFailed)
+        }
+    }
+
+    private func discardAndFail(
+        _ stagedAsset: StagedInstallerAsset,
+        operation: InstallerSelfUpdateOperationIdentity,
+        because code: InstallerSelfUpdateFailureCode
+    ) async -> SelfUpdateHandoffResult {
+        guard await persistRecovery(
+            operation: operation,
+            phase: .cleanupPending,
+            stagedAsset: stagedAsset
+        ) else {
+            return failed(.recoveryPersistenceFailed)
+        }
+        switch await staging.discardStagedInstallerUpdate(stagedAsset) {
+        case .success:
+            guard case .success = await recoveryStore.clearPendingSelfUpdate(for: operation) else {
+                return failed(.recoveryPersistenceFailed)
+            }
             return failed(code)
         case .failure:
             return failed(.stagingCleanupFailed)
@@ -519,9 +826,10 @@ public actor VerifiedInstallerSelfUpdateCoordinator: InstallerWizardCoordinator 
 private struct PendingUpdate: Sendable {
     let release: VerifiedInstallerReleaseRecord
     let checkedCurrentBundle: CurrentInstallerBundleIdentity
+    let operation: InstallerSelfUpdateOperationIdentity
 }
 
-private enum InstallerSelfUpdateValidation {
+enum InstallerSelfUpdateValidation {
     static func isSHA256(_ value: String) -> Bool {
         value.count == 64 && value.unicodeScalars.allSatisfy(isLowercaseHex)
     }
