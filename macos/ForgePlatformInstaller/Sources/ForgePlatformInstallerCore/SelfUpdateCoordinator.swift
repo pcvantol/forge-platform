@@ -397,6 +397,15 @@ public protocol StagedInstallerArtifactVerifying: Sendable {
         for release: VerifiedInstallerReleaseRecord
     ) async -> Result<Void, InstallerSelfUpdateFailure>
 
+    /// Checks the staged app bundle's sealed provenance against the exact
+    /// descriptor provenance digest.  This is deliberately separate from the
+    /// V2 trust-resource check: both resources are code-signed and both must
+    /// bind to the signed target identity before activation.
+    func verifySealedReleaseProvenance(
+        of stagedAsset: StagedInstallerAsset,
+        for release: VerifiedInstallerReleaseRecord
+    ) async -> Result<Void, InstallerSelfUpdateFailure>
+
     func verifyNotarization(
         of stagedAsset: StagedInstallerAsset,
         for release: VerifiedInstallerReleaseRecord
@@ -681,6 +690,23 @@ public actor VerifiedInstallerSelfUpdateCoordinator: TrustedInstallerRuntime {
                 stagedAsset,
                 operation: pendingUpdate.operation,
                 because: .sealedReleaseTrustConfigurationMismatch
+            )
+        }
+        guard await stagedAssetIdentityIsCurrent(stagedAsset) else {
+            return await discardAndFail(
+                stagedAsset,
+                operation: pendingUpdate.operation,
+                because: .stagedAssetIdentityChanged
+            )
+        }
+        guard case .success = await artifactVerifier.verifySealedReleaseProvenance(
+            of: stagedAsset,
+            for: pendingUpdate.release
+        ) else {
+            return await discardAndFail(
+                stagedAsset,
+                operation: pendingUpdate.operation,
+                because: .sealedReleaseProvenanceMismatch
             )
         }
         guard await stagedAssetIdentityIsCurrent(stagedAsset) else {

@@ -31,7 +31,7 @@ final class SelfUpdateCoordinatorTests: XCTestCase {
         XCTAssertEqual(update, .relaunching)
         XCTAssertEqual(stagedReleaseCount, 1)
         XCTAssertEqual(discardedAssets, [])
-        XCTAssertEqual(verifierCalls, [.sha256, .codeSignature, .sealedReleaseTrustConfiguration, .notarization])
+        XCTAssertEqual(verifierCalls, [.sha256, .codeSignature, .sealedReleaseTrustConfiguration, .sealedReleaseProvenance, .notarization])
         XCTAssertEqual(handoffCallCount, 1)
         XCTAssertEqual(handedOffRelease, release)
         XCTAssertEqual(receiptCount, 1)
@@ -211,6 +211,40 @@ final class SelfUpdateCoordinatorTests: XCTestCase {
         XCTAssertEqual(handoffCalls, 0)
     }
 
+    func testStagedProvenanceMismatchCannotReachNotarizationOrHandoff() async throws {
+        let current = try makeCurrentIdentity(version: "1.0.0", sequence: 10)
+        let release = try makeReleaseRecord(version: "1.1.0", sequence: 11)
+        let stagedAsset = try makeStagedAsset()
+        let verifier = ArtifactVerifierSpy(
+            sealedReleaseProvenanceResult: .failure(
+                InstallerSelfUpdateFailure(.sealedReleaseProvenanceMismatch)
+            )
+        )
+        let handoff = AtomicHandoffSpy(result: .success(()))
+        let coordinator = makeCoordinator(
+            feed: FeedSpy(result: .success(release)),
+            inspector: InspectorSpy(responses: [.success(current), .success(current)]),
+            staging: StagingSpy(result: .success(stagedAsset)),
+            verifier: verifier,
+            handoff: handoff
+        )
+
+        _ = await coordinator.checkForUpdate(currentVersion: current.version)
+        let result = await coordinator.handOffSelfUpdate(release.release)
+        let verifierCalls = await verifier.calls()
+        let handoffCalls = await handoff.callCount()
+
+        XCTAssertEqual(
+            result,
+            .failed(InstallerSelfUpdateFailureCode.sealedReleaseProvenanceMismatch.userFacingMessage)
+        )
+        XCTAssertEqual(
+            verifierCalls,
+            [.sha256, .codeSignature, .sealedReleaseTrustConfiguration, .sealedReleaseProvenance]
+        )
+        XCTAssertEqual(handoffCalls, 0)
+    }
+
     func testExactCurrentVersionWithDifferentSignedTrustConfigurationFailsClosed() async throws {
         let release = try makeReleaseRecord(version: "1.0.0", sequence: 10)
         let current = try makeCurrentIdentity(
@@ -348,7 +382,7 @@ final class SelfUpdateCoordinatorTests: XCTestCase {
             result,
             .failed(InstallerSelfUpdateFailureCode.notarizationVerificationFailed.userFacingMessage)
         )
-        XCTAssertEqual(verifierCalls, [.sha256, .codeSignature, .sealedReleaseTrustConfiguration, .notarization])
+        XCTAssertEqual(verifierCalls, [.sha256, .codeSignature, .sealedReleaseTrustConfiguration, .sealedReleaseProvenance, .notarization])
         XCTAssertEqual(discardedAssets, [stagedAsset])
         XCTAssertEqual(handoffCallCount, 0)
     }
@@ -414,7 +448,7 @@ final class SelfUpdateCoordinatorTests: XCTestCase {
             .failed(InstallerSelfUpdateFailureCode.currentBundleChanged.userFacingMessage)
         )
         XCTAssertEqual(discardedAssets, [stagedAsset])
-        XCTAssertEqual(verifierCalls, [.sha256, .codeSignature, .sealedReleaseTrustConfiguration, .notarization])
+        XCTAssertEqual(verifierCalls, [.sha256, .codeSignature, .sealedReleaseTrustConfiguration, .sealedReleaseProvenance, .notarization])
         XCTAssertEqual(handoffCallCount, 0)
     }
 
@@ -831,12 +865,14 @@ private actor ArtifactVerifierSpy: StagedInstallerArtifactVerifying {
         case sha256
         case codeSignature
         case sealedReleaseTrustConfiguration
+        case sealedReleaseProvenance
         case notarization
     }
 
     private let sha256Result: Result<Void, InstallerSelfUpdateFailure>
     private let codeSignatureResult: Result<Void, InstallerSelfUpdateFailure>
     private let sealedReleaseTrustConfigurationResult: Result<Void, InstallerSelfUpdateFailure>
+    private let sealedReleaseProvenanceResult: Result<Void, InstallerSelfUpdateFailure>
     private let notarizationResult: Result<Void, InstallerSelfUpdateFailure>
     private var recordedCalls: [Call] = []
 
@@ -844,11 +880,13 @@ private actor ArtifactVerifierSpy: StagedInstallerArtifactVerifying {
         sha256Result: Result<Void, InstallerSelfUpdateFailure> = .success(()),
         codeSignatureResult: Result<Void, InstallerSelfUpdateFailure> = .success(()),
         sealedReleaseTrustConfigurationResult: Result<Void, InstallerSelfUpdateFailure> = .success(()),
+        sealedReleaseProvenanceResult: Result<Void, InstallerSelfUpdateFailure> = .success(()),
         notarizationResult: Result<Void, InstallerSelfUpdateFailure> = .success(())
     ) {
         self.sha256Result = sha256Result
         self.codeSignatureResult = codeSignatureResult
         self.sealedReleaseTrustConfigurationResult = sealedReleaseTrustConfigurationResult
+        self.sealedReleaseProvenanceResult = sealedReleaseProvenanceResult
         self.notarizationResult = notarizationResult
     }
 
@@ -874,6 +912,14 @@ private actor ArtifactVerifierSpy: StagedInstallerArtifactVerifying {
     ) async -> Result<Void, InstallerSelfUpdateFailure> {
         recordedCalls.append(.sealedReleaseTrustConfiguration)
         return sealedReleaseTrustConfigurationResult
+    }
+
+    func verifySealedReleaseProvenance(
+        of stagedAsset: StagedInstallerAsset,
+        for release: VerifiedInstallerReleaseRecord
+    ) async -> Result<Void, InstallerSelfUpdateFailure> {
+        recordedCalls.append(.sealedReleaseProvenance)
+        return sealedReleaseProvenanceResult
     }
 
     func verifyNotarization(
