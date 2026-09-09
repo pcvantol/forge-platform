@@ -20,6 +20,7 @@ from forge_platform.component_operations import (  # noqa: E402
     ProductUpdateAssessment,
     QualifiedArtifact,
 )
+from forge_platform.composition_catalog import CatalogPublicationBinding  # noqa: E402
 from forge_platform.universal_installer import (  # noqa: E402
     AcceptedCatalogIdentity,
     COMPOSITION_CATALOG_SCHEMA,
@@ -592,19 +593,49 @@ class UniversalInstallerTests(unittest.TestCase):
                 "digest": MANIFEST_DIGEST,
                 "requires_installer": {"minimum_version": "1.0.0", "capabilities": ["composition/v1"]},
             }],
+            "component_combination_catalog": {
+                "url": "https://github.example.invalid/releases/component-combinations-001.json",
+                "digest": "sha256:" + "8" * 64,
+            },
             "signatures": [dict(FIXTURE_SIGNATURE_ENVELOPE)],
         }
         raw = json.dumps(catalog, sort_keys=True, separators=(",", ":")).encode("utf-8")
+        verifier = FixtureVerifier()
         parsed = CompositionCatalog.from_signed_bytes(
             raw,
-            FixtureVerifier(),
+            verifier,
             signature_policy=FIXTURE_SIGNATURE_POLICY,
         )
         self.assertEqual(parsed.catalog_digest, "sha256:" + sha256(raw).hexdigest())
+        self.assertEqual(
+            parsed.component_combination_catalog,
+            DownloadIdentity(
+                "https://github.example.invalid/releases/component-combinations-001.json",
+                "sha256:" + "8" * 64,
+            ),
+        )
+        self.assertEqual(
+            CatalogPublicationBinding.from_verified_composition_catalog(parsed),
+            parsed.component_combination_catalog_binding(),
+        )
+        self.assertIn(b"component_combination_catalog", verifier.payloads[0])
         self.assertEqual([entry.composition_id for entry in parsed.selectable_entries(current_context(), now=NOW)], ["stable-001"])
         with self.assertRaisesRegex(UniversalInstallerError, "does not match"):
             CompositionCatalog.from_signed_metadata(
                 {**catalog, "sequence": 5},
+                FixtureVerifier(),
+                raw_bytes=raw,
+                signature_policy=FIXTURE_SIGNATURE_POLICY,
+            )
+        with self.assertRaisesRegex(UniversalInstallerError, "does not match"):
+            CompositionCatalog.from_signed_metadata(
+                {
+                    **catalog,
+                    "component_combination_catalog": {
+                        "url": "https://github.example.invalid/releases/component-combinations-other.json",
+                        "digest": "sha256:" + "9" * 64,
+                    },
+                },
                 FixtureVerifier(),
                 raw_bytes=raw,
                 signature_policy=FIXTURE_SIGNATURE_POLICY,
@@ -621,6 +652,45 @@ class UniversalInstallerTests(unittest.TestCase):
         arm_only = trusted_release()
         decision = select_self_update(installed(), [arm_only], channel="stable", architecture="x86_64", now=NOW, release_feed=fresh_release_feed())
         self.assertEqual(decision.state, "SELF_UPDATE_BLOCKED")
+
+    def test_catalog_without_the_new_index_locator_stays_parseable_but_cannot_bind_one(self) -> None:
+        catalog = {
+            "schema": COMPOSITION_CATALOG_SCHEMA,
+            "sequence": 4,
+            "channel": "stable",
+            "published_at": "2026-09-01T00:00:00Z",
+            "expires_at": "2026-10-01T00:00:00Z",
+            "compositions": [{
+                "composition_id": "stable-001",
+                "channel": "stable",
+                "url": "https://github.example.invalid/releases/stable-001.json",
+                "digest": MANIFEST_DIGEST,
+                "requires_installer": {"minimum_version": "1.0.0", "capabilities": ["composition/v1"]},
+            }],
+            "signatures": [dict(FIXTURE_SIGNATURE_ENVELOPE)],
+        }
+        raw = json.dumps(catalog, sort_keys=True, separators=(",", ":")).encode("utf-8")
+        parsed = CompositionCatalog.from_signed_bytes(
+            raw,
+            FixtureVerifier(),
+            signature_policy=FIXTURE_SIGNATURE_POLICY,
+        )
+        self.assertIsNone(parsed.component_combination_catalog)
+        with self.assertRaisesRegex(UniversalInstallerError, "does not declare"):
+            CatalogPublicationBinding.from_verified_composition_catalog(parsed)
+        with self.assertRaisesRegex(TypeError, "verified signed metadata"):
+            CompositionCatalog(
+                sequence=parsed.sequence,
+                channel=parsed.channel,
+                published_at=parsed.published_at,
+                expires_at=parsed.expires_at,
+                entries=parsed.entries,
+                component_combination_catalog=parsed.component_combination_catalog,
+                catalog_digest=parsed.catalog_digest,
+                signatures=parsed.signatures,
+            )
+        with self.assertRaisesRegex(ValueError, "verified CompositionCatalog"):
+            CatalogPublicationBinding.from_verified_composition_catalog(object())
 
     def test_signed_catalog_can_advance_without_replacing_a_compatible_installer(self) -> None:
         initial = selection(sequence=4)

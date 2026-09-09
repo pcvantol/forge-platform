@@ -72,9 +72,14 @@ public side effect is inferred from an unsigned candidate or a lost response.
 The catalog has a versioned, digest-bound selection-index payload,
 `forge-platform.component-combination-catalog/v1`, specified in
 [`universal-installer-component-combination-catalog.schema.json`](../../schemas/universal-installer-component-combination-catalog.schema.json).
-It is an immutable payload whose URL and SHA-256 must be bound by the already
-verified signed catalog; it is not a second trust root and it is not an
-installer package. Its entries bind all of the following:
+The signed outer `forge-platform.composition-catalog/v1` carries its explicit
+optional `component_combination_catalog` locator (`url` plus SHA-256). The
+optional field preserves parsing of older signed catalogs; trying to use the
+component-set selector without the locator fails closed. The production parser
+derives `CatalogPublicationBinding` only from a verified
+`CompositionCatalog`, then checks the index's exact bytes against that signed
+locator. It is not a second trust root and it is not an installer package. Its
+entries bind all of the following:
 
 - a composition identity, numeric selection sequence, exact manifest URL and
   digest;

@@ -15,7 +15,7 @@ the required product-owned evidence and has passed every gate.
 from __future__ import annotations
 
 from contextlib import contextmanager
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 import base64
 import binascii
@@ -861,6 +861,9 @@ class CompositionCatalogEntry:
         )
 
 
+_VERIFIED_COMPOSITION_CATALOG_MARKER = object()
+
+
 @dataclass(frozen=True)
 class CompositionCatalog:
     """A separately signed mutable index of immutable composition bytes."""
@@ -870,8 +873,10 @@ class CompositionCatalog:
     published_at: datetime
     expires_at: datetime
     entries: tuple[CompositionCatalogEntry, ...]
+    component_combination_catalog: DownloadIdentity | None
     catalog_digest: str
     signatures: tuple[PublicSignatureEnvelope, ...]
+    _verification_marker: object = field(default=None, repr=False, compare=False)
 
     def __post_init__(self) -> None:
         _sequence(self.sequence, "composition catalog sequence")
@@ -886,6 +891,11 @@ class CompositionCatalog:
         identities = [entry.composition_id for entry in self.entries]
         if len(identities) != len(set(identities)):
             raise ValueError("composition catalog contains duplicate composition identities")
+        if self.component_combination_catalog is not None and not isinstance(
+            self.component_combination_catalog,
+            DownloadIdentity,
+        ):
+            raise ValueError("composition catalog component-combination locator is invalid")
         _digest(self.catalog_digest, "composition catalog digest")
         if (
             not isinstance(self.signatures, tuple)
@@ -895,6 +905,8 @@ class CompositionCatalog:
             raise ValueError("composition catalog requires public signature envelopes")
         if len({signature.key_id for signature in self.signatures}) != len(self.signatures):
             raise ValueError("composition catalog signature key IDs must be unique")
+        if self._verification_marker is not _VERIFIED_COMPOSITION_CATALOG_MARKER:
+            raise TypeError("CompositionCatalog must be established from verified signed metadata")
 
     @classmethod
     def from_signed_metadata(
@@ -911,11 +923,13 @@ class CompositionCatalog:
         parsed_raw = _strict_json_mapping(raw_bytes, "composition catalog")
         if not isinstance(value, Mapping) or dict(parsed_raw) != dict(value):
             raise UniversalInstallerError("composition catalog object does not match verified catalog bytes")
-        payload = _mapping(
-            value,
-            frozenset({"schema", "sequence", "channel", "published_at", "expires_at", "compositions", "signatures"}),
-            "composition catalog",
-        )
+        legacy_fields = frozenset({
+            "schema", "sequence", "channel", "published_at", "expires_at", "compositions", "signatures",
+        })
+        selection_index_fields = legacy_fields | frozenset({"component_combination_catalog"})
+        if not isinstance(value, Mapping) or frozenset(value) not in {legacy_fields, selection_index_fields}:
+            raise ValueError("composition catalog fields are invalid")
+        payload = value
         if payload["schema"] != COMPOSITION_CATALOG_SCHEMA:
             raise UniversalInstallerError("composition catalog schema is unsupported")
         signatures = parse_public_signature_envelopes(payload["signatures"], label="composition catalog")
@@ -930,14 +944,27 @@ class CompositionCatalog:
         entries = payload["compositions"]
         if not isinstance(entries, list):
             raise ValueError("composition catalog entries must be a list")
+        selection_index = None
+        if "component_combination_catalog" in payload:
+            locator = _mapping(
+                payload["component_combination_catalog"],
+                frozenset({"url", "digest"}),
+                "component-combination catalog locator",
+            )
+            selection_index = DownloadIdentity(
+                _https_url(locator["url"], "component-combination catalog URL"),
+                _digest(locator["digest"], "component-combination catalog digest"),
+            )
         return cls(
-            _sequence(payload["sequence"], "composition catalog sequence"),
-            _required(payload["channel"], "composition catalog channel"),
-            _timestamp(payload["published_at"], "composition catalog published_at"),
-            _timestamp(payload["expires_at"], "composition catalog expires_at"),
-            tuple(CompositionCatalogEntry.from_mapping(entry) for entry in entries),
-            actual,
-            signatures,
+            sequence=_sequence(payload["sequence"], "composition catalog sequence"),
+            channel=_required(payload["channel"], "composition catalog channel"),
+            published_at=_timestamp(payload["published_at"], "composition catalog published_at"),
+            expires_at=_timestamp(payload["expires_at"], "composition catalog expires_at"),
+            entries=tuple(CompositionCatalogEntry.from_mapping(entry) for entry in entries),
+            component_combination_catalog=selection_index,
+            catalog_digest=actual,
+            signatures=signatures,
+            _verification_marker=_VERIFIED_COMPOSITION_CATALOG_MARKER,
         )
 
     @classmethod
@@ -975,6 +1002,18 @@ class CompositionCatalog:
             for entry in self.entries
             if not entry.installer_requirement.unmet_by(installer_context.capabilities)
         )
+
+    def component_combination_catalog_binding(self) -> "CatalogPublicationBinding":
+        """Return the selection-index binding only from this verified catalog.
+
+        The import stays local to avoid a module import cycle: the selection
+        policy consumes :class:`CompositionCatalog`, while the signed catalog
+        remains the sole owner of the upstream verification boundary.
+        """
+
+        from .composition_catalog import CatalogPublicationBinding
+
+        return CatalogPublicationBinding.from_verified_composition_catalog(self)
 
 
 @dataclass(frozen=True)

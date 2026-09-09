@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://github.com/pcvantol/forge-platform/schemas/universal-installer-component-combination-catalog.schema.json",
   "title": "Forge Platform universal installer component-combination catalog",
-  "description": "Immutable, digest-pinned selection index. It is consumed only when an upstream signed installer catalog binds these exact bytes; this payload does not create a second installer release or trust root.",
+  "description": "Immutable, digest-pinned selection index. It is consumed only when the verified outer composition catalog's component_combination_catalog locator binds these exact bytes; this payload does not create a second installer release or trust root.",
   "type": "object",
   "additionalProperties": false,
   "required": ["schema", "sequence", "channel", "published_at", "expires_at", "compositions"],

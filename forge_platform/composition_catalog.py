@@ -7,10 +7,11 @@ catalog feed can bind to an exact SHA-256 payload.  It deliberately does not
 download artifacts, verify signatures, choose a product runtime, or dispatch a
 product operation.
 
-The signature/transport boundary supplies :class:`CatalogPublicationBinding`:
-the binding is expected to be derived from the current signed installer catalog
-after the normal freshness, channel and anti-replay checks.  This module checks
-the next boundary: exact payload bytes, versioned selection semantics,
+The signature/transport boundary supplies :class:`CatalogPublicationBinding`
+through :meth:`CatalogPublicationBinding.from_verified_composition_catalog`.
+That method derives the binding from the current signed installer catalog after
+the normal freshness, channel and anti-replay checks.  This module checks the
+next boundary: exact payload bytes, versioned selection semantics,
 component-set equality, explicit upgrade routes, and installer capability
 minimums.  It therefore remains useful without creating a second installer or
 a second product provisioner.
@@ -121,7 +122,10 @@ def _component_identity(value: object, label: str) -> str:
     return identity
 
 
-@dataclass(frozen=True)
+_CATALOG_PUBLICATION_BINDING_MARKER = object()
+
+
+@dataclass(frozen=True, init=False)
 class CatalogPublicationBinding:
     """Exact non-secret catalog identity issued by the upstream trust boundary.
 
@@ -135,11 +139,49 @@ class CatalogPublicationBinding:
     channel: str
     catalog: DownloadIdentity
 
+    def __init__(
+        self,
+        channel: str,
+        catalog: DownloadIdentity,
+        *,
+        _marker: object = None,
+    ) -> None:
+        if _marker is not _CATALOG_PUBLICATION_BINDING_MARKER:
+            raise TypeError("CatalogPublicationBinding must be derived from a verified CompositionCatalog")
+        object.__setattr__(self, "channel", channel)
+        object.__setattr__(self, "catalog", catalog)
+        self.__post_init__()
+
     def __post_init__(self) -> None:
         if self.channel not in INSTALLER_CHANNELS:
             raise ValueError("published component catalog channel is unsupported")
         if not isinstance(self.catalog, DownloadIdentity):
             raise ValueError("published component catalog requires a digest-pinned identity")
+
+    @classmethod
+    def from_verified_composition_catalog(cls, catalog: object) -> "CatalogPublicationBinding":
+        """Derive the index binding only from a verified signed outer catalog.
+
+        The production path cannot turn a filename, a mutable release URL, or
+        an independently assembled digest into this binding.  The outer
+        :class:`~forge_platform.universal_installer.CompositionCatalog` is
+        constructed only by its signed-metadata parser and carries the locator
+        inside the signed canonical payload.
+        """
+
+        from .universal_installer import CompositionCatalog
+
+        if not isinstance(catalog, CompositionCatalog):
+            raise ValueError("a verified CompositionCatalog is required for a component catalog binding")
+        if not isinstance(catalog.component_combination_catalog, DownloadIdentity):
+            raise UniversalInstallerError(
+                "verified composition catalog does not declare a component-combination catalog locator"
+            )
+        return cls(
+            catalog.channel,
+            catalog.component_combination_catalog,
+            _marker=_CATALOG_PUBLICATION_BINDING_MARKER,
+        )
 
 
 @dataclass(frozen=True)
@@ -337,6 +379,25 @@ class ComponentCombinationCatalog:
         if catalog.channel != binding.channel:
             raise UniversalInstallerError("component combination catalog channel does not match its trusted binding")
         return catalog
+
+    @classmethod
+    def from_verified_composition_catalog_bytes(
+        cls,
+        catalog: object,
+        raw_bytes: bytes,
+    ) -> "ComponentCombinationCatalog":
+        """Parse the index through the verified signed catalog boundary.
+
+        This is the production-facing convenience path.  It avoids callers
+        manually assembling a :class:`CatalogPublicationBinding` and ensures
+        the index locator remains part of the signed outer catalog's canonical
+        bytes.
+        """
+
+        return cls.from_bound_bytes(
+            CatalogPublicationBinding.from_verified_composition_catalog(catalog),
+            raw_bytes,
+        )
 
 
 @dataclass(frozen=True)

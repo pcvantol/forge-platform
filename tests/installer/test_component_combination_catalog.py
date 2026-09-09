@@ -24,9 +24,13 @@ from forge_platform.composition_catalog import (  # noqa: E402
     select_component_combination,
 )
 from forge_platform.universal_installer import (  # noqa: E402
+    COMPOSITION_CATALOG_SCHEMA,
+    CompositionCatalog,
     DownloadIdentity,
     InstallerCapabilitySet,
+    PublicSignatureEnvelope,
     SemanticVersion,
+    SignatureThresholdPolicy,
     UniversalInstallerError,
 )
 
@@ -39,6 +43,29 @@ CORE_CAPABILITIES = frozenset({
     "component-provisioner/engineering-platform-server/v1",
 })
 EXECUTION_AGENT_CAPABILITY = "component-provisioner/engineering-platform-execution-agent/v1"
+OUTER_CATALOG_SIGNATURE_ENVELOPE = {
+    "algorithm": "ed25519",
+    "key_id": "component-catalog-fixture-key",
+    "signature": "A" * 86,
+}
+OUTER_CATALOG_SIGNATURE = PublicSignatureEnvelope.from_mapping(OUTER_CATALOG_SIGNATURE_ENVELOPE)
+OUTER_CATALOG_SIGNATURE_POLICY = SignatureThresholdPolicy(
+    algorithm="ed25519",
+    trusted_key_ids=frozenset({"component-catalog-fixture-key"}),
+    threshold=1,
+)
+
+
+class OuterCatalogFixtureVerifier:
+    def verify(
+        self,
+        canonical_payload: bytes,
+        signatures: tuple[PublicSignatureEnvelope, ...],
+        *,
+        policy: SignatureThresholdPolicy,
+    ) -> bool:
+        del canonical_payload
+        return policy == OUTER_CATALOG_SIGNATURE_POLICY and signatures == (OUTER_CATALOG_SIGNATURE,)
 
 
 def component(identity: str, *capabilities: str) -> dict[str, object]:
@@ -104,11 +131,45 @@ def catalog(
     expires_at: datetime | None = None,
 ) -> ComponentCombinationCatalog:
     raw = catalog_raw(entries, sequence=sequence, expires_at=expires_at)
-    binding = CatalogPublicationBinding(
-        "stable",
-        DownloadIdentity(CATALOG_URL, "sha256:" + sha256(raw).hexdigest()),
+    return ComponentCombinationCatalog.from_verified_composition_catalog_bytes(
+        verified_outer_catalog(raw),
+        raw,
     )
-    return ComponentCombinationCatalog.from_bound_bytes(binding, raw)
+
+
+def verified_outer_catalog(
+    index_raw: bytes,
+    *,
+    index_digest: str | None = None,
+) -> CompositionCatalog:
+    payload = {
+        "schema": COMPOSITION_CATALOG_SCHEMA,
+        "sequence": 7,
+        "channel": "stable",
+        "published_at": "2026-09-01T00:00:00Z",
+        "expires_at": "2026-10-01T00:00:00Z",
+        "compositions": [{
+            "composition_id": "outer-catalog-fixture",
+            "channel": "stable",
+            "url": "https://manifest.example.invalid/outer-catalog-fixture.json",
+            "digest": "sha256:" + "f" * 64,
+            "requires_installer": {
+                "minimum_version": "1.0.0",
+                "capabilities": ["composition/v1"],
+            },
+        }],
+        "component_combination_catalog": {
+            "url": CATALOG_URL,
+            "digest": index_digest or ("sha256:" + sha256(index_raw).hexdigest()),
+        },
+        "signatures": [dict(OUTER_CATALOG_SIGNATURE_ENVELOPE)],
+    }
+    raw = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    return CompositionCatalog.from_signed_bytes(
+        raw,
+        OuterCatalogFixtureVerifier(),
+        signature_policy=OUTER_CATALOG_SIGNATURE_POLICY,
+    )
 
 
 def installer(*, version: str = "1.1.0", capabilities: frozenset[str] = CORE_CAPABILITIES) -> CatalogInstallerContext:
@@ -128,6 +189,24 @@ FORGE_EP_COMPONENTS = [
 
 
 class ComponentCombinationCatalogTests(unittest.TestCase):
+    def test_index_can_be_fetched_only_through_a_verified_signed_outer_catalog(self) -> None:
+        raw_index = catalog_raw([entry("forge-ep-stable-001", 1, FORGE_EP_COMPONENTS)])
+        outer_catalog = verified_outer_catalog(raw_index)
+
+        parsed = ComponentCombinationCatalog.from_verified_composition_catalog_bytes(
+            outer_catalog,
+            raw_index,
+        )
+        self.assertEqual(parsed.sequence, 4)
+        self.assertEqual(parsed.catalog_digest, "sha256:" + sha256(raw_index).hexdigest())
+        with self.assertRaisesRegex(UniversalInstallerError, "do not match the trusted catalog digest"):
+            ComponentCombinationCatalog.from_verified_composition_catalog_bytes(
+                outer_catalog,
+                raw_index + b" ",
+            )
+        with self.assertRaisesRegex(ValueError, "verified CompositionCatalog"):
+            ComponentCombinationCatalog.from_verified_composition_catalog_bytes(object(), raw_index)
+
     def test_selects_newest_exact_compatible_combination_without_a_new_installer_bundle(self) -> None:
         parsed = catalog([
             entry("forge-ep-stable-001", 1, FORGE_EP_COMPONENTS),
@@ -243,12 +322,14 @@ class ComponentCombinationCatalogTests(unittest.TestCase):
         entries = [entry("forge-ep-stable-001", 1, FORGE_EP_COMPONENTS)]
         raw = catalog_raw(entries, sequence=4)
         with self.assertRaisesRegex(UniversalInstallerError, "do not match the trusted catalog digest"):
-            ComponentCombinationCatalog.from_bound_bytes(
-                CatalogPublicationBinding(
-                    "stable",
-                    DownloadIdentity(CATALOG_URL, "sha256:" + "0" * 64),
-                ),
+            ComponentCombinationCatalog.from_verified_composition_catalog_bytes(
+                verified_outer_catalog(raw, index_digest="sha256:" + "0" * 64),
                 raw,
+            )
+        with self.assertRaisesRegex(TypeError, "derived from a verified CompositionCatalog"):
+            CatalogPublicationBinding(
+                "stable",
+                DownloadIdentity(CATALOG_URL, "sha256:" + "0" * 64),
             )
 
         accepted = catalog(entries, sequence=4)
@@ -284,12 +365,11 @@ class ComponentCombinationCatalogTests(unittest.TestCase):
             "capabilities": [CATALOG_COMPONENT_SELECTION_CAPABILITY],
         }
         raw = catalog_raw([invalid])
-        binding = CatalogPublicationBinding(
-            "stable",
-            DownloadIdentity(CATALOG_URL, "sha256:" + sha256(raw).hexdigest()),
-        )
         with self.assertRaisesRegex(ValueError, "component capabilities"):
-            ComponentCombinationCatalog.from_bound_bytes(binding, raw)
+            ComponentCombinationCatalog.from_verified_composition_catalog_bytes(
+                verified_outer_catalog(raw),
+                raw,
+            )
 
     def test_expired_catalog_cannot_be_selected(self) -> None:
         parsed = catalog(
