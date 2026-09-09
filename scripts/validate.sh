@@ -13,6 +13,7 @@ python3 tests/component_operations/test_component_operations.py
 python3 tests/component_operations/test_durable_component_operations.py
 python3 tests/component_operations/test_ep_oi3_readback_decoder.py
 python3 tests/installer/test_universal_installer.py
+python3 scripts/validate_installer_version.py
 python3 scripts/advance_product_version.py --check
 python3 docs/ai-development/validate_projection.py \
   --profile forge-platform \

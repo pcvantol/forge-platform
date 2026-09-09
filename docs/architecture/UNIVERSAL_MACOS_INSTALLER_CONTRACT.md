@@ -15,7 +15,7 @@ Forge Platform defines two separately versioned immutable artifact types; their 
 
 There is deliberately **not** one installer package per Forge/EP/Workspace combination. One installer can consume many immutable compositions. Each composition declares a minimum installer version and named capabilities. A new component, such as a separate Execution Agent, needs a new installer release only when it needs a new component type, provisioner-adapter protocol, UI semantic, or other new capability. Its composition requires that capability; an older installer updates first or rejects the composition.
 
-Product version, installer version, composition identity, protocol/schema versions, source revision, and artifact digest remain separate values.
+Product version, installer version, composition identity, protocol/schema versions, source revision, and artifact digest remain separate values. `installer-version.json` is the sole source for the native installer version/channel/capability projection; it is deliberately independent of Forge Platform's `product-version.json` composition-release version.
 
 ## Mandatory self-update
 

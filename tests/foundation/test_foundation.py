@@ -52,6 +52,8 @@ REQUIRED = (
     "macos/ForgePlatformInstaller/Sources/ForgePlatformInstallerCore/InstallerDomain.swift",
     "macos/ForgePlatformInstaller/Tests/ForgePlatformInstallerCoreTests/InstallerDomainTests.swift",
     ".github/workflows/macos-installer-validation.yml",
+    "installer-version.json",
+    "scripts/validate_installer_version.py",
 )
 
 
@@ -75,6 +77,9 @@ def main() -> None:
     installer_composition = json.loads((ROOT / "schemas/universal-installer-composition.schema.json").read_text())
     if installer_composition["title"] != "Forge Platform universal installer composition":
         raise SystemExit("universal installer composition schema identity is invalid")
+    installer_version = json.loads((ROOT / "installer-version.json").read_text())
+    if installer_version.get("product") != "forge-platform-installer":
+        raise SystemExit("installer version authority is invalid")
 
     extension = (ROOT / "docs/development/FORGE_PLATFORM_DEVELOPMENT_EXTENSION.md").read_text()
     if "generic branch" not in extension:

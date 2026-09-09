@@ -1,0 +1,11 @@
+{
+  "capabilities": [
+    "composition/v1",
+    "provider-gate/v1",
+    "system-launchdaemon/v1"
+  ],
+  "channel": "stable",
+  "product": "forge-platform-installer",
+  "schema": "forge-platform.installer-version/v1",
+  "version": "0.1.0"
+}
