@@ -44,9 +44,8 @@ Co-location and loopback do not remove authentication, pairing or authorization.
 
 ## Server-operational invariants
 
-Each server is a headless, independently restartable installed service with a product-owned runtime storage root outside source/Git checkouts. Its versioned HTTP API is a transport adapter over interface-neutral application services; direct cross-product SQL and shared databases are prohibited. On macOS the product publishes a launchd service contract; Forge Platform orchestrates its lifecycle but does not become its runtime authority. Product storage contains its own SQL database and product-owned files, artifacts, logs, backups and cache, with permissions, retention, migration and recovery defined by the product owner.
+Each server is a headless, independently restartable installed service with a product-owned runtime storage root outside source/Git checkouts. Its versioned HTTP API is a transport adapter over interface-neutral application services; direct cross-product SQL and shared databases are prohibited. On macOS the product publishes a launchd service contract; Forge Platform coordinates only product-owned lifecycle requests and correlated readbacks, never service registration or runtime authority. Product storage contains its own SQL database and product-owned files, artifacts, logs, backups and cache, with permissions, retention, migration and recovery defined by the product owner.
 
 ## Delivery sequencing
 
 The first Forge → EP → Forge autonomy canary needs only the minimum seams: installed Forge/EP service storage and stable identity, their versioned authenticated HTTP contract, an explicitly configured/pinned EP binding, and restart-safe recovery. It does **not** require Workspace UI, LAN discovery or the universal installer to be complete. Network discovery, full pairing UX, all topology combinations, Workspace Client distribution and installer productization are post-canary capabilities; they must preserve these seams.
-

@@ -1,6 +1,6 @@
 # Forge Platform
 
-Forge Platform is the canonical, first-class repository for cross-product distribution, deployment, installation, update, repair, uninstall, component compatibility, and installation-topology orchestration across the Forge product family. It is a peer of [Forge](https://github.com/pcvantol/forge), [Workspace](https://github.com/pcvantol/workspace), [Engineering Platform](https://github.com/pcvantol/engineering-platform), and [Technical Debt Engine](https://github.com/pcvantol/technical-debt-engine); it is not a subdirectory of Forge or an Engineering Platform installer folder.
+Forge Platform is the canonical, first-class repository for cross-product distribution, deployment, compatible-composition and product-provisioner coordination for installation, update, repair and uninstall, component compatibility, and installation-topology orchestration across the Forge product family. It is a peer of [Forge](https://github.com/pcvantol/forge), [Workspace](https://github.com/pcvantol/workspace), [Engineering Platform](https://github.com/pcvantol/engineering-platform), and [Technical Debt Engine](https://github.com/pcvantol/technical-debt-engine); it is not a subdirectory of Forge or an Engineering Platform installer folder.
 
 ## Status
 
@@ -17,7 +17,7 @@ change product runtime behavior.
 
 ## Boundary
 
-Forge Platform consumes qualified, versioned artifacts published by product repositories and composes them into compatible installations. It does not rebuild their source or own Forge, Workspace, Engineering Platform, Project Agent, TDE, generic AI-development governance, or Knowledge Base behavior.
+Forge Platform consumes qualified, versioned artifacts published by product repositories and composes compatible provisioning requests and receipts. It does not rebuild their source or own product-local provisioning: for EP, its resolver/provisioner alone owns runtime and service selection, data compatibility, migration, rollback and cleanup. Forge Platform also does not own Forge, Workspace, Engineering Platform, Project Agent, TDE, generic AI-development governance, or Knowledge Base behavior.
 
 ## Entrypoints
 

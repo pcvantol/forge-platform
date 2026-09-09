@@ -8,7 +8,7 @@ Forge, Workspace, Engineering Platform, Forge Platform, TDE, AI Development Cont
 
 Forge owns planning and engineering intent. Workspace owns shared control-plane/product-team state and human UX. Engineering Platform owns execution admission, scheduling, execution, validation, qualification, and evidence. Its Project Agent is an Engineering Platform component. TDE remains a standalone product authority; AI Development Contracts remains generic-contract authority; the Knowledge Base remains knowledge-lifecycle authority.
 
-Forge Platform owns only universal distribution, deployment composition, artifact verification, compatibility declarations, and installation lifecycle. It composes independently published artifacts and never becomes a hidden source monolith or product-runtime authority.
+Forge Platform owns only universal distribution, deployment composition, artifact verification, compatibility declarations, and coordination of product-owned installation lifecycle operations. It composes independently published artifacts and never becomes a hidden source monolith, product-runtime authority, or product-local installation provisioner.
 
 ## Consequences
 

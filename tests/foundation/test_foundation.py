@@ -117,6 +117,8 @@ def main() -> None:
         "system-domain `LaunchDaemon`",
         "Codex CLI and GitHub CLI",
         "SINGLE_OPERATIONAL_INSTALLATION_VERIFIED",
+        "EP-owned resolver/provisioner",
+        "Forge Platform must not add a second EP provisioner",
     ):
         if required_term not in universal_installer:
             raise SystemExit(f"universal installer contract is missing canonical term: {required_term}")

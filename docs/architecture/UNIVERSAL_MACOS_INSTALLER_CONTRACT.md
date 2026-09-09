@@ -72,6 +72,12 @@ An existing per-user EP `LaunchAgent` to system-domain transition is an EP-owned
 
 The installer reads product-owned inventory and update assessments through the component-operation delegation contract. It never infers an active component from a filename, wheel cache, arbitrary venv, `PATH`, service label, or HTTP reachability alone. A product readback identifies selected runtime, executable, server, instance, and identity-aware health evidence. For EP, a single operational installation also requires machine-wide inventory coverage and no conflict.
 
+For EP, Forge Platform's boundary ends at an exact artifact/role request and the
+EP-owned resolver/provisioner's correlated readback, update assessment and
+execute/resume receipt. EP alone owns its installation record, runtime and
+service selection, data compatibility, backup, migration, rollback, cleanup,
+and operational lock; Forge Platform must not add a second EP provisioner.
+
 | Observed state | Candidate action |
 | --- | --- |
 | component absent | product-owned install of the exact artifact |
@@ -83,7 +89,7 @@ The installer reads product-owned inventory and update assessments through the c
 
 No product mutation is dispatched until self-update, installer capability, preflight, managed-tool, provider, manifest, and component-diff gates pass. A managed Git/Python install or upgrade forces a completed managed-tool receipt and fresh post-tool plan fingerprint before the journal can enter product operations. The installer keeps an operation-specific non-secret journal outside product CENTRAL/data stores. It serializes one non-terminal host operation, records operation ID, installer/composition/artifact identities, state transitions, typed receipt references, and cleanup/recovery state; it never records tokens, credentials, raw provider output, or arbitrary paths.
 
-The composition-level saga is `composition lock → exact artifact staging → product readback/compatibility → product quiesce/backup/migrate/activate/verify/cleanup → authenticated discovery/pairing → cross-component readiness → receipt`.
+The composition-level saga is `composition lock → exact artifact staging → product readback/compatibility → product-owned quiesce/backup/migrate/activate/verify/cleanup → authenticated discovery/pairing → cross-component readiness → receipt`.
 
 Products own installation locks, backup, database migration, activation, service registration, health-content validation, rollback, cleanup, and crash/reboot resume. Forge Platform does not write product data or implement a second migration/rollback engine. Automatic rollback is offered only when affected products supply compatible rollback/restore receipts. An irreversible migration failure remains `RECOVERY_PENDING`, with necessary product recovery artifacts retained. Installer cleanup covers only its own staging/download/cache material; product backup retention is owned by the product contract.
 
