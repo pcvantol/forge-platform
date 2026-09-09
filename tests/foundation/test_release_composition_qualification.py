@@ -38,3 +38,11 @@ class ReleaseCompositionQualificationTests(unittest.TestCase):
             MODULE.qualify(self.write(valid()), "2.3.1", SHA)
         with self.assertRaises(ValueError):
             MODULE.qualify(self.write(valid()), "2.3.0", "not-a-sha")
+
+    def test_readback_requires_the_exact_qualified_artifact_bytes(self):
+        payload, bytes_ = valid(), b"qualified producer artifact"
+        payload["components"][0]["artifact"]["digest"] = "sha256:" + __import__("hashlib").sha256(bytes_).hexdigest()
+        manifest = self.write(payload)
+        self.assertTrue(MODULE.verify_artifacts(manifest, "2.3.0", SHA, fetch=lambda _source: bytes_).startswith("sha256:"))
+        with self.assertRaisesRegex(ValueError, "digest"):
+            MODULE.verify_artifacts(manifest, "2.3.0", SHA, fetch=lambda _source: b"other bytes")
