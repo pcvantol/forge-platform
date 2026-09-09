@@ -369,8 +369,8 @@ private struct ProviderRow: View {
                         .foregroundStyle(.secondary)
                 }
 
-                if case .failed(let reason) = provider.state {
-                    FailureCallout(reason: reason)
+                if case .failed(let failure) = provider.state {
+                    FailureCallout(reason: failure.userFacingMessage)
                 }
 
                 if let action = nextAction(for: provider) {
