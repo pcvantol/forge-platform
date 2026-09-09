@@ -2,63 +2,79 @@ import XCTest
 @testable import ForgePlatformInstallerCore
 
 final class ProviderDomainGatingTests: XCTestCase {
-    func testUnprojectedProviderRequirementsFailClosedWithNoProviderRows() throws {
-        var state = InstallerWizardState(currentInstallerVersion: try InstallerVersion("1.2.3"))
-        state.step = .providers
+    func testNoProviderProjectionOrProviderActionExistsBeforeAcceptedSessionPlan() throws {
+        var state = try compositionSelectionState()
 
         XCTAssertEqual(state.providerRequirementsProjection, .pending)
         XCTAssertFalse(state.providerRequirementsAreProjected)
         XCTAssertTrue(state.providers.isEmpty)
         XCTAssertFalse(state.enabledProvidersVerified)
+        XCTAssertFalse(state.setProviderSelected(.codex, isSelected: true))
+        XCTAssertFalse(state.requestProviderAction(.install, for: .codex))
         XCTAssertFalse(state.canAdvance)
     }
 
-    func testExplicitEmptyProjectionAllowsAQualifiedProviderFreeProfile() throws {
-        var state = InstallerWizardState(
-            currentInstallerVersion: try InstallerVersion("1.2.3"),
-            providerRequirements: []
-        )
-        state.step = .providers
+    func testExplicitEmptySessionPlanAllowsOnlyAQualifiedProviderFreeProfileAfterPreflight() throws {
+        var state = try acceptedSessionState([])
 
-        XCTAssertEqual(state.providerRequirementsProjection, .projected)
         XCTAssertTrue(state.providerRequirementsAreProjected)
+        XCTAssertTrue(state.providers.isEmpty)
+        XCTAssertTrue(state.advance())
+        XCTAssertEqual(state.step, .preflight)
+        XCTAssertFalse(state.canAdvance)
+
+        state.preflight = passedPreflight()
+        XCTAssertTrue(state.advance())
+        XCTAssertEqual(state.step, .providers)
         XCTAssertTrue(state.enabledProviders.isEmpty)
         XCTAssertTrue(state.enabledProvidersVerified)
         XCTAssertTrue(state.canAdvance)
     }
 
-    func testProjectionAPIRequiresUniqueProviderIdentitiesAndFailsClosedWhenRejected() throws {
-        var state = InstallerWizardState(currentInstallerVersion: try InstallerVersion("1.2.3"))
-        state.step = .providers
-
-        XCTAssertFalse(state.applyProviderRequirementsProjection([
-            ProviderRequirement(provider: .codex, isRequired: true),
-            ProviderRequirement(provider: .codex, isRequired: false),
-        ]))
-
-        XCTAssertEqual(state.providerRequirementsProjection, .rejected)
-        XCTAssertTrue(state.providers.isEmpty)
-        XCTAssertFalse(state.enabledProvidersVerified)
-        XCTAssertFalse(state.canAdvance)
+    func testSessionPlanRejectsUnsafeOrAmbiguousProviderProjectionBeforeStateCanAcceptIt() throws {
+        XCTAssertThrowsError(
+            try makeSessionPlan(sessionID: "../session", requirements: [])
+        ) { error in
+            XCTAssertEqual(error as? VerifiedCompositionSessionPlanError, .invalidSessionID)
+        }
+        XCTAssertThrowsError(
+            try VerifiedCompositionSessionPlan(
+                sessionID: "session-1",
+                compositionIdentity: "forge-platform-complete-v1",
+                manifestSHA256: "sha256:" + String(repeating: "a", count: 64),
+                catalogSequence: 1,
+                catalogSHA256: "sha256:" + String(repeating: "b", count: 64),
+                providerRequirements: [
+                    ProviderRequirement(provider: .codex, isRequired: true),
+                    ProviderRequirement(provider: .codex, isRequired: false),
+                ]
+            )
+        ) { error in
+            XCTAssertEqual(error as? VerifiedCompositionSessionPlanError, .duplicateProviderRequirement)
+        }
     }
 
-    func testProviderRequirementsProjectionCannotReplaceAnUnverifiedRequiredProvider() throws {
-        var state = InstallerWizardState(currentInstallerVersion: try InstallerVersion("1.2.3"))
-        state.step = .providers
+    func testAcceptedSessionPlanProjectsProvidersAtomicallyAndCannotBeReplaced() throws {
+        var state = try compositionSelectionState()
+        let firstPlan = try makeSessionPlan(
+            sessionID: "session-1",
+            requirements: [ProviderRequirement(provider: .codex, isRequired: true)]
+        )
+        let replacementPlan = try makeSessionPlan(
+            sessionID: "session-2",
+            requirements: [ProviderRequirement(provider: .githubCLI, isRequired: true)]
+        )
 
-        XCTAssertTrue(state.applyProviderRequirementsProjection([
-            ProviderRequirement(provider: .codex, isRequired: true),
-        ]))
-        XCTAssertFalse(state.enabledProvidersVerified)
-        XCTAssertFalse(state.canAdvance)
-
-        XCTAssertFalse(state.applyProviderRequirementsProjection([]))
-
-        XCTAssertEqual(state.providerRequirementsProjection, .projected)
+        XCTAssertTrue(state.beginSessionPreparation())
+        XCTAssertTrue(state.recordSessionPreparation(.prepared(firstPlan)))
+        XCTAssertEqual(state.acceptedSessionPlan, firstPlan)
         XCTAssertEqual(state.providers.map(\.id), [.codex])
-        XCTAssertTrue(state.providers[0].requirement.isRequired)
-        XCTAssertFalse(state.enabledProvidersVerified)
-        XCTAssertFalse(state.canAdvance)
+        XCTAssertEqual(state.providerRequirementsProjection, .projected)
+
+        XCTAssertFalse(state.beginSessionPreparation())
+        XCTAssertFalse(state.recordSessionPreparation(.prepared(replacementPlan)))
+        XCTAssertEqual(state.acceptedSessionPlan, firstPlan)
+        XCTAssertEqual(state.providers.map(\.id), [.codex])
     }
 
     func testRequiredProviderCannotBeDeselected() throws {
@@ -132,7 +148,32 @@ final class ProviderDomainGatingTests: XCTestCase {
         XCTAssertTrue(state.enabledProvidersVerified)
         XCTAssertTrue(state.canAdvance)
         XCTAssertTrue(state.advance())
+        XCTAssertEqual(state.step, .review)
+    }
+
+    func testProviderActionsAreRejectedOutsideTheAcceptedPreflightAndProviderStepAndCannotBeOrphaned() throws {
+        var state = try acceptedSessionState([
+            ProviderRequirement(provider: .codex, isRequired: true),
+        ])
+
         XCTAssertEqual(state.step, .composition)
+        XCTAssertFalse(state.requestProviderAction(.install, for: .codex))
+        XCTAssertTrue(state.advance())
+        XCTAssertEqual(state.step, .preflight)
+        state.preflight = passedPreflight()
+        XCTAssertFalse(state.requestProviderAction(.install, for: .codex))
+        XCTAssertTrue(state.advance())
+        XCTAssertEqual(state.step, .providers)
+        XCTAssertTrue(state.requestProviderAction(.install, for: .codex))
+
+        XCTAssertFalse(state.canGoBack)
+        XCTAssertFalse(state.goBack())
+        XCTAssertEqual(state.step, .providers)
+        state.applyProviderActionResult(.installationReady, for: .codex, action: .install)
+        XCTAssertEqual(state.providers[0].state, .authenticationRequired)
+        XCTAssertTrue(state.canGoBack)
+        XCTAssertTrue(state.goBack())
+        XCTAssertEqual(state.step, .preflight)
     }
 
     func testUnrequestedSuccessResultCannotMarkAProviderVerified() throws {
@@ -168,13 +209,41 @@ final class ProviderDomainGatingTests: XCTestCase {
         XCTAssertFalse(state.canAdvance)
     }
 
-    private func providerState(_ requirements: [ProviderRequirement]) throws -> InstallerWizardState {
-        var state = InstallerWizardState(
-            currentInstallerVersion: try InstallerVersion("1.2.3"),
-            providerRequirements: requirements
-        )
-        state.step = .providers
+    func testUnavailableCoordinatorReturnsTypedCompositionSessionResult() async {
+        let result = await UnavailableInstallerWizardCoordinator().prepareVerifiedCompositionSession()
+
+        XCTAssertEqual(result, .unavailable(.coordinatorUnavailable))
+        XCTAssertFalse(InstallerSessionPreparationFailure.coordinatorUnavailable.userFacingMessage.contains("coordinator-unavailable"))
+    }
+
+    private func compositionSelectionState() throws -> InstallerWizardState {
+        var state = InstallerWizardState(currentInstallerVersion: try InstallerVersion("1.2.3"))
+        state.recordSelfUpdateCheck(.verifiedGitHubRelease(try makeRelease("1.2.3")))
+        XCTAssertTrue(state.advance())
+        XCTAssertEqual(state.step, .composition)
         return state
+    }
+
+    private func acceptedSessionState(_ requirements: [ProviderRequirement]) throws -> InstallerWizardState {
+        var state = try compositionSelectionState()
+        XCTAssertTrue(state.beginSessionPreparation())
+        XCTAssertTrue(state.recordSessionPreparation(.prepared(try makeSessionPlan(requirements: requirements))))
+        return state
+    }
+
+    private func providerState(_ requirements: [ProviderRequirement]) throws -> InstallerWizardState {
+        var state = try acceptedSessionState(requirements)
+        XCTAssertTrue(state.advance())
+        state.preflight = passedPreflight()
+        XCTAssertTrue(state.advance())
+        XCTAssertEqual(state.step, .providers)
+        return state
+    }
+
+    private func passedPreflight() -> HostPreflight {
+        HostPreflight(checks: [
+            PreflightCheck(id: "session-host", title: "Sessiehost", detail: "Geverifieerd", state: .passed),
+        ])
     }
 
     private func verify(_ provider: ProviderID, in state: inout InstallerWizardState) {
@@ -183,5 +252,29 @@ final class ProviderDomainGatingTests: XCTestCase {
         XCTAssertTrue(state.requestProviderAction(.authenticate, for: provider))
         state.applyProviderActionResult(.verified, for: provider, action: .authenticate)
         XCTAssertEqual(state.providers.first(where: { $0.id == provider })?.state, .verified)
+    }
+
+    private func makeSessionPlan(
+        sessionID: String = "session-1",
+        requirements: [ProviderRequirement]
+    ) throws -> VerifiedCompositionSessionPlan {
+        try VerifiedCompositionSessionPlan(
+            sessionID: sessionID,
+            compositionIdentity: "forge-platform-complete-v1",
+            manifestSHA256: "sha256:" + String(repeating: "a", count: 64),
+            catalogSequence: 1,
+            catalogSHA256: "sha256:" + String(repeating: "b", count: 64),
+            providerRequirements: requirements
+        )
+    }
+
+    private func makeRelease(_ version: String) throws -> VerifiedInstallerRelease {
+        VerifiedInstallerRelease(
+            version: try InstallerVersion(version),
+            releasePage: "https://github.com/pcvantol/forge-platform/releases/tag/installer-v\(version)",
+            assetName: "ForgePlatformInstaller.app.zip",
+            sha256: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+            signingKeyID: "forge-platform-installer-release-v1"
+        )
     }
 }
