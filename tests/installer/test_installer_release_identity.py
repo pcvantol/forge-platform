@@ -56,6 +56,8 @@ class InstallerReleaseIdentityTests(unittest.TestCase):
                     "team_identifier": "ABCDE12345",
                     "release_tag_prefix": "forge-platform-installer-v",
                     "asset_prefix": "ForgePlatformInstaller-macos-",
+                    "release_descriptor_asset_name": "ForgePlatformInstallerReleaseDescriptor.json",
+                    "release_trust_configuration_sha256": "a" * 64,
                 },
                 "signing_key_policy": {
                     "algorithm": "ed25519",
@@ -68,6 +70,7 @@ class InstallerReleaseIdentityTests(unittest.TestCase):
         assert identity is not None
         self.assertEqual(identity.release_tag("1.2.3"), "forge-platform-installer-v1.2.3")
         self.assertEqual(identity.asset_name("arm64"), "ForgePlatformInstaller-macos-arm64.zip")
+        self.assertEqual(identity.release_descriptor_asset_name, "ForgePlatformInstallerReleaseDescriptor.json")
         self.assertEqual(identity_policy._field(identity, "team_identifier"), "ABCDE12345")
 
     def test_partial_or_unapproved_identity_fails_closed(self) -> None:
@@ -93,6 +96,8 @@ class InstallerReleaseIdentityTests(unittest.TestCase):
                     "team_identifier": "ABCDE12345",
                     "release_tag_prefix": "forge-platform-installer-v",
                     "asset_prefix": "ForgePlatformInstaller-macos-",
+                    "release_descriptor_asset_name": "ForgePlatformInstallerReleaseDescriptor.json",
+                    "release_trust_configuration_sha256": "a" * 64,
                 },
                 "signing_key_policy": {
                     "algorithm": "ed25519",
@@ -113,6 +118,8 @@ class InstallerReleaseIdentityTests(unittest.TestCase):
                     "team_identifier": "ABCDE12345",
                     "release_tag_prefix": "forge-platform-installer-v",
                     "asset_prefix": "ForgePlatformInstaller-macos-",
+                    "release_descriptor_asset_name": "ForgePlatformInstallerReleaseDescriptor.json",
+                    "release_trust_configuration_sha256": "a" * 64,
                 },
                 "signing_key_policy": {
                     "algorithm": "ed25519",
@@ -122,6 +129,54 @@ class InstallerReleaseIdentityTests(unittest.TestCase):
             }
         )
         with self.assertRaisesRegex(RuntimeError, "non-empty signing key ID list"):
+            identity_policy.load_identity(require_ready=True)
+
+    def test_ready_identity_prefixes_cannot_generate_unrepresentable_github_names(self) -> None:
+        identity = {
+            "github_repository": "example/forge-platform",
+            "bundle_identifier": "com.example.forge-platform-installer",
+            "team_identifier": "ABCDE12345",
+            "release_tag_prefix": "r" * 69,
+            "asset_prefix": "A" * 118,
+            "release_descriptor_asset_name": "ForgePlatformInstallerReleaseDescriptor.json",
+            "release_trust_configuration_sha256": "a" * 64,
+        }
+        self.write(
+            {
+                "schema": identity_policy.SCHEMA,
+                "status": "READY",
+                "identity": identity,
+                "signing_key_policy": {"algorithm": "ed25519", "key_ids": ["release-key-001"], "threshold": 1},
+            }
+        )
+        ready = identity_policy.load_identity(require_ready=True)
+        assert ready is not None
+        self.assertEqual(len(ready.release_tag("1.2.3")), 74)
+        self.assertEqual(len(ready.asset_name("x86_64")), 128)
+
+        identity["release_tag_prefix"] = "r" * 70
+        self.write(
+            {
+                "schema": identity_policy.SCHEMA,
+                "status": "READY",
+                "identity": identity,
+                "signing_key_policy": {"algorithm": "ed25519", "key_ids": ["release-key-001"], "threshold": 1},
+            }
+        )
+        with self.assertRaisesRegex(RuntimeError, "identity is invalid"):
+            identity_policy.load_identity(require_ready=True)
+
+        identity["release_tag_prefix"] = "r" * 69
+        identity["asset_prefix"] = "A" * 119
+        self.write(
+            {
+                "schema": identity_policy.SCHEMA,
+                "status": "READY",
+                "identity": identity,
+                "signing_key_policy": {"algorithm": "ed25519", "key_ids": ["release-key-001"], "threshold": 1},
+            }
+        )
+        with self.assertRaisesRegex(RuntimeError, "identity is invalid"):
             identity_policy.load_identity(require_ready=True)
 
 

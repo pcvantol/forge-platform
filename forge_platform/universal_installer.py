@@ -27,7 +27,7 @@ from pathlib import Path
 import re
 import tempfile
 from typing import Iterable, Iterator, Mapping, Protocol, Sequence
-from urllib.parse import urlparse
+from urllib.parse import urlsplit, urlunsplit
 
 from .component_operations import (
     COMPONENT_IDENTITIES,
@@ -51,11 +51,25 @@ SERVICE_COMPONENTS = frozenset({"forge-runtime", "workspace-server", "engineerin
 LOCAL_COMPONENTS = frozenset({"workspace-client", "engineering-platform-project-agent"})
 DIFF_ACTIONS = frozenset({"INSTALL", "UPDATE", "REPAIR", "REMOVE", "NO_CHANGE", "BLOCKED"})
 REMOVAL_SUPPORT_STATES = frozenset({"SUPPORTED", "UNSUPPORTED", "UNKNOWN"})
+MAXIMUM_CANONICAL_HTTPS_URL_LENGTH = 2048
+MAXIMUM_INSTALLER_RELEASE_DESCRIPTOR_BYTES = 128 * 1024
 
 _SEMVER = re.compile(r"^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$")
 _DIGEST = re.compile(r"^sha256:[0-9a-f]{64}$")
+_RAW_SHA256 = re.compile(r"^[0-9a-f]{64}$")
+_SOURCE_REVISION = re.compile(r"^[0-9a-f]{40,64}$")
 _CAPABILITY = re.compile(r"^[a-z0-9][a-z0-9./_-]{0,127}$")
 _POLICY_REVISION = re.compile(r"^[a-z0-9][a-z0-9._/-]{0,127}$")
+# Each path segment begins alphanumerically, so a signed identity can never
+# produce a dot segment such as ``owner/..`` after GitHub URL derivation.
+_GITHUB_REPOSITORY = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,99}/[A-Za-z0-9][A-Za-z0-9._-]{0,99}$")
+_GITHUB_RELEASE_TAG = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
+_GITHUB_DESCRIPTOR_ASSET_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,122}\.json$")
+_GITHUB_ARCHIVE_ASSET_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,123}\.zip$")
+_BUNDLE_IDENTIFIER = re.compile(r"^[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)+$")
+_TEAM_IDENTIFIER = re.compile(r"^[A-Z0-9]{10}$")
+_MAXIMUM_NATIVE_SIGNED_INTEGER = (1 << 63) - 1
+_MAXIMUM_RELEASE_SEQUENCE = (1 << 64) - 1
 _SAFE_OPERATION_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
 _SIGNING_KEY_ID = re.compile(r"^[a-z0-9][a-z0-9._-]{0,127}$")
 # An Ed25519 signature is exactly 64 raw bytes, encoded as unpadded base64url.
@@ -67,6 +81,9 @@ _JOURNAL_FORBIDDEN_KEY_FRAGMENTS = frozenset({
 })
 _OPAQUE_JOURNAL_REFERENCE = re.compile(r"^receipt:[a-z0-9][a-z0-9._-]{0,127}$")
 _SAFE_TARGET_ID = re.compile(r"^[a-z0-9][a-z0-9._-]{0,127}$")
+_CANONICAL_HTTPS_AUTHORITY = re.compile(r"^[A-Za-z0-9._:\[\]-]+$")
+_CANONICAL_HTTPS_PATH_OR_QUERY = re.compile(r"^[A-Za-z0-9._~!$&'()*+,;=:@%/?-]*$")
+_PERCENT_ESCAPE = re.compile(r"%[0-9A-Fa-f]{2}")
 
 
 class UniversalInstallerError(RuntimeError):
@@ -86,8 +103,13 @@ def _mapping(value: object, expected: frozenset[str], label: str) -> Mapping[str
 
 
 def _sequence(value: object, label: str) -> int:
-    if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
-        raise ValueError(f"{label} must be a positive integer")
+    if (
+        isinstance(value, bool)
+        or not isinstance(value, int)
+        or value <= 0
+        or value > _MAXIMUM_RELEASE_SEQUENCE
+    ):
+        raise ValueError(f"{label} must be a positive UInt64 integer")
     return value
 
 
@@ -104,12 +126,66 @@ def _digest(value: object, label: str) -> str:
     return value
 
 
-def _https_url(value: object, label: str) -> str:
+def _raw_sha256(value: object, label: str) -> str:
     value = _required(value, label)
-    parsed = urlparse(value)
-    if parsed.scheme != "https" or not parsed.netloc or parsed.username or parsed.password:
-        raise ValueError(f"{label} must be an absolute credential-free https URL")
+    if not _RAW_SHA256.fullmatch(value):
+        raise ValueError(f"{label} must be a raw lowercase sha256 identity")
     return value
+
+
+def _source_revision(value: object, label: str) -> str:
+    value = _required(value, label)
+    if not _SOURCE_REVISION.fullmatch(value):
+        raise ValueError(f"{label} must be a lowercase full Git revision")
+    return value
+
+
+def canonical_https_url(value: object, label: str) -> str:
+    """Require one bounded wire-stable HTTPS URL accepted by the native parser.
+
+    This deliberately excludes credentials, fragments, non-ASCII source text,
+    malformed percent escapes and non-default TLS ports.  A URL is kept as its
+    exact signed string rather than normalized at use time, so the Python
+    qualifier cannot publish a descriptor the native installer refuses after
+    download.
+    """
+
+    value = _required(value, label)
+    if len(value) > MAXIMUM_CANONICAL_HTTPS_URL_LENGTH or not value.isascii() or not value.startswith("https://"):
+        raise ValueError(f"{label} must be a bounded canonical HTTPS URL")
+    try:
+        parsed = urlsplit(value)
+        port = parsed.port
+    except ValueError as error:
+        raise ValueError(f"{label} must be a bounded canonical HTTPS URL") from error
+    if (
+        parsed.scheme != "https"
+        or not parsed.netloc
+        or not parsed.hostname
+        or parsed.username is not None
+        or parsed.password is not None
+        or parsed.fragment
+        or (port is not None and port != 443)
+        or (port is not None and not parsed.netloc.endswith(":443"))
+        or (port is None and parsed.netloc.endswith(":"))
+        or _CANONICAL_HTTPS_AUTHORITY.fullmatch(parsed.netloc) is None
+        or _CANONICAL_HTTPS_PATH_OR_QUERY.fullmatch(parsed.path) is None
+        or _CANONICAL_HTTPS_PATH_OR_QUERY.fullmatch(parsed.query) is None
+        or any(
+            _PERCENT_ESCAPE.fullmatch(value[index : index + 3]) is None
+            for index, character in enumerate(value)
+            if character == "%"
+        )
+        or urlunsplit(parsed) != value
+    ):
+        raise ValueError(f"{label} must be a bounded canonical HTTPS URL")
+    return value
+
+
+def _https_url(value: object, label: str) -> str:
+    """Backward-compatible internal spelling for canonical HTTPS validation."""
+
+    return canonical_https_url(value, label)
 
 
 def _timestamp(value: object, label: str) -> datetime:
@@ -167,6 +243,16 @@ class SemanticVersion:
     minor: int
     patch: int
 
+    def __post_init__(self) -> None:
+        if any(
+            isinstance(component, bool)
+            or not isinstance(component, int)
+            or component < 0
+            or component > _MAXIMUM_NATIVE_SIGNED_INTEGER
+            for component in (self.major, self.minor, self.patch)
+        ):
+            raise ValueError("semantic version components must fit native Int64")
+
     @classmethod
     def parse(cls, value: object, label: str = "version") -> "SemanticVersion":
         value = _required(value, label)
@@ -209,40 +295,179 @@ class CatalogFeedLocator:
 
 
 @dataclass(frozen=True)
+class GitHubInstallerReleaseIdentity:
+    """The signed descriptor's canonical GitHub Release namespace.
+
+    Individual archive URLs are deliberately derived from this immutable
+    identity.  A descriptor cannot redirect a trusted old installer to an
+    arbitrary URL while retaining a valid archive digest.
+    """
+
+    repository: str
+    tag: str
+    descriptor_asset_name: str
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.repository, str) or _GITHUB_REPOSITORY.fullmatch(self.repository) is None:
+            raise ValueError("installer GitHub release repository is invalid")
+        if not isinstance(self.tag, str) or _GITHUB_RELEASE_TAG.fullmatch(self.tag) is None:
+            raise ValueError("installer GitHub release tag is invalid")
+        if (
+            not isinstance(self.descriptor_asset_name, str)
+            or _GITHUB_DESCRIPTOR_ASSET_NAME.fullmatch(self.descriptor_asset_name) is None
+        ):
+            raise ValueError("installer GitHub descriptor asset name is invalid")
+
+    @classmethod
+    def from_mapping(cls, value: object) -> "GitHubInstallerReleaseIdentity":
+        payload = _mapping(
+            value,
+            frozenset({"repository", "tag", "descriptor_asset_name"}),
+            "installer GitHub release identity",
+        )
+        return cls(
+            repository=_required(payload["repository"], "installer GitHub release repository"),
+            tag=_required(payload["tag"], "installer GitHub release tag"),
+            descriptor_asset_name=_required(
+                payload["descriptor_asset_name"], "installer GitHub descriptor asset name"
+            ),
+        )
+
+    def asset_url(self, asset_name: str) -> str:
+        if not isinstance(asset_name, str) or _GITHUB_ARCHIVE_ASSET_NAME.fullmatch(asset_name) is None:
+            raise ValueError("installer GitHub archive asset name is invalid")
+        return f"https://github.com/{self.repository}/releases/download/{self.tag}/{asset_name}"
+
+    @property
+    def descriptor_url(self) -> str:
+        """The sole descriptor location implied by this signed identity."""
+
+        return f"https://github.com/{self.repository}/releases/download/{self.tag}/{self.descriptor_asset_name}"
+
+
+@dataclass(frozen=True)
+class SealedInstallerReleaseTrustExpectation:
+    """Public V2 trust facts loaded from the current code-signed bundle.
+
+    Signature keys and threshold remain in :class:`SignatureThresholdPolicy`.
+    This separate, immutable locator prevents a descriptor that is correctly
+    signed under the key policy from redirecting self-update transport to a
+    different GitHub namespace or application identity.
+    """
+
+    repository: str
+    descriptor_asset_name: str
+    expected_bundle_identifier: str
+    expected_team_identifier: str
+    configuration_sha256: str
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.repository, str) or _GITHUB_REPOSITORY.fullmatch(self.repository) is None:
+            raise ValueError("sealed installer release trust repository is invalid")
+        if (
+            not isinstance(self.descriptor_asset_name, str)
+            or _GITHUB_DESCRIPTOR_ASSET_NAME.fullmatch(self.descriptor_asset_name) is None
+        ):
+            raise ValueError("sealed installer release trust descriptor asset name is invalid")
+        if (
+            not isinstance(self.expected_bundle_identifier, str)
+            or _BUNDLE_IDENTIFIER.fullmatch(self.expected_bundle_identifier) is None
+        ):
+            raise ValueError("sealed installer release trust bundle identifier is invalid")
+        if (
+            not isinstance(self.expected_team_identifier, str)
+            or _TEAM_IDENTIFIER.fullmatch(self.expected_team_identifier) is None
+        ):
+            raise ValueError("sealed installer release trust team identifier is invalid")
+        _raw_sha256(self.configuration_sha256, "sealed installer release trust configuration digest")
+
+    def require_release_binding(
+        self,
+        *,
+        github_release: GitHubInstallerReleaseIdentity,
+        assets: tuple["InstallerAsset", ...],
+    ) -> None:
+        """Require descriptor transport and app identity to match current V2 facts.
+
+        The descriptor's trust-configuration digest describes the *target*
+        installer and must be allowed to rotate. Its target-bundle comparison
+        belongs to staging/activation, not this current-bundle locator gate.
+        """
+
+        if not isinstance(github_release, GitHubInstallerReleaseIdentity):
+            raise ValueError("installer release GitHub identity is invalid")
+        if (
+            github_release.repository != self.repository
+            or github_release.descriptor_asset_name != self.descriptor_asset_name
+        ):
+            raise ValueError(
+                "installer release GitHub identity does not match the sealed trust configuration"
+            )
+        for asset in assets:
+            if (
+                asset.bundle_identifier != self.expected_bundle_identifier
+                or asset.team_identifier != self.expected_team_identifier
+            ):
+                raise ValueError(
+                    "installer archive signing identity does not match the sealed trust configuration"
+                )
+
+
+@dataclass(frozen=True)
 class InstallerAsset:
-    """One macOS bundle selected only after release metadata verification."""
+    """One macOS archive bound to a canonical GitHub Release asset name."""
 
     operating_system: str
     architecture: str
-    download: DownloadIdentity
+    asset_name: str
+    archive_digest: str
     bundle_identifier: str
     team_identifier: str
-    notarization_evidence: str
+    code_directory_sha256: str
+    notarization_receipt_reference: str
 
     def __post_init__(self) -> None:
         if self.operating_system != "macos":
             raise ValueError("installer asset operating_system must be macos")
         if self.architecture not in SUPPORTED_MACOS_ARCHITECTURES:
             raise ValueError("installer asset architecture is unsupported")
-        if not isinstance(self.download, DownloadIdentity):
-            raise ValueError("installer asset requires a download identity")
-        for label in ("bundle_identifier", "team_identifier", "notarization_evidence"):
-            _required(getattr(self, label), label)
+        if not isinstance(self.asset_name, str) or _GITHUB_ARCHIVE_ASSET_NAME.fullmatch(self.asset_name) is None:
+            raise ValueError("installer asset name is invalid")
+        _digest(self.archive_digest, "installer asset archive digest")
+        if not isinstance(self.bundle_identifier, str) or _BUNDLE_IDENTIFIER.fullmatch(self.bundle_identifier) is None:
+            raise ValueError("installer asset bundle identifier is invalid")
+        if not isinstance(self.team_identifier, str) or _TEAM_IDENTIFIER.fullmatch(self.team_identifier) is None:
+            raise ValueError("installer asset team identifier is invalid")
+        _raw_sha256(self.code_directory_sha256, "installer asset CodeDirectory digest")
+        if (
+            not isinstance(self.notarization_receipt_reference, str)
+            or _OPAQUE_JOURNAL_REFERENCE.fullmatch(self.notarization_receipt_reference) is None
+        ):
+            raise ValueError("installer asset notarization receipt reference is invalid")
 
     @classmethod
     def from_mapping(cls, value: object) -> "InstallerAsset":
         payload = _mapping(
             value,
-            frozenset({"operating_system", "architecture", "url", "digest", "bundle_identifier", "team_identifier", "notarization_evidence"}),
+            frozenset({
+                "operating_system", "architecture", "asset_name", "digest", "bundle_identifier", "team_identifier",
+                "code_directory_sha256", "notarization_receipt_reference",
+            }),
             "installer asset",
         )
         return cls(
             operating_system=_required(payload["operating_system"], "installer asset operating_system"),
             architecture=_required(payload["architecture"], "installer asset architecture"),
-            download=DownloadIdentity(_https_url(payload["url"], "installer asset URL"), _digest(payload["digest"], "installer asset digest")),
+            asset_name=_required(payload["asset_name"], "installer asset name"),
+            archive_digest=_digest(payload["digest"], "installer asset digest"),
             bundle_identifier=_required(payload["bundle_identifier"], "installer asset bundle_identifier"),
             team_identifier=_required(payload["team_identifier"], "installer asset team_identifier"),
-            notarization_evidence=_required(payload["notarization_evidence"], "installer asset notarization_evidence"),
+            code_directory_sha256=_raw_sha256(
+                payload["code_directory_sha256"], "installer asset CodeDirectory digest"
+            ),
+            notarization_receipt_reference=_required(
+                payload["notarization_receipt_reference"], "installer asset notarization receipt reference"
+            ),
         )
 
 
@@ -392,6 +617,9 @@ class InstallerRelease:
     version: SemanticVersion
     source_revision: str
     policy_revision: str
+    github_release: GitHubInstallerReleaseIdentity
+    release_trust_configuration_sha256: str
+    provenance_sha256: str
     published_at: datetime
     expires_at: datetime
     capabilities: frozenset[str]
@@ -405,9 +633,13 @@ class InstallerRelease:
             raise ValueError("installer channel is unsupported")
         if not isinstance(self.version, SemanticVersion):
             raise ValueError("installer version must be semantic")
-        _required(self.source_revision, "installer source_revision")
+        _source_revision(self.source_revision, "installer source_revision")
         if not isinstance(self.policy_revision, str) or _POLICY_REVISION.fullmatch(self.policy_revision) is None:
             raise ValueError("installer policy_revision is invalid")
+        if not isinstance(self.github_release, GitHubInstallerReleaseIdentity):
+            raise ValueError("installer release requires a canonical GitHub release identity")
+        _raw_sha256(self.release_trust_configuration_sha256, "installer release trust configuration digest")
+        _raw_sha256(self.provenance_sha256, "installer release provenance digest")
         if self.expires_at <= self.published_at:
             raise ValueError("installer metadata must expire after publication")
         if not self.capabilities:
@@ -418,6 +650,7 @@ class InstallerRelease:
         if not self.assets:
             raise ValueError("installer release must include at least one asset")
         seen_assets: set[tuple[str, str]] = set()
+        seen_asset_names: set[str] = set()
         for asset in self.assets:
             if not isinstance(asset, InstallerAsset):
                 raise ValueError("installer release assets are invalid")
@@ -425,6 +658,9 @@ class InstallerRelease:
             if key in seen_assets:
                 raise ValueError("installer release contains duplicate host assets")
             seen_assets.add(key)
+            if asset.asset_name in seen_asset_names:
+                raise ValueError("installer release contains duplicate GitHub archive asset names")
+            seen_asset_names.add(asset.asset_name)
         if not isinstance(self.composition_catalog_feed, CatalogFeedLocator):
             raise ValueError("installer release requires a composition catalog feed locator")
         if (
@@ -443,10 +679,14 @@ class InstallerRelease:
         verifier: InstallerMetadataVerifier,
         *,
         signature_policy: SignatureThresholdPolicy,
+        sealed_release_trust: SealedInstallerReleaseTrustExpectation,
     ) -> "InstallerRelease":
         payload = _mapping(
             value,
-            frozenset({"schema", "sequence", "channel", "published_at", "expires_at", "installer", "composition_catalog", "signatures"}),
+            frozenset({
+                "schema", "sequence", "channel", "published_at", "expires_at", "github_release", "installer",
+                "composition_catalog", "signatures",
+            }),
             "installer release metadata",
         )
         if payload["schema"] != INSTALLER_RELEASE_SCHEMA:
@@ -462,7 +702,10 @@ class InstallerRelease:
         )
         installer = _mapping(
             payload["installer"],
-            frozenset({"version", "source_revision", "policy_revision", "capabilities", "assets"}),
+            frozenset({
+                "version", "source_revision", "policy_revision", "release_trust_configuration_sha256",
+                "provenance_sha256", "capabilities", "assets",
+            }),
             "installer release",
         )
         capabilities = installer["capabilities"]
@@ -471,6 +714,8 @@ class InstallerRelease:
         parsed_capabilities = tuple(_required(capability, "installer capability") for capability in capabilities)
         if len(parsed_capabilities) != len(set(parsed_capabilities)):
             raise ValueError("installer capabilities must be unique")
+        if parsed_capabilities != tuple(sorted(parsed_capabilities)):
+            raise ValueError("installer capabilities must be strictly sorted")
         assets = installer["assets"]
         if not isinstance(assets, list):
             raise ValueError("installer assets must be a list")
@@ -479,12 +724,17 @@ class InstallerRelease:
             frozenset({"url"}),
             "composition catalog",
         )
-        return cls(
+        release = cls(
             sequence=_sequence(payload["sequence"], "installer sequence"),
             channel=_required(payload["channel"], "installer channel"),
             version=SemanticVersion.parse(installer["version"], "installer version"),
-            source_revision=_required(installer["source_revision"], "installer source_revision"),
+            source_revision=_source_revision(installer["source_revision"], "installer source_revision"),
             policy_revision=_required(installer["policy_revision"], "installer policy_revision"),
+            github_release=GitHubInstallerReleaseIdentity.from_mapping(payload["github_release"]),
+            release_trust_configuration_sha256=_raw_sha256(
+                installer["release_trust_configuration_sha256"], "installer release trust configuration digest"
+            ),
+            provenance_sha256=_raw_sha256(installer["provenance_sha256"], "installer provenance digest"),
             published_at=_timestamp(payload["published_at"], "installer published_at"),
             expires_at=_timestamp(payload["expires_at"], "installer expires_at"),
             capabilities=frozenset(parsed_capabilities),
@@ -492,6 +742,13 @@ class InstallerRelease:
             composition_catalog_feed=CatalogFeedLocator(_https_url(catalog["url"], "catalog URL")),
             signatures=signatures,
         )
+        if not isinstance(sealed_release_trust, SealedInstallerReleaseTrustExpectation):
+            raise ValueError("sealed installer release trust expectation is required")
+        sealed_release_trust.require_release_binding(
+            github_release=release.github_release,
+            assets=release.assets,
+        )
+        return release
 
     @classmethod
     def from_signed_bytes(
@@ -500,13 +757,21 @@ class InstallerRelease:
         verifier: InstallerMetadataVerifier,
         *,
         signature_policy: SignatureThresholdPolicy,
+        sealed_release_trust: SealedInstallerReleaseTrustExpectation,
     ) -> "InstallerRelease":
         """Parse exactly the signed descriptor bytes fetched from a release."""
 
+        if (
+            not isinstance(raw_bytes, bytes)
+            or not raw_bytes
+            or len(raw_bytes) > MAXIMUM_INSTALLER_RELEASE_DESCRIPTOR_BYTES
+        ):
+            raise UniversalInstallerError("installer release descriptor exceeds the accepted byte bound")
         return cls.from_signed_metadata(
             _strict_json_mapping(raw_bytes, "installer release metadata"),
             verifier,
             signature_policy=signature_policy,
+            sealed_release_trust=sealed_release_trust,
         )
 
     def asset_for(self, architecture: str) -> InstallerAsset | None:
@@ -529,27 +794,42 @@ class InstalledInstallerIdentity:
     bundle_digest: str
     bundle_identifier: str
     team_identifier: str
-    notarization_evidence: str
+    code_directory_sha256: str
+    notarization_receipt_reference: str
     accepted_channel: str
     accepted_sequence: int
+    accepted_release_trust_configuration_sha256: str
+    accepted_provenance_sha256: str
     accepted_capabilities: frozenset[str]
 
     def __post_init__(self) -> None:
         if not isinstance(self.version, SemanticVersion):
             raise ValueError("installed installer version must be semantic")
-        _required(self.source_revision, "installed installer source_revision")
+        _source_revision(self.source_revision, "installed installer source_revision")
         if (
             not isinstance(self.accepted_policy_revision, str)
             or _POLICY_REVISION.fullmatch(self.accepted_policy_revision) is None
         ):
             raise ValueError("installed installer accepted policy revision is invalid")
         _digest(self.bundle_digest, "installed installer bundle_digest")
-        _required(self.bundle_identifier, "installed installer bundle_identifier")
-        _required(self.team_identifier, "installed installer team_identifier")
-        _required(self.notarization_evidence, "installed installer notarization_evidence")
+        if not isinstance(self.bundle_identifier, str) or _BUNDLE_IDENTIFIER.fullmatch(self.bundle_identifier) is None:
+            raise ValueError("installed installer bundle identifier is invalid")
+        if not isinstance(self.team_identifier, str) or _TEAM_IDENTIFIER.fullmatch(self.team_identifier) is None:
+            raise ValueError("installed installer team identifier is invalid")
+        _raw_sha256(self.code_directory_sha256, "installed installer CodeDirectory digest")
+        if (
+            not isinstance(self.notarization_receipt_reference, str)
+            or _OPAQUE_JOURNAL_REFERENCE.fullmatch(self.notarization_receipt_reference) is None
+        ):
+            raise ValueError("installed installer notarization receipt reference is invalid")
         if self.accepted_channel not in INSTALLER_CHANNELS:
             raise ValueError("installed installer accepted channel is unsupported")
         _sequence(self.accepted_sequence, "installed installer accepted_sequence")
+        _raw_sha256(
+            self.accepted_release_trust_configuration_sha256,
+            "installed installer accepted release trust configuration digest",
+        )
+        _raw_sha256(self.accepted_provenance_sha256, "installed installer accepted provenance digest")
         if not self.accepted_capabilities:
             raise ValueError("installed installer accepted_capabilities are required")
         for capability in self.accepted_capabilities:
@@ -623,6 +903,7 @@ def select_self_update(
     architecture: str,
     now: datetime,
     release_feed: ReleaseFeedReadback,
+    sealed_release_trust: SealedInstallerReleaseTrustExpectation,
 ) -> SelfUpdateDecision:
     """Select a newer trusted GitHub-release asset or fail closed.
 
@@ -637,6 +918,21 @@ def select_self_update(
         raise ValueError("self-update architecture is unsupported")
     if not isinstance(release_feed, ReleaseFeedReadback):
         raise ValueError("fresh installer release feed readback is required")
+    if not isinstance(sealed_release_trust, SealedInstallerReleaseTrustExpectation):
+        raise ValueError("sealed installer release trust expectation is required")
+    if (
+        installed.bundle_identifier != sealed_release_trust.expected_bundle_identifier
+        or installed.team_identifier != sealed_release_trust.expected_team_identifier
+        or (
+            installed.accepted_release_trust_configuration_sha256
+            != sealed_release_trust.configuration_sha256
+        )
+    ):
+        return SelfUpdateDecision(
+            "SELF_UPDATE_BLOCKED",
+            "installed installer identity does not match the sealed trust configuration",
+            installed,
+        )
     if channel != installed.accepted_channel:
         return SelfUpdateDecision(
             "SELF_UPDATE_BLOCKED",
@@ -660,6 +956,15 @@ def select_self_update(
     sequences: set[int] = set()
     versions: dict[SemanticVersion, InstallerRelease] = {}
     for release in candidates:
+        try:
+            sealed_release_trust.require_release_binding(
+                github_release=release.github_release,
+                assets=release.assets,
+            )
+        except ValueError as error:
+            raise UniversalInstallerError(
+                "trusted installer metadata does not bind the sealed trust configuration"
+            ) from error
         if release.sequence in sequences:
             raise UniversalInstallerError("trusted installer metadata has duplicate sequence values")
         sequences.add(release.sequence)
@@ -667,6 +972,9 @@ def select_self_update(
         if previous is not None and (
             previous.source_revision != release.source_revision
             or previous.policy_revision != release.policy_revision
+            or previous.github_release != release.github_release
+            or previous.release_trust_configuration_sha256 != release.release_trust_configuration_sha256
+            or previous.provenance_sha256 != release.provenance_sha256
             or previous.assets != release.assets
             or previous.composition_catalog_feed != release.composition_catalog_feed
             or previous.capabilities != release.capabilities
@@ -687,10 +995,16 @@ def select_self_update(
             or
             installed.source_revision != latest.source_revision
             or installed.accepted_policy_revision != latest.policy_revision
-            or installed.bundle_digest != asset.download.digest
+            or installed.bundle_digest != asset.archive_digest
             or installed.bundle_identifier != asset.bundle_identifier
             or installed.team_identifier != asset.team_identifier
-            or installed.notarization_evidence != asset.notarization_evidence
+            or installed.code_directory_sha256 != asset.code_directory_sha256
+            or installed.notarization_receipt_reference != asset.notarization_receipt_reference
+            or (
+                installed.accepted_release_trust_configuration_sha256
+                != latest.release_trust_configuration_sha256
+            )
+            or installed.accepted_provenance_sha256 != latest.provenance_sha256
             or installed.accepted_capabilities != latest.capabilities
         ):
             return SelfUpdateDecision(
@@ -781,6 +1095,7 @@ class VerifiedInstallerContext:
         architecture: str,
         now: datetime,
         release_feed: ReleaseFeedReadback,
+        sealed_release_trust: SealedInstallerReleaseTrustExpectation,
     ) -> "VerifiedInstallerContext":
         decision = select_self_update(
             installed,
@@ -789,6 +1104,7 @@ class VerifiedInstallerContext:
             architecture=architecture,
             now=now,
             release_feed=release_feed,
+            sealed_release_trust=sealed_release_trust,
         )
         if decision.state != "CURRENT" or decision.current_release is None:
             raise UniversalInstallerError(decision.reason)
@@ -1869,9 +2185,14 @@ class CompositionPlan:
                 "bundle_digest": self.installer_context.self_update.installed.bundle_digest,
                 "bundle_identifier": self.installer_context.self_update.installed.bundle_identifier,
                 "team_identifier": self.installer_context.self_update.installed.team_identifier,
-                "notarization_evidence": self.installer_context.self_update.installed.notarization_evidence,
+                "code_directory_sha256": self.installer_context.self_update.installed.code_directory_sha256,
+                "notarization_receipt_reference": self.installer_context.self_update.installed.notarization_receipt_reference,
                 "accepted_channel": self.installer_context.self_update.installed.accepted_channel,
                 "accepted_sequence": self.installer_context.self_update.installed.accepted_sequence,
+                "accepted_release_trust_configuration_sha256": (
+                    self.installer_context.self_update.installed.accepted_release_trust_configuration_sha256
+                ),
+                "accepted_provenance_sha256": self.installer_context.self_update.installed.accepted_provenance_sha256,
                 "capabilities": sorted(self.installer_context.capabilities.capabilities),
             },
             "installed_composition": None if self.installed_composition is None else {

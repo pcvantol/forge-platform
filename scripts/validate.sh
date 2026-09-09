@@ -18,6 +18,8 @@ python3 tests/installer/test_installer_version_preparation.py
 python3 tests/installer/test_installer_release_operation.py
 python3 tests/installer/test_prepare_installer_release_candidate.py
 python3 tests/installer/test_installer_release_identity.py
+python3 tests/installer/test_installer_release_trust.py
+python3 tests/installer/test_installer_release_provenance.py
 python3 tests/installer/test_package_macos_installer_app.py
 python3 tests/installer/test_verify_installer_release_evidence.py
 python3 tests/installer/test_installer_release_workflow.py

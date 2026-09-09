@@ -29,6 +29,9 @@ VERSION = "0.1.0"
 CHANNEL = "stable"
 OPERATION_ID = "installer-release-0001"
 ASSET_NAME = "ForgePlatformInstaller-macos-arm64.zip"
+RELEASE_SEQUENCE = 7
+PROVENANCE_SHA256 = "b" * 64
+RELEASE_TRUST_CONFIGURATION_SHA256 = "c" * 64
 
 
 class PrepareInstallerReleaseCandidateTests(unittest.TestCase):
@@ -138,6 +141,8 @@ class PrepareInstallerReleaseCandidateTests(unittest.TestCase):
                         "team_identifier": "ABCDE12345",
                         "release_tag_prefix": "forge-platform-installer-v",
                         "asset_prefix": "ForgePlatformInstaller-macos-",
+                        "release_descriptor_asset_name": "ForgePlatformInstallerReleaseDescriptor.json",
+                        "release_trust_configuration_sha256": RELEASE_TRUST_CONFIGURATION_SHA256,
                     },
                     "signing_key_policy": {
                         "algorithm": "ed25519",
@@ -174,7 +179,10 @@ class PrepareInstallerReleaseCandidateTests(unittest.TestCase):
                     "source_revision": SOURCE_SHA,
                     "version": VERSION,
                     "channel": CHANNEL,
+                    "release_sequence": RELEASE_SEQUENCE,
                     "policy_revision": INSTALLER_RELEASE_POLICY_REVISION,
+                    "provenance_sha256": PROVENANCE_SHA256,
+                    "release_trust_configuration_sha256": RELEASE_TRUST_CONFIGURATION_SHA256,
                     "bundle_identifier": "com.example.forge-platform-installer",
                     "capabilities": ["composition/v1", "provider-gate/v1"],
                     "archives": {
@@ -218,7 +226,9 @@ class PrepareInstallerReleaseCandidateTests(unittest.TestCase):
                 "--operation-id", OPERATION_ID,
                 "--installer-version", VERSION,
                 "--channel", CHANNEL,
+                "--release-sequence", str(RELEASE_SEQUENCE),
                 "--policy-revision", INSTALLER_RELEASE_POLICY_REVISION,
+                "--provenance-sha256", PROVENANCE_SHA256,
                 "--release-identity", str(identity),
                 "--journal-root", str(journal_root),
                 "--output", str(output),

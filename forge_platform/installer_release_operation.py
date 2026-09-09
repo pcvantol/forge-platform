@@ -24,7 +24,7 @@ import json
 import os
 from pathlib import Path
 import re
-import tempfile
+import stat
 from typing import Mapping
 
 
@@ -32,18 +32,26 @@ _OPERATION_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{7,127}$")
 _SEMVER = re.compile(r"^(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)$")
 _REVISION = re.compile(r"^[0-9a-f]{40,64}$")
 _SHA256 = re.compile(r"^sha256:[0-9a-f]{64}$")
+_RAW_SHA256 = re.compile(r"^[0-9a-f]{64}$")
 _CAPABILITY = re.compile(r"^[a-z0-9][a-z0-9./_-]{0,127}$")
 _RECEIPT_REFERENCE = re.compile(r"^receipt:[a-z0-9][a-z0-9._-]{0,127}$")
 _TARGET_ID = re.compile(r"^[a-z0-9][a-z0-9._-]{0,127}$")
 _BUNDLE_IDENTIFIER = re.compile(r"^[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)+$")
 _TEAM_IDENTIFIER = re.compile(r"^[A-Z0-9]{10}$")
-_GITHUB_REPOSITORY = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
-_RELEASE_TAG_PREFIX = re.compile(r"^[a-z0-9][a-z0-9._-]*$")
-_ASSET_PREFIX = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
+_GITHUB_REPOSITORY = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,99}/[A-Za-z0-9][A-Za-z0-9._-]{0,99}$")
+_RELEASE_TAG_PREFIX = re.compile(r"^[a-z0-9][a-z0-9._-]{0,68}$")
+_ASSET_PREFIX = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,117}$")
+_GITHUB_RELEASE_TAG = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
+_DESCRIPTOR_ASSET_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,122}\.json$")
+_ARCHIVE_ASSET_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,123}\.zip$")
 _SIGNING_KEY_ID = re.compile(r"^[a-z0-9][a-z0-9._-]{0,127}$")
 _POLICY_REVISION = re.compile(r"^[a-z0-9][a-z0-9._/-]{0,127}$")
 _ARCHITECTURES = frozenset({"arm64", "x86_64"})
 _CHANNELS = frozenset({"stable", "candidate"})
+_SEQUENCE_RESERVATION_FILENAME = re.compile(r"^([1-9][0-9]*)\.json$")
+_MAXIMUM_NATIVE_SIGNED_INTEGER = (1 << 63) - 1
+_MAXIMUM_RELEASE_SEQUENCE = (1 << 64) - 1
+_MAXIMUM_JOURNAL_RECORD_BYTES = 512 * 1024
 _STATES = frozenset({"QUALIFIED", "PUBLISHED", "CLEANUP_PENDING", "RELEASE_COMPLETE"})
 _ALLOWED_TRANSITIONS = {
     "QUALIFIED": frozenset({"PUBLISHED"}),
@@ -68,6 +76,34 @@ def _digest(value: object, label: str) -> str:
     result = _required_string(value, label)
     if _SHA256.fullmatch(result) is None:
         raise InstallerReleaseOperationError(f"installer release {label} must be a lowercase SHA-256 identity")
+    return result
+
+
+def _raw_sha256(value: object, label: str) -> str:
+    result = _required_string(value, label)
+    if _RAW_SHA256.fullmatch(result) is None:
+        raise InstallerReleaseOperationError(
+            f"installer release {label} must be a raw lowercase SHA-256 identity"
+        )
+    return result
+
+
+def _release_sequence(value: object, label: str) -> int:
+    if (
+        isinstance(value, bool)
+        or not isinstance(value, int)
+        or value <= 0
+        or value > _MAXIMUM_RELEASE_SEQUENCE
+    ):
+        raise InstallerReleaseOperationError(f"installer release {label} must be a positive UInt64 integer")
+    return value
+
+
+def _stable_semver(value: object, label: str) -> str:
+    result = _required_string(value, label)
+    match = _SEMVER.fullmatch(result)
+    if match is None or any(int(component) > _MAXIMUM_NATIVE_SIGNED_INTEGER for component in match.groups()):
+        raise InstallerReleaseOperationError(f"installer release {label} is invalid")
     return result
 
 
@@ -137,6 +173,28 @@ def _archives(value: object) -> dict[str, str]:
     return dict(sorted(result.items()))
 
 
+def _code_directories(value: object) -> dict[str, str]:
+    if not isinstance(value, Mapping) or not value:
+        raise InstallerReleaseOperationError("installer release CodeDirectory digests are required")
+    result: dict[str, str] = {}
+    for architecture, digest in value.items():
+        if not isinstance(architecture, str) or architecture not in _ARCHITECTURES:
+            raise InstallerReleaseOperationError("installer release CodeDirectory architecture is unsupported")
+        result[architecture] = _raw_sha256(digest, f"{architecture} CodeDirectory digest")
+    return dict(sorted(result.items()))
+
+
+def _notarization_receipts(value: object) -> dict[str, str]:
+    if not isinstance(value, Mapping) or not value:
+        raise InstallerReleaseOperationError("installer release notarization receipts are required")
+    result: dict[str, str] = {}
+    for architecture, reference in value.items():
+        if not isinstance(architecture, str) or architecture not in _ARCHITECTURES:
+            raise InstallerReleaseOperationError("installer release notarization receipt architecture is unsupported")
+        result[architecture] = _receipt_reference(reference, f"{architecture} notarization receipt reference")
+    return dict(sorted(result.items()))
+
+
 def _target_ids(value: object) -> tuple[str, ...]:
     if not isinstance(value, (tuple, list)):
         raise InstallerReleaseOperationError("installer release cleanup target IDs are invalid")
@@ -165,6 +223,8 @@ class InstallerReleaseIdentity:
     team_identifier: str
     release_tag_prefix: str
     asset_prefix: str
+    release_descriptor_asset_name: str
+    release_trust_configuration_sha256: str
     signature_algorithm: str
     signature_key_ids: tuple[str, ...]
     signature_threshold: int
@@ -180,6 +240,12 @@ class InstallerReleaseIdentity:
             raise InstallerReleaseOperationError("installer release tag prefix is invalid")
         if not isinstance(self.asset_prefix, str) or _ASSET_PREFIX.fullmatch(self.asset_prefix) is None:
             raise InstallerReleaseOperationError("installer release asset prefix is invalid")
+        if (
+            not isinstance(self.release_descriptor_asset_name, str)
+            or _DESCRIPTOR_ASSET_NAME.fullmatch(self.release_descriptor_asset_name) is None
+        ):
+            raise InstallerReleaseOperationError("installer release descriptor asset name is invalid")
+        _raw_sha256(self.release_trust_configuration_sha256, "release trust configuration digest")
         if self.signature_algorithm != "ed25519":
             raise InstallerReleaseOperationError("installer release signature algorithm is unsupported")
         if not isinstance(self.signature_key_ids, (tuple, list)):
@@ -206,6 +272,7 @@ class InstallerReleaseIdentity:
             value,
             frozenset({
                 "github_repository", "bundle_identifier", "team_identifier", "release_tag_prefix", "asset_prefix",
+                "release_descriptor_asset_name", "release_trust_configuration_sha256",
                 "signature_algorithm", "signature_key_ids", "signature_threshold",
             }),
             "identity",
@@ -219,20 +286,31 @@ class InstallerReleaseIdentity:
             team_identifier=_required_string(payload["team_identifier"], "Apple Team identifier"),
             release_tag_prefix=_required_string(payload["release_tag_prefix"], "tag prefix"),
             asset_prefix=_required_string(payload["asset_prefix"], "asset prefix"),
+            release_descriptor_asset_name=_required_string(
+                payload["release_descriptor_asset_name"], "descriptor asset name"
+            ),
+            release_trust_configuration_sha256=_raw_sha256(
+                payload["release_trust_configuration_sha256"], "release trust configuration digest"
+            ),
             signature_algorithm=_required_string(payload["signature_algorithm"], "signature algorithm"),
             signature_key_ids=tuple(key_ids),
             signature_threshold=payload["signature_threshold"],
         )
 
     def release_tag(self, version: str) -> str:
-        if _SEMVER.fullmatch(version) is None:
-            raise InstallerReleaseOperationError("installer release version is invalid")
-        return f"{self.release_tag_prefix}{version}"
+        _stable_semver(version, "version")
+        tag = f"{self.release_tag_prefix}{version}"
+        if _GITHUB_RELEASE_TAG.fullmatch(tag) is None:
+            raise InstallerReleaseOperationError("installer release tag exceeds the canonical GitHub identity limit")
+        return tag
 
     def asset_name(self, architecture: str) -> str:
         if architecture not in _ARCHITECTURES:
             raise InstallerReleaseOperationError("installer release archive architecture is unsupported")
-        return f"{self.asset_prefix}{architecture}.zip"
+        name = f"{self.asset_prefix}{architecture}.zip"
+        if _ARCHIVE_ASSET_NAME.fullmatch(name) is None:
+            raise InstallerReleaseOperationError("installer release archive name exceeds the canonical GitHub identity limit")
+        return name
 
 
 @dataclass(frozen=True)
@@ -288,8 +366,10 @@ class InstallerReleasePreparation:
     operation_id: str
     installer_version: str
     channel: str
+    release_sequence: int
     source_revision: str
     policy_revision: str
+    provenance_sha256: str
     release_identity: InstallerReleaseIdentity
     capabilities: tuple[str, ...]
     preparation: InstallerPreparationEvidence
@@ -298,13 +378,14 @@ class InstallerReleasePreparation:
     def __post_init__(self) -> None:
         if not isinstance(self.operation_id, str) or _OPERATION_ID.fullmatch(self.operation_id) is None:
             raise InstallerReleaseOperationError("installer preparation operation ID is invalid")
-        if not isinstance(self.installer_version, str) or _SEMVER.fullmatch(self.installer_version) is None:
-            raise InstallerReleaseOperationError("installer preparation version is invalid")
+        _stable_semver(self.installer_version, "preparation version")
         if self.channel not in _CHANNELS:
             raise InstallerReleaseOperationError("installer preparation channel is invalid")
+        _release_sequence(self.release_sequence, "preparation release sequence")
         if not isinstance(self.source_revision, str) or _REVISION.fullmatch(self.source_revision) is None:
             raise InstallerReleaseOperationError("installer preparation source revision is invalid")
         _policy_revision(self.policy_revision, "preparation policy revision")
+        _raw_sha256(self.provenance_sha256, "preparation provenance digest")
         if not isinstance(self.release_identity, InstallerReleaseIdentity):
             raise InstallerReleaseOperationError("installer preparation release identity is invalid")
         object.__setattr__(self, "capabilities", _capabilities(self.capabilities))
@@ -318,8 +399,8 @@ class InstallerReleasePreparation:
         payload = _strict_mapping(
             value,
             frozenset({
-                "operation_id", "installer_version", "channel", "source_revision", "policy_revision",
-                "release_identity", "capabilities", "preparation", "state",
+                "operation_id", "installer_version", "channel", "release_sequence", "source_revision", "policy_revision",
+                "provenance_sha256", "release_identity", "capabilities", "preparation", "state",
             }),
             "preparation record",
         )
@@ -327,8 +408,10 @@ class InstallerReleasePreparation:
             operation_id=_required_string(payload["operation_id"], "preparation operation ID"),
             installer_version=_required_string(payload["installer_version"], "preparation version"),
             channel=_required_string(payload["channel"], "preparation channel"),
+            release_sequence=_release_sequence(payload["release_sequence"], "preparation release sequence"),
             source_revision=_required_string(payload["source_revision"], "preparation source revision"),
             policy_revision=_required_string(payload["policy_revision"], "preparation policy revision"),
+            provenance_sha256=_raw_sha256(payload["provenance_sha256"], "preparation provenance digest"),
             release_identity=InstallerReleaseIdentity.from_mapping(payload["release_identity"]),
             capabilities=_capabilities(payload["capabilities"]),
             preparation=InstallerPreparationEvidence.from_mapping(payload["preparation"]),
@@ -342,10 +425,15 @@ class InstallerQualificationEvidence:
 
     source_revision: str
     policy_revision: str
+    release_sequence: int
+    provenance_sha256: str
+    release_trust_configuration_sha256: str
     candidate_manifest_digest: str
     candidate_archives: Mapping[str, str]
     descriptor_digest: str
     archives: Mapping[str, str]
+    archive_code_directory_sha256: Mapping[str, str]
+    archive_notarization_receipt_references: Mapping[str, str]
     qualification_receipt_reference: str
     result: str = "QUALIFIED"
 
@@ -355,10 +443,29 @@ class InstallerQualificationEvidence:
         if not isinstance(self.source_revision, str) or _REVISION.fullmatch(self.source_revision) is None:
             raise InstallerReleaseOperationError("installer qualification source revision is invalid")
         _policy_revision(self.policy_revision, "qualification policy revision")
+        _release_sequence(self.release_sequence, "qualification release sequence")
+        _raw_sha256(self.provenance_sha256, "qualification provenance digest")
+        _raw_sha256(
+            self.release_trust_configuration_sha256,
+            "qualification release trust configuration digest",
+        )
         _digest(self.candidate_manifest_digest, "qualification candidate manifest digest")
         object.__setattr__(self, "candidate_archives", _archives(self.candidate_archives))
         _digest(self.descriptor_digest, "qualification descriptor digest")
         object.__setattr__(self, "archives", _archives(self.archives))
+        object.__setattr__(self, "archive_code_directory_sha256", _code_directories(self.archive_code_directory_sha256))
+        object.__setattr__(
+            self,
+            "archive_notarization_receipt_references",
+            _notarization_receipts(self.archive_notarization_receipt_references),
+        )
+        if (
+            set(self.archive_code_directory_sha256) != set(self.archives)
+            or set(self.archive_notarization_receipt_references) != set(self.archives)
+        ):
+            raise InstallerReleaseOperationError(
+                "installer qualification CodeDirectory and notarization evidence must bind every archive"
+            )
         _receipt_reference(self.qualification_receipt_reference, "qualification receipt reference")
 
     @classmethod
@@ -366,8 +473,10 @@ class InstallerQualificationEvidence:
         payload = _strict_mapping(
             value,
             frozenset({
-                "result", "source_revision", "policy_revision", "candidate_manifest_digest", "candidate_archives",
-                "descriptor_digest", "archives", "qualification_receipt_reference",
+                "result", "source_revision", "policy_revision", "release_sequence", "provenance_sha256",
+                "release_trust_configuration_sha256", "candidate_manifest_digest", "candidate_archives",
+                "descriptor_digest", "archives", "archive_code_directory_sha256",
+                "archive_notarization_receipt_references", "qualification_receipt_reference",
             }),
             "qualification evidence",
         )
@@ -375,12 +484,21 @@ class InstallerQualificationEvidence:
             result=_required_string(payload["result"], "qualification result"),
             source_revision=_required_string(payload["source_revision"], "qualification source revision"),
             policy_revision=_required_string(payload["policy_revision"], "qualification policy revision"),
+            release_sequence=_release_sequence(payload["release_sequence"], "qualification release sequence"),
+            provenance_sha256=_raw_sha256(payload["provenance_sha256"], "qualification provenance digest"),
+            release_trust_configuration_sha256=_raw_sha256(
+                payload["release_trust_configuration_sha256"], "qualification release trust configuration digest"
+            ),
             candidate_manifest_digest=_required_string(
                 payload["candidate_manifest_digest"], "qualification candidate manifest digest"
             ),
             candidate_archives=_archives(payload["candidate_archives"]),
             descriptor_digest=_required_string(payload["descriptor_digest"], "qualification descriptor digest"),
             archives=_archives(payload["archives"]),
+            archive_code_directory_sha256=_code_directories(payload["archive_code_directory_sha256"]),
+            archive_notarization_receipt_references=_notarization_receipts(
+                payload["archive_notarization_receipt_references"]
+            ),
             qualification_receipt_reference=_required_string(
                 payload["qualification_receipt_reference"], "qualification receipt reference"
             ),
@@ -394,7 +512,12 @@ class InstallerPublicationEvidence:
     github_repository: str
     release_tag: str
     policy_revision: str
+    release_sequence: int
+    provenance_sha256: str
+    release_trust_configuration_sha256: str
+    descriptor_asset_name: str
     descriptor_digest: str
+    descriptor_readback_digest: str
     archives: Mapping[str, str]
     publication_receipt_reference: str
     readback_receipt_reference: str
@@ -407,7 +530,19 @@ class InstallerPublicationEvidence:
             raise InstallerReleaseOperationError("installer publication GitHub repository is invalid")
         _required_string(self.release_tag, "publication release tag")
         _policy_revision(self.policy_revision, "publication policy revision")
+        _release_sequence(self.release_sequence, "publication release sequence")
+        _raw_sha256(self.provenance_sha256, "publication provenance digest")
+        _raw_sha256(
+            self.release_trust_configuration_sha256,
+            "publication release trust configuration digest",
+        )
+        if (
+            not isinstance(self.descriptor_asset_name, str)
+            or _DESCRIPTOR_ASSET_NAME.fullmatch(self.descriptor_asset_name) is None
+        ):
+            raise InstallerReleaseOperationError("installer publication descriptor asset name is invalid")
         _digest(self.descriptor_digest, "publication descriptor digest")
+        _digest(self.descriptor_readback_digest, "publication descriptor readback digest")
         object.__setattr__(self, "archives", _archives(self.archives))
         _receipt_reference(self.publication_receipt_reference, "publication receipt reference")
         _receipt_reference(self.readback_receipt_reference, "publication readback receipt reference")
@@ -417,7 +552,9 @@ class InstallerPublicationEvidence:
         payload = _strict_mapping(
             value,
             frozenset({
-                "result", "github_repository", "release_tag", "policy_revision", "descriptor_digest", "archives", "publication_receipt_reference",
+                "result", "github_repository", "release_tag", "policy_revision", "release_sequence", "provenance_sha256",
+                "release_trust_configuration_sha256", "descriptor_asset_name", "descriptor_digest",
+                "descriptor_readback_digest", "archives", "publication_receipt_reference",
                 "readback_receipt_reference",
             }),
             "publication evidence",
@@ -427,7 +564,18 @@ class InstallerPublicationEvidence:
             github_repository=_required_string(payload["github_repository"], "publication GitHub repository"),
             release_tag=_required_string(payload["release_tag"], "publication release tag"),
             policy_revision=_required_string(payload["policy_revision"], "publication policy revision"),
+            release_sequence=_release_sequence(payload["release_sequence"], "publication release sequence"),
+            provenance_sha256=_raw_sha256(payload["provenance_sha256"], "publication provenance digest"),
+            release_trust_configuration_sha256=_raw_sha256(
+                payload["release_trust_configuration_sha256"], "publication release trust configuration digest"
+            ),
+            descriptor_asset_name=_required_string(
+                payload["descriptor_asset_name"], "publication descriptor asset name"
+            ),
             descriptor_digest=_required_string(payload["descriptor_digest"], "publication descriptor digest"),
+            descriptor_readback_digest=_required_string(
+                payload["descriptor_readback_digest"], "publication descriptor readback digest"
+            ),
             archives=_archives(payload["archives"]),
             publication_receipt_reference=_required_string(
                 payload["publication_receipt_reference"], "publication receipt reference"
@@ -473,8 +621,10 @@ class InstallerReleaseOperation:
     operation_id: str
     installer_version: str
     channel: str
+    release_sequence: int
     source_revision: str
     policy_revision: str
+    provenance_sha256: str
     release_identity: InstallerReleaseIdentity
     capabilities: tuple[str, ...]
     preparation: InstallerPreparationEvidence
@@ -488,13 +638,14 @@ class InstallerReleaseOperation:
     def __post_init__(self) -> None:
         if not isinstance(self.operation_id, str) or _OPERATION_ID.fullmatch(self.operation_id) is None:
             raise InstallerReleaseOperationError("installer release operation ID is invalid")
-        if not isinstance(self.installer_version, str) or _SEMVER.fullmatch(self.installer_version) is None:
-            raise InstallerReleaseOperationError("installer release version is invalid")
+        _stable_semver(self.installer_version, "version")
         if self.channel not in _CHANNELS:
             raise InstallerReleaseOperationError("installer release channel is invalid")
+        _release_sequence(self.release_sequence, "release sequence")
         if not isinstance(self.source_revision, str) or _REVISION.fullmatch(self.source_revision) is None:
             raise InstallerReleaseOperationError("installer release source revision is invalid")
         _policy_revision(self.policy_revision, "policy revision")
+        _raw_sha256(self.provenance_sha256, "provenance digest")
         if not isinstance(self.release_identity, InstallerReleaseIdentity):
             raise InstallerReleaseOperationError("installer release identity is invalid")
         object.__setattr__(self, "capabilities", _capabilities(self.capabilities))
@@ -532,8 +683,10 @@ class InstallerReleaseOperation:
         operation_id: str,
         installer_version: str,
         channel: str,
+        release_sequence: int,
         source_revision: str,
         policy_revision: str,
+        provenance_sha256: str,
         release_identity: InstallerReleaseIdentity,
         capabilities: tuple[str, ...] | list[str],
         preparation: InstallerPreparationEvidence,
@@ -547,8 +700,10 @@ class InstallerReleaseOperation:
             operation_id=operation_id,
             installer_version=installer_version,
             channel=channel,
+            release_sequence=release_sequence,
             source_revision=source_revision,
             policy_revision=policy_revision,
+            provenance_sha256=provenance_sha256,
             release_identity=release_identity,
             capabilities=tuple(capabilities),
             preparation=preparation,
@@ -563,7 +718,8 @@ class InstallerReleaseOperation:
         payload = _strict_mapping(
             value,
             frozenset({
-                "operation_id", "installer_version", "channel", "source_revision", "policy_revision", "capabilities", "preparation", "archives",
+                "operation_id", "installer_version", "channel", "release_sequence", "source_revision", "policy_revision",
+                "provenance_sha256", "capabilities", "preparation", "archives",
                 "release_identity", "descriptor_digest", "state", "qualification", "publication", "cleanup",
             }),
             "operation record",
@@ -575,8 +731,10 @@ class InstallerReleaseOperation:
             operation_id=_required_string(payload["operation_id"], "operation ID"),
             installer_version=_required_string(payload["installer_version"], "version"),
             channel=_required_string(payload["channel"], "channel"),
+            release_sequence=_release_sequence(payload["release_sequence"], "release sequence"),
             source_revision=_required_string(payload["source_revision"], "source revision"),
             policy_revision=_required_string(payload["policy_revision"], "policy revision"),
+            provenance_sha256=_raw_sha256(payload["provenance_sha256"], "provenance digest"),
             release_identity=InstallerReleaseIdentity.from_mapping(payload["release_identity"]),
             capabilities=_capabilities(payload["capabilities"]),
             preparation=InstallerPreparationEvidence.from_mapping(payload["preparation"]),
@@ -599,6 +757,12 @@ class InstallerReleaseOperation:
             if (
                 evidence.source_revision != self.source_revision
                 or evidence.policy_revision != self.policy_revision
+                or evidence.release_sequence != self.release_sequence
+                or evidence.provenance_sha256 != self.provenance_sha256
+                or (
+                    evidence.release_trust_configuration_sha256
+                    != self.release_identity.release_trust_configuration_sha256
+                )
                 or evidence.candidate_manifest_digest != self.preparation.candidate_manifest_digest
                 or dict(evidence.candidate_archives) != dict(self.preparation.candidate_archives)
             ):
@@ -609,6 +773,14 @@ class InstallerReleaseOperation:
             evidence.github_repository != self.release_identity.github_repository
             or evidence.release_tag != self.release_tag
             or evidence.policy_revision != self.policy_revision
+            or evidence.release_sequence != self.release_sequence
+            or evidence.provenance_sha256 != self.provenance_sha256
+            or (
+                evidence.release_trust_configuration_sha256
+                != self.release_identity.release_trust_configuration_sha256
+            )
+            or evidence.descriptor_asset_name != self.release_identity.release_descriptor_asset_name
+            or evidence.descriptor_readback_digest != self.descriptor_digest
         ):
             raise InstallerReleaseOperationError("installer publication evidence does not bind the canonical release identity")
 
@@ -637,27 +809,189 @@ class InstallerReleaseOperation:
             return replace(self, state=state, cleanup=evidence)
 
 
-def _atomic_json(path: Path, value: object) -> None:
-    """Write durable non-secret evidence without a partially written record."""
+def _no_follow_flag(label: str) -> int:
+    """Return the required no-follow primitive, never silently weakening it."""
 
-    path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
-    descriptor, temporary_name = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
+    nofollow = getattr(os, "O_NOFOLLOW", None)
+    if nofollow is None:
+        raise InstallerReleaseOperationError(f"{label} requires a platform no-follow open primitive")
+    return nofollow
+
+
+def _require_private_directory(status: os.stat_result, label: str) -> None:
+    if (
+        not stat.S_ISDIR(status.st_mode)
+        or status.st_uid != os.geteuid()
+        or status.st_mode & 0o022
+    ):
+        raise InstallerReleaseOperationError(f"{label} is unsafe")
+
+
+def _require_private_regular_file(status: os.stat_result, label: str) -> None:
+    if (
+        not stat.S_ISREG(status.st_mode)
+        or status.st_nlink != 1
+        or status.st_uid != os.geteuid()
+        or status.st_mode & 0o022
+    ):
+        raise InstallerReleaseOperationError(f"{label} is unsafe")
+
+
+def _open_private_directory(
+    path: Path,
+    *,
+    label: str,
+    create: bool,
+    parents: bool = False,
+) -> int | None:
+    """Open one journal directory without accepting a redirected leaf."""
+
+    if create:
+        try:
+            path.mkdir(mode=0o700, parents=parents, exist_ok=True)
+        except OSError as error:
+            raise InstallerReleaseOperationError(f"{label} is unsafe or unavailable") from error
     try:
-        with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
+        descriptor = os.open(
+            path,
+            os.O_RDONLY
+            | getattr(os, "O_DIRECTORY", 0)
+            | _no_follow_flag(label)
+            | getattr(os, "O_CLOEXEC", 0),
+        )
+    except FileNotFoundError:
+        if not create:
+            return None
+        raise InstallerReleaseOperationError(f"{label} is unavailable") from None
+    except OSError as error:
+        raise InstallerReleaseOperationError(f"{label} is unsafe or unavailable") from error
+    try:
+        _require_private_directory(os.fstat(descriptor), label)
+        return descriptor
+    except BaseException:
+        os.close(descriptor)
+        raise
+
+
+def _read_private_json(path: Path, label: str) -> str | None:
+    """Read one owned regular journal record through a no-follow descriptor."""
+
+    directory_descriptor = _open_private_directory(
+        path.parent,
+        label="installer release journal record directory",
+        create=False,
+    )
+    if directory_descriptor is None:
+        return None
+    descriptor = -1
+    try:
+        try:
+            descriptor = os.open(
+                path.name,
+                os.O_RDONLY
+                | os.O_NONBLOCK
+                | _no_follow_flag(label)
+                | getattr(os, "O_CLOEXEC", 0),
+                dir_fd=directory_descriptor,
+            )
+        except FileNotFoundError:
+            return None
+        except OSError as error:
+            raise InstallerReleaseOperationError(f"{label} is unreadable") from error
+        before = os.fstat(descriptor)
+        _require_private_regular_file(before, label)
+        if before.st_size < 1 or before.st_size > _MAXIMUM_JOURNAL_RECORD_BYTES:
+            raise InstallerReleaseOperationError(f"{label} is unreadable")
+        try:
+            with os.fdopen(descriptor, "rb", closefd=False) as stream:
+                raw = stream.read(_MAXIMUM_JOURNAL_RECORD_BYTES + 1)
+            if len(raw) > _MAXIMUM_JOURNAL_RECORD_BYTES:
+                raise InstallerReleaseOperationError(f"{label} is unreadable")
+            result = raw.decode("utf-8")
+        except (OSError, UnicodeDecodeError) as error:
+            raise InstallerReleaseOperationError(f"{label} is unreadable") from error
+        after = os.fstat(descriptor)
+        if (
+            before.st_dev != after.st_dev
+            or before.st_ino != after.st_ino
+            or before.st_size != after.st_size
+            or before.st_mtime_ns != after.st_mtime_ns
+        ):
+            raise InstallerReleaseOperationError(f"{label} changed while it was being read")
+        return result
+    finally:
+        if descriptor >= 0:
+            os.close(descriptor)
+        os.close(directory_descriptor)
+
+
+def _open_temporary_record(directory_descriptor: int, name: str) -> tuple[int, str]:
+    flags = (
+        os.O_WRONLY
+        | os.O_CREAT
+        | os.O_EXCL
+        | _no_follow_flag("installer release journal temporary record")
+        | getattr(os, "O_CLOEXEC", 0)
+    )
+    for _ in range(128):
+        temporary_name = f".{name}.{os.urandom(16).hex()}"
+        try:
+            return os.open(temporary_name, flags, 0o600, dir_fd=directory_descriptor), temporary_name
+        except FileExistsError:
+            continue
+        except OSError as error:
+            raise InstallerReleaseOperationError("installer release journal temporary record is unavailable") from error
+    raise InstallerReleaseOperationError("installer release journal temporary record name could not be allocated")
+
+
+def _atomic_json(path: Path, value: object) -> None:
+    """Write durable non-secret evidence without a partial or redirected record."""
+
+    directory_descriptor = _open_private_directory(
+        path.parent,
+        label="installer release journal record directory",
+        create=True,
+    )
+    assert directory_descriptor is not None
+    descriptor = -1
+    temporary_name: str | None = None
+    try:
+        try:
+            _require_private_regular_file(
+                os.lstat(path.name, dir_fd=directory_descriptor),
+                "installer release journal record",
+            )
+        except FileNotFoundError:
+            pass
+        descriptor, temporary_name = _open_temporary_record(directory_descriptor, path.name)
+        _require_private_regular_file(os.fstat(descriptor), "installer release journal temporary record")
+        with os.fdopen(descriptor, "w", encoding="utf-8", closefd=False) as stream:
             json.dump(value, stream, sort_keys=True, separators=(",", ":"), allow_nan=False)
             stream.write("\n")
+            os.fchmod(stream.fileno(), 0o600)
             stream.flush()
             os.fsync(stream.fileno())
-        os.chmod(temporary_name, 0o600)
-        os.replace(temporary_name, path)
-        directory_descriptor = os.open(path.parent, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
-        try:
-            os.fsync(directory_descriptor)
-        finally:
-            os.close(directory_descriptor)
+        os.close(descriptor)
+        descriptor = -1
+        os.replace(
+            temporary_name,
+            path.name,
+            src_dir_fd=directory_descriptor,
+            dst_dir_fd=directory_descriptor,
+        )
+        temporary_name = None
+        os.fsync(directory_descriptor)
     except BaseException:
-        Path(temporary_name).unlink(missing_ok=True)
+        if temporary_name is not None:
+            try:
+                os.unlink(temporary_name, dir_fd=directory_descriptor)
+            except FileNotFoundError:
+                pass
         raise
+    finally:
+        if descriptor >= 0:
+            os.close(descriptor)
+        os.close(directory_descriptor)
 
 
 class InstallerReleaseOperationStore:
@@ -670,9 +1004,24 @@ class InstallerReleaseOperationStore:
     """
 
     def __init__(self, root: Path) -> None:
-        self.root = Path(root).expanduser().resolve()
+        # Keep the configured leaf intact: ``resolve()`` would erase evidence
+        # that a caller selected a redirected journal root before O_NOFOLLOW
+        # can reject it in ``acquire``.
+        self.root = Path(os.path.abspath(os.fspath(Path(root).expanduser())))
         self._lock_descriptor: int | None = None
         self._lock_owner: str | None = None
+
+    def _secure_root(self, *, create: bool) -> bool:
+        descriptor = _open_private_directory(
+            self.root,
+            label="installer release operation store root",
+            create=create,
+            parents=True,
+        )
+        if descriptor is None:
+            return False
+        os.close(descriptor)
+        return True
 
     def _path(self, operation_id: str) -> Path:
         if not isinstance(operation_id, str) or _OPERATION_ID.fullmatch(operation_id) is None:
@@ -684,6 +1033,10 @@ class InstallerReleaseOperationStore:
             raise InstallerReleaseOperationError("installer preparation operation ID is invalid")
         return self.root / "preparations" / f"{operation_id}.json"
 
+    def _sequence_path(self, release_sequence: int) -> Path:
+        _release_sequence(release_sequence, "sequence reservation")
+        return self.root / "sequences" / f"{release_sequence}.json"
+
     @property
     def _lock(self) -> Path:
         return self.root / "installer-release-operation.lock"
@@ -692,13 +1045,36 @@ class InstallerReleaseOperationStore:
         self._path(operation_id)
         if self._lock_descriptor is not None:
             raise InstallerReleaseOperationError("this installer release store already owns the release lock")
-        self.root.mkdir(mode=0o700, parents=True, exist_ok=True)
-        descriptor = os.open(self._lock, os.O_WRONLY | os.O_CREAT, 0o600)
+        self._secure_root(create=True)
+        nofollow = getattr(os, "O_NOFOLLOW", None)
+        if nofollow is None:
+            raise InstallerReleaseOperationError(
+                "installer release operation lock requires a platform no-follow open primitive"
+            )
         try:
+            descriptor = os.open(
+                self._lock,
+                os.O_WRONLY | os.O_CREAT | nofollow | getattr(os, "O_CLOEXEC", 0),
+                0o600,
+            )
+        except OSError as error:
+            raise InstallerReleaseOperationError("installer release operation lock is unsafe or unavailable") from error
+        try:
+            lock_status = os.fstat(descriptor)
+            if (
+                not stat.S_ISREG(lock_status.st_mode)
+                or lock_status.st_nlink != 1
+                or lock_status.st_uid != os.geteuid()
+                or lock_status.st_mode & 0o022
+            ):
+                raise InstallerReleaseOperationError("installer release operation lock is unsafe")
             fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError as error:
             os.close(descriptor)
             raise InstallerReleaseOperationError("another installer release operation owns the release lock") from error
+        except BaseException:
+            os.close(descriptor)
+            raise
         try:
             os.ftruncate(descriptor, 0)
             os.write(descriptor, (operation_id + "\n").encode("utf-8"))
@@ -722,24 +1098,181 @@ class InstallerReleaseOperationStore:
         if self._lock_descriptor is None or self._lock_owner != operation_id:
             raise InstallerReleaseOperationError("installer release operation must own the release lock")
 
+    @staticmethod
+    def _sequence_reservation_identity(
+        record: InstallerReleasePreparation | InstallerReleaseOperation,
+    ) -> dict[str, object]:
+        """The non-secret immutable facts which consume one release sequence.
+
+        A sequence is allocated while the unsigned candidate is durable, not
+        during publication.  This prevents an interrupted or concurrent flow
+        from reusing a descriptor sequence for different source, policy,
+        provenance, trust configuration, or candidate bytes.
+        """
+
+        release_identity = asdict(record.release_identity)
+        release_identity["signature_key_ids"] = list(record.release_identity.signature_key_ids)
+        return {
+            "operation_id": record.operation_id,
+            "installer_version": record.installer_version,
+            "channel": record.channel,
+            "release_sequence": record.release_sequence,
+            "source_revision": record.source_revision,
+            "policy_revision": record.policy_revision,
+            "provenance_sha256": record.provenance_sha256,
+            "release_identity": release_identity,
+            "capabilities": list(record.capabilities),
+            "preparation": asdict(record.preparation),
+        }
+
+    @staticmethod
+    def _parse_sequence_reservation(
+        value: object,
+        *,
+        expected_sequence: int,
+    ) -> InstallerReleasePreparation:
+        """Accept only an exact immutable ``PREPARED`` reservation identity.
+
+        A numeric filename and a matching ``release_sequence`` member are not
+        enough to establish a durable frontier.  Corruption must not manufacture
+        a fake high-water mark that blocks a later release or hides a malformed
+        collision record.
+        """
+
+        if not isinstance(value, Mapping):
+            raise InstallerReleaseOperationError("installer release sequence reservation is unreadable")
+        candidate = dict(value)
+        candidate["state"] = "PREPARED"
+        try:
+            preparation = InstallerReleasePreparation.parse(candidate)
+        except InstallerReleaseOperationError as error:
+            raise InstallerReleaseOperationError("installer release sequence reservation is unreadable") from error
+        if preparation.release_sequence != expected_sequence:
+            raise InstallerReleaseOperationError("installer release sequence reservation is unreadable")
+        if dict(value) != InstallerReleaseOperationStore._sequence_reservation_identity(preparation):
+            raise InstallerReleaseOperationError("installer release sequence reservation is unreadable")
+        return preparation
+
+    def _reserve_sequence(
+        self,
+        record: InstallerReleasePreparation | InstallerReleaseOperation,
+        *,
+        allow_verified_historical_recovery: bool = False,
+    ) -> None:
+        self._require_lock(record.operation_id)
+        if allow_verified_historical_recovery and (
+            not isinstance(record, InstallerReleaseOperation) or record.state != "PUBLISHED"
+        ):
+            raise InstallerReleaseOperationError(
+                "only an externally verified published installer receipt may reserve a historical sequence"
+            )
+        path = self._sequence_path(record.release_sequence)
+        identity = self._sequence_reservation_identity(record)
+        sequence_root = path.parent
+        raw = _read_private_json(path, "installer release sequence reservation")
+        if raw is not None:
+            try:
+                existing = self._parse_sequence_reservation(
+                    _strict_json_load(raw, "release sequence reservation"),
+                    expected_sequence=record.release_sequence,
+                )
+            except InstallerReleaseOperationError as error:
+                raise InstallerReleaseOperationError("installer release sequence reservation is unreadable") from error
+            if self._sequence_reservation_identity(existing) != identity:
+                raise InstallerReleaseOperationError(
+                    "installer release sequence is already reserved by different bytes or provenance"
+                )
+            return
+        if (
+            record.release_sequence <= self._highest_reserved_sequence(sequence_root)
+            and not allow_verified_historical_recovery
+        ):
+            raise InstallerReleaseOperationError(
+                "installer release sequence must be strictly higher than every durable reservation"
+            )
+        _atomic_json(path, identity)
+
+    @staticmethod
+    def _highest_reserved_sequence(sequence_root: Path) -> int:
+        """Read the monotonic reservation frontier without trusting filenames.
+
+        A lower sequence would create a signed descriptor that no already
+        updated installer may accept.  Unknown, unreadable, non-regular, or
+        mismatched reservation records therefore block allocation rather than
+        being silently ignored.
+        """
+
+        directory_descriptor = _open_private_directory(
+            sequence_root,
+            label="installer release sequence reservation directory",
+            create=False,
+        )
+        if directory_descriptor is None:
+            return 0
+        highest = 0
+        try:
+            try:
+                entries = os.listdir(directory_descriptor)
+            except OSError as error:
+                raise InstallerReleaseOperationError("installer release sequence reservations are unreadable") from error
+            for name in entries:
+                match = _SEQUENCE_RESERVATION_FILENAME.fullmatch(name)
+                if match is None:
+                    raise InstallerReleaseOperationError("installer release sequence reservation directory is unsafe")
+                try:
+                    _require_private_regular_file(
+                        os.lstat(name, dir_fd=directory_descriptor),
+                        "installer release sequence reservation",
+                    )
+                except OSError as error:
+                    raise InstallerReleaseOperationError("installer release sequence reservation directory is unsafe") from error
+                sequence = _release_sequence(int(match.group(1)), "reserved sequence")
+                try:
+                    raw = _read_private_json(sequence_root / name, "installer release sequence reservation")
+                    if raw is None:
+                        raise InstallerReleaseOperationError("installer release sequence reservation is unreadable")
+                    record = InstallerReleaseOperationStore._parse_sequence_reservation(
+                        _strict_json_load(raw, "release sequence reservation"),
+                        expected_sequence=sequence,
+                    )
+                except InstallerReleaseOperationError as error:
+                    raise InstallerReleaseOperationError("installer release sequence reservation is unreadable") from error
+                highest = max(highest, sequence)
+            return highest
+        finally:
+            os.close(directory_descriptor)
+
+    def _require_sequence_frontier(self, record: InstallerReleasePreparation | InstallerReleaseOperation) -> None:
+        highest = self._highest_reserved_sequence(self.root / "sequences")
+        if record.release_sequence != highest:
+            raise InstallerReleaseOperationError(
+                "installer release sequence is no longer the durable reservation frontier"
+            )
+
     def load(self, operation_id: str) -> InstallerReleaseOperation | None:
         path = self._path(operation_id)
-        if not path.exists():
+        if not self._secure_root(create=False):
             return None
         try:
-            return InstallerReleaseOperation.parse(_strict_json_load(path.read_text(encoding="utf-8"), "operation record"))
-        except (OSError, InstallerReleaseOperationError) as error:
+            raw = _read_private_json(path, "installer release operation record")
+            if raw is None:
+                return None
+            return InstallerReleaseOperation.parse(_strict_json_load(raw, "operation record"))
+        except InstallerReleaseOperationError as error:
             raise InstallerReleaseOperationError("installer release operation record is unreadable") from error
 
     def load_preparation(self, operation_id: str) -> InstallerReleasePreparation | None:
         path = self._preparation_path(operation_id)
-        if not path.exists():
+        if not self._secure_root(create=False):
             return None
         try:
+            raw = _read_private_json(path, "installer release preparation record")
+            if raw is None:
+                return None
             return InstallerReleasePreparation.parse(
-                _strict_json_load(path.read_text(encoding="utf-8"), "preparation record")
+                _strict_json_load(raw, "preparation record")
             )
-        except (OSError, InstallerReleaseOperationError) as error:
+        except InstallerReleaseOperationError as error:
             raise InstallerReleaseOperationError("installer release preparation record is unreadable") from error
 
     @staticmethod
@@ -751,8 +1284,10 @@ class InstallerReleaseOperationStore:
             preparation.operation_id,
             preparation.installer_version,
             preparation.channel,
+            preparation.release_sequence,
             preparation.source_revision,
             preparation.policy_revision,
+            preparation.provenance_sha256,
             preparation.release_identity,
             preparation.capabilities,
             preparation.preparation,
@@ -760,8 +1295,10 @@ class InstallerReleaseOperationStore:
             operation.operation_id,
             operation.installer_version,
             operation.channel,
+            operation.release_sequence,
             operation.source_revision,
             operation.policy_revision,
+            operation.provenance_sha256,
             operation.release_identity,
             operation.capabilities,
             operation.preparation,
@@ -777,16 +1314,19 @@ class InstallerReleaseOperationStore:
 
         self._require_lock(preparation.operation_id)
         existing = self.load_preparation(preparation.operation_id)
-        if existing is None:
-            _atomic_json(self._preparation_path(preparation.operation_id), asdict(preparation))
-            return preparation
-        if existing != preparation:
+        if existing is not None and existing != preparation:
             raise InstallerReleaseOperationError(
                 "installer release preparation operation ID already binds different candidate bytes or provenance"
             )
+        self._reserve_sequence(preparation)
+        if existing is None:
+            _atomic_json(self._preparation_path(preparation.operation_id), asdict(preparation))
+            return preparation
         return existing
 
-    def save(self, operation: InstallerReleaseOperation) -> InstallerReleaseOperation:
+    def _save_exact(self, operation: InstallerReleaseOperation) -> InstallerReleaseOperation:
+        """Persist one already-authorized record without opening a lifecycle gate."""
+
         self._require_lock(operation.operation_id)
         existing = self.load(operation.operation_id)
         if existing is not None and existing != operation:
@@ -796,6 +1336,29 @@ class InstallerReleaseOperationStore:
         _atomic_json(self._path(operation.operation_id), asdict(operation))
         return operation
 
+    def save(self, operation: InstallerReleaseOperation) -> InstallerReleaseOperation:
+        """Persist only a qualified record that is bound to PREPARED evidence.
+
+        Publication recovery intentionally has a separate ``recover_published``
+        entry point.  Keeping this public method on the prepared path prevents
+        callers from manufacturing a qualified record, then marking it
+        published, without a durable candidate or sequence reservation.
+        """
+
+        self._require_lock(operation.operation_id)
+        if operation.state != "QUALIFIED":
+            raise InstallerReleaseOperationError(
+                "only a qualified installer operation may be saved outside publication recovery"
+            )
+        preparation = self.load_preparation(operation.operation_id)
+        if preparation is None or not self._preparation_binds_operation(preparation, operation):
+            raise InstallerReleaseOperationError(
+                "installer release save requires an immutable PREPARED candidate record"
+            )
+        self._reserve_sequence(operation)
+        self._require_sequence_frontier(operation)
+        return self._save_exact(operation)
+
     @staticmethod
     def same_identity(left: InstallerReleaseOperation, right: InstallerReleaseOperation) -> bool:
         """Compare only immutable installer facts, never mutable lifecycle evidence."""
@@ -804,8 +1367,10 @@ class InstallerReleaseOperationStore:
             left.operation_id,
             left.installer_version,
             left.channel,
+            left.release_sequence,
             left.source_revision,
             left.policy_revision,
+            left.provenance_sha256,
             left.release_identity,
             left.capabilities,
             left.preparation,
@@ -815,8 +1380,10 @@ class InstallerReleaseOperationStore:
             right.operation_id,
             right.installer_version,
             right.channel,
+            right.release_sequence,
             right.source_revision,
             right.policy_revision,
+            right.provenance_sha256,
             right.release_identity,
             right.capabilities,
             right.preparation,
@@ -842,6 +1409,8 @@ class InstallerReleaseOperationStore:
             raise InstallerReleaseOperationError(
                 "installer release qualification does not bind the durable PREPARED candidate record"
             )
+        self._reserve_sequence(operation)
+        self._require_sequence_frontier(operation)
         existing = self.load(operation.operation_id)
         if existing is None:
             return self.save(operation)
@@ -860,6 +1429,7 @@ class InstallerReleaseOperationStore:
         """Record verified GitHub Release publication/readback under exact identity."""
 
         self._require_lock(operation.operation_id)
+        self._require_sequence_frontier(operation)
         current = self.load(operation.operation_id)
         if current is None or not self.same_identity(current, operation):
             raise InstallerReleaseOperationError("installer release operation does not bind the exact requested identity")
@@ -887,10 +1457,14 @@ class InstallerReleaseOperationStore:
         self._require_lock(published.operation_id)
         if published.state != "PUBLISHED":
             raise InstallerReleaseOperationError("only a published installer receipt can seed recovery")
+        # A verified external receipt may arrive after a newer candidate has
+        # already reserved a sequence locally.  Recovery records that historic
+        # publication; it does not initiate or authorize a lower publication.
+        self._reserve_sequence(published, allow_verified_historical_recovery=True)
         self._assert_publication_available(published)
         current = self.load(published.operation_id)
         if current is None:
-            current = self.save(published)
+            current = self._save_exact(published)
         elif (
             not self.same_identity(current, published)
             or current.qualification != published.qualification
@@ -965,7 +1539,7 @@ class InstallerReleaseOperationStore:
         if operation.state not in {"PUBLISHED", "CLEANUP_PENDING", "RELEASE_COMPLETE"}:
             raise InstallerReleaseOperationError("only a published installer release may reserve its immutable identity")
         path, identity = self._publication_path_and_identity(operation)
-        if path.exists():
+        if _read_private_json(path, "published installer release identity") is not None:
             self._assert_publication_available(operation)
             return
         _atomic_json(path, identity)
@@ -974,11 +1548,15 @@ class InstallerReleaseOperationStore:
         """Read an existing tag reservation before any local state transition."""
 
         path, identity = self._publication_path_and_identity(operation)
-        if not path.exists():
+        try:
+            raw = _read_private_json(path, "published installer release identity")
+        except InstallerReleaseOperationError as error:
+            raise InstallerReleaseOperationError("published installer release identity is unreadable") from error
+        if raw is None:
             return
         try:
-            existing = _strict_json_load(path.read_text(encoding="utf-8"), "published installer identity")
-        except (OSError, InstallerReleaseOperationError) as error:
+            existing = _strict_json_load(raw, "published installer identity")
+        except InstallerReleaseOperationError as error:
             raise InstallerReleaseOperationError("published installer release identity is unreadable") from error
         if existing != identity:
             raise InstallerReleaseOperationError(
@@ -997,8 +1575,10 @@ class InstallerReleaseOperationStore:
             "operation_id": operation.operation_id,
             "installer_version": operation.installer_version,
             "channel": operation.channel,
+            "release_sequence": operation.release_sequence,
             "source_revision": operation.source_revision,
             "policy_revision": operation.policy_revision,
+            "provenance_sha256": operation.provenance_sha256,
             "release_identity": release_identity,
             "capabilities": list(operation.capabilities),
             "preparation": asdict(operation.preparation),

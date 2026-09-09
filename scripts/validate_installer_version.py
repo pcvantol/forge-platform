@@ -24,6 +24,7 @@ CHANNELS = frozenset({"stable", "candidate"})
 VERSION = re.compile(r"^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$")
 CAPABILITY = re.compile(r"^[a-z0-9][a-z0-9./_-]{0,127}$")
 SWIFT_VERSION = re.compile(r'static let currentVersion = try! InstallerVersion\("([^"]+)"\)')
+MAXIMUM_NATIVE_SIGNED_INTEGER = (1 << 63) - 1
 
 
 def _pairs(pairs: list[tuple[object, object]]) -> dict[str, object]:
@@ -45,7 +46,11 @@ def load_manifest() -> dict[str, Any]:
     if value["schema"] != SCHEMA or value["product"] != PRODUCT:
         raise RuntimeError("installer version manifest identity is invalid")
     version = value["version"]
-    if not isinstance(version, str) or VERSION.fullmatch(version) is None:
+    if (
+        not isinstance(version, str)
+        or VERSION.fullmatch(version) is None
+        or any(int(component) > MAXIMUM_NATIVE_SIGNED_INTEGER for component in version.split("."))
+    ):
         raise RuntimeError("installer version must be stable X.Y.Z")
     if value["channel"] not in CHANNELS:
         raise RuntimeError("installer channel is unsupported")

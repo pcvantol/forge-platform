@@ -45,6 +45,7 @@ REQUIRED = (
     "provenance/FOUNDATION_RECEIPT.md",
     "schemas/component-manifest.schema.json",
     "schemas/universal-installer-release.schema.json",
+    "schemas/universal-installer-release-provenance.schema.json",
     "schemas/universal-installer-composition-catalog.schema.json",
     "schemas/universal-installer-composition.schema.json",
     "macos/ForgePlatformInstaller/Package.swift",
@@ -86,9 +87,27 @@ def main() -> None:
         raise SystemExit("universal installer release schema identity is invalid")
     if "policy_revision" not in installer_release["properties"]["installer"]["required"]:
         raise SystemExit("universal installer release descriptor must bind its policy revision")
+    for field in ("github_release",):
+        if field not in installer_release["required"]:
+            raise SystemExit("universal installer release descriptor must bind canonical GitHub release identity")
+    for field in ("release_trust_configuration_sha256", "provenance_sha256"):
+        if field not in installer_release["properties"]["installer"]["required"]:
+            raise SystemExit("universal installer release descriptor must bind sealed trust and provenance identity")
+    installer_asset = installer_release["$defs"]["installer_asset"]
+    for field in ("asset_name", "code_directory_sha256", "notarization_receipt_reference"):
+        if field not in installer_asset["required"]:
+            raise SystemExit("universal installer release asset must bind GitHub name and signed archive identity")
     release_signature = installer_release["$defs"]["public_signature_envelope"]
     if release_signature["required"] != ["algorithm", "key_id", "signature"]:
         raise SystemExit("universal installer release descriptor must use a strict public signature envelope")
+    provenance = json.loads((ROOT / "schemas/universal-installer-release-provenance.schema.json").read_text())
+    if provenance["title"] != "Forge Platform installer release provenance":
+        raise SystemExit("universal installer provenance schema identity is invalid")
+    if provenance["required"] != [
+        "schema_version", "provenance_sha256", "installer_version", "channel", "release_sequence",
+        "source_revision", "policy_revision", "capabilities", "release_trust_configuration_sha256",
+    ]:
+        raise SystemExit("universal installer provenance schema must retain its strict public fields")
     catalog = json.loads((ROOT / "schemas/universal-installer-composition-catalog.schema.json").read_text())
     if catalog["title"] != "Forge Platform universal installer composition catalog":
         raise SystemExit("universal installer catalog schema identity is invalid")
@@ -140,6 +159,7 @@ def main() -> None:
         "Forge Platform must not add a second EP provisioner",
         "installer-release identity policy",
         "structured public signature envelopes",
+        "ForgePlatformInstallerReleaseProvenance.json",
     ):
         if required_term not in universal_installer:
             raise SystemExit(f"universal installer contract is missing canonical term: {required_term}")

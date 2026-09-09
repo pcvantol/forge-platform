@@ -7,6 +7,14 @@ on:
         description: Exact already-merged origin/main commit to qualify
         required: true
         type: string
+      release_sequence:
+        description: Positive immutable sequence reserved for this installer descriptor
+        required: true
+        type: string
+      provenance_sha256:
+        description: Raw SHA-256 of the protected ForgePlatformInstallerReleaseProvenance.json resource
+        required: true
+        type: string
       request_publication:
         description: Request the protected signing/notarization/publication gates
         required: true
@@ -28,6 +36,7 @@ jobs:
     outputs:
       installer_version: ${{ steps.context.outputs.installer_version }}
       channel: ${{ steps.context.outputs.channel }}
+      release_sequence: ${{ steps.context.outputs.release_sequence }}
       source_sha: ${{ steps.context.outputs.source_sha }}
       tag: ${{ steps.context.outputs.tag }}
       operation_id: ${{ steps.context.outputs.operation_id }}
@@ -36,6 +45,9 @@ jobs:
       team_identifier: ${{ steps.context.outputs.team_identifier }}
       github_repository: ${{ steps.context.outputs.github_repository }}
       asset_prefix: ${{ steps.context.outputs.asset_prefix }}
+      descriptor_asset_name: ${{ steps.context.outputs.descriptor_asset_name }}
+      release_trust_configuration_sha256: ${{ steps.context.outputs.release_trust_configuration_sha256 }}
+      provenance_sha256: ${{ steps.context.outputs.provenance_sha256 }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v5
         with:
@@ -44,6 +56,8 @@ jobs:
       - id: context
         env:
           SOURCE_SHA: ${{ inputs.source_sha }}
+          RELEASE_SEQUENCE: ${{ inputs.release_sequence }}
+          PROVENANCE_SHA256: ${{ inputs.provenance_sha256 }}
         run: |
           set -euo pipefail
           python3 - "$SOURCE_SHA" <<'PY'
@@ -52,6 +66,18 @@ jobs:
 
           if re.fullmatch(r"[0-9a-f]{40,64}", sys.argv[1]) is None:
               raise SystemExit("source_sha must be a full lowercase Git revision")
+          PY
+          python3 - "$RELEASE_SEQUENCE" "$PROVENANCE_SHA256" <<'PY'
+          import re
+          import sys
+
+          if (
+              re.fullmatch(r"[1-9][0-9]*", sys.argv[1]) is None
+              or int(sys.argv[1]) > (2**64) - 1
+          ):
+              raise SystemExit("release_sequence must be a positive UInt64 decimal integer")
+          if re.fullmatch(r"[0-9a-f]{64}", sys.argv[2]) is None:
+              raise SystemExit("provenance_sha256 must be a raw lowercase SHA-256 identity")
           PY
           test -z "$(git status --porcelain)"
           git fetch --no-tags origin +refs/heads/main:refs/remotes/origin/main
@@ -68,12 +94,15 @@ jobs:
           IDENTITY_REPOSITORY="$(python3 scripts/validate_installer_release_identity.py --field github_repository)"
           TAG_PREFIX="$(python3 scripts/validate_installer_release_identity.py --field release_tag_prefix)"
           ASSET_PREFIX="$(python3 scripts/validate_installer_release_identity.py --field asset_prefix)"
+          DESCRIPTOR_ASSET_NAME="$(python3 scripts/validate_installer_release_identity.py --field release_descriptor_asset_name)"
+          RELEASE_TRUST_CONFIGURATION_SHA256="$(python3 scripts/validate_installer_release_identity.py --field release_trust_configuration_sha256)"
           POLICY_REVISION="$(python3 -c 'from forge_platform.installer_release_operation import INSTALLER_RELEASE_POLICY_REVISION; print(INSTALLER_RELEASE_POLICY_REVISION)')"
           test "$GITHUB_REPOSITORY" = "$IDENTITY_REPOSITORY"
           TAG="$TAG_PREFIX$INSTALLER_VERSION"
           OPERATION_ID="forge-platform-installer-$INSTALLER_VERSION-$SOURCE_SHA"
           printf 'installer_version=%s\n' "$INSTALLER_VERSION" >> "$GITHUB_OUTPUT"
           printf 'channel=%s\n' "$CHANNEL" >> "$GITHUB_OUTPUT"
+          printf 'release_sequence=%s\n' "$RELEASE_SEQUENCE" >> "$GITHUB_OUTPUT"
           printf 'source_sha=%s\n' "$SOURCE_SHA" >> "$GITHUB_OUTPUT"
           printf 'tag=%s\n' "$TAG" >> "$GITHUB_OUTPUT"
           printf 'operation_id=%s\n' "$OPERATION_ID" >> "$GITHUB_OUTPUT"
@@ -82,6 +111,9 @@ jobs:
           printf 'team_identifier=%s\n' "$TEAM_IDENTIFIER" >> "$GITHUB_OUTPUT"
           printf 'github_repository=%s\n' "$IDENTITY_REPOSITORY" >> "$GITHUB_OUTPUT"
           printf 'asset_prefix=%s\n' "$ASSET_PREFIX" >> "$GITHUB_OUTPUT"
+          printf 'descriptor_asset_name=%s\n' "$DESCRIPTOR_ASSET_NAME" >> "$GITHUB_OUTPUT"
+          printf 'release_trust_configuration_sha256=%s\n' "$RELEASE_TRUST_CONFIGURATION_SHA256" >> "$GITHUB_OUTPUT"
+          printf 'provenance_sha256=%s\n' "$PROVENANCE_SHA256" >> "$GITHUB_OUTPUT"
 
   build-unsigned-app-candidate:
     needs: release-context
@@ -98,7 +130,10 @@ jobs:
       - id: candidate
         env:
           CHANNEL: ${{ needs.release-context.outputs.channel }}
+          RELEASE_SEQUENCE: ${{ needs.release-context.outputs.release_sequence }}
           POLICY_REVISION: ${{ needs.release-context.outputs.policy_revision }}
+          PROVENANCE_SHA256: ${{ needs.release-context.outputs.provenance_sha256 }}
+          RELEASE_TRUST_CONFIGURATION_SHA256: ${{ needs.release-context.outputs.release_trust_configuration_sha256 }}
           INSTALLER_VERSION: ${{ needs.release-context.outputs.installer_version }}
           SOURCE_SHA: ${{ needs.release-context.outputs.source_sha }}
           OPERATION_ID: ${{ needs.release-context.outputs.operation_id }}
@@ -129,7 +164,7 @@ jobs:
           ditto -c -k --sequesterRsrc --keepParent \
             release-input/ForgePlatformInstaller.app "release-input/$ARCHIVE"
           ARCHIVE_DIGEST="sha256:$(shasum -a 256 "release-input/$ARCHIVE" | awk '{print $1}')"
-          export ARCHITECTURE ARCHIVE ARCHIVE_DIGEST CHANNEL POLICY_REVISION INSTALLER_VERSION SOURCE_SHA
+          export ARCHITECTURE ARCHIVE ARCHIVE_DIGEST CHANNEL RELEASE_SEQUENCE POLICY_REVISION PROVENANCE_SHA256 RELEASE_TRUST_CONFIGURATION_SHA256 INSTALLER_VERSION SOURCE_SHA
           python3 - <<'PY'
           import json
           import os
@@ -142,7 +177,10 @@ jobs:
               "source_revision": os.environ["SOURCE_SHA"],
               "version": os.environ["INSTALLER_VERSION"],
               "channel": os.environ["CHANNEL"],
+              "release_sequence": int(os.environ["RELEASE_SEQUENCE"]),
               "policy_revision": os.environ["POLICY_REVISION"],
+              "provenance_sha256": os.environ["PROVENANCE_SHA256"],
+              "release_trust_configuration_sha256": os.environ["RELEASE_TRUST_CONFIGURATION_SHA256"],
               "bundle_identifier": os.environ["BUNDLE_IDENTIFIER"],
               "capabilities": manifest["capabilities"],
               "archives": {
@@ -165,7 +203,9 @@ jobs:
             --operation-id "$OPERATION_ID" \
             --installer-version "$INSTALLER_VERSION" \
             --channel "$CHANNEL" \
+            --release-sequence "$RELEASE_SEQUENCE" \
             --policy-revision "$POLICY_REVISION" \
+            --provenance-sha256 "$PROVENANCE_SHA256" \
             --release-identity installer-release-identity.json \
             --journal-root release-input/installer-release-journal \
             --output release-input/installer-release-preparation.json \
@@ -207,6 +247,7 @@ jobs:
           test -f release-input/installer-release-preparation.json
           test -f "release-input/installer-release-journal/preparations/${{ needs.release-context.outputs.operation_id }}.json"
           echo 'No protected Apple signing/notarization and descriptor-trust implementation is configured.' >&2
+          echo 'No protected cross-run installer release-operation/sequence store is configured.' >&2
           echo 'A future protected executor must bind the durable PREPARED candidate to a signed .app archive, signed descriptor, and exact release operation.' >&2
           exit 1
 
@@ -238,25 +279,33 @@ jobs:
           OPERATION_ID: ${{ needs.release-context.outputs.operation_id }}
           INSTALLER_VERSION: ${{ needs.release-context.outputs.installer_version }}
           CHANNEL: ${{ needs.release-context.outputs.channel }}
+          RELEASE_SEQUENCE: ${{ needs.release-context.outputs.release_sequence }}
           POLICY_REVISION: ${{ needs.release-context.outputs.policy_revision }}
+          PROVENANCE_SHA256: ${{ needs.release-context.outputs.provenance_sha256 }}
+          RELEASE_TRUST_CONFIGURATION_SHA256: ${{ needs.release-context.outputs.release_trust_configuration_sha256 }}
           IDENTITY_GITHUB_REPOSITORY: ${{ needs.release-context.outputs.github_repository }}
           RELEASE_TAG: ${{ needs.release-context.outputs.tag }}
           BUNDLE_IDENTIFIER: ${{ needs.release-context.outputs.bundle_identifier }}
           TEAM_IDENTIFIER: ${{ needs.release-context.outputs.team_identifier }}
           ASSET_PREFIX: ${{ needs.release-context.outputs.asset_prefix }}
+          DESCRIPTOR_ASSET_NAME: ${{ needs.release-context.outputs.descriptor_asset_name }}
         run: |
           set -euo pipefail
           python3 scripts/verify_installer_release_evidence.py \
             --operation signed-release-input/installer-release-operation.json \
-            --descriptor signed-release-input/installer-release-descriptor.json \
+            --descriptor "signed-release-input/$DESCRIPTOR_ASSET_NAME" \
             --archive "$ARCHITECTURE=signed-release-input/$ARCHIVE" \
             --source-sha "$SOURCE_SHA" \
             --operation-id "$OPERATION_ID" \
             --installer-version "$INSTALLER_VERSION" \
             --channel "$CHANNEL" \
+            --release-sequence "$RELEASE_SEQUENCE" \
             --policy-revision "$POLICY_REVISION" \
+            --provenance-sha256 "$PROVENANCE_SHA256" \
+            --release-trust-configuration-sha256 "$RELEASE_TRUST_CONFIGURATION_SHA256" \
             --github-repository "$IDENTITY_GITHUB_REPOSITORY" \
             --release-tag "$RELEASE_TAG" \
+            --descriptor-asset-name "$DESCRIPTOR_ASSET_NAME" \
             --bundle-identifier "$BUNDLE_IDENTIFIER" \
             --team-identifier "$TEAM_IDENTIFIER" \
             --asset-prefix "$ASSET_PREFIX"

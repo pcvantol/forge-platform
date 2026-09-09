@@ -74,7 +74,8 @@ def load_identity(
     if not isinstance(identity_value, dict) or not isinstance(signing_policy, dict):
         raise RuntimeError("ready installer release identity requires complete public identity and signing policy")
     expected_identity = {
-        "github_repository", "bundle_identifier", "team_identifier", "release_tag_prefix", "asset_prefix"
+        "github_repository", "bundle_identifier", "team_identifier", "release_tag_prefix", "asset_prefix",
+        "release_descriptor_asset_name", "release_trust_configuration_sha256",
     }
     expected_policy = {"algorithm", "key_ids", "threshold"}
     if set(identity_value) != expected_identity or set(signing_policy) != expected_policy:
@@ -88,6 +89,8 @@ def load_identity(
             team_identifier=identity_value["team_identifier"],
             release_tag_prefix=identity_value["release_tag_prefix"],
             asset_prefix=identity_value["asset_prefix"],
+            release_descriptor_asset_name=identity_value["release_descriptor_asset_name"],
+            release_trust_configuration_sha256=identity_value["release_trust_configuration_sha256"],
             signature_algorithm=signing_policy["algorithm"],
             signature_key_ids=tuple(signing_policy["key_ids"]),
             signature_threshold=signing_policy["threshold"],
@@ -103,6 +106,8 @@ def _field(identity: InstallerReleaseIdentity, name: str) -> str:
         "team_identifier": identity.team_identifier,
         "release_tag_prefix": identity.release_tag_prefix,
         "asset_prefix": identity.asset_prefix,
+        "release_descriptor_asset_name": identity.release_descriptor_asset_name,
+        "release_trust_configuration_sha256": identity.release_trust_configuration_sha256,
         "signature_algorithm": identity.signature_algorithm,
         "signature_threshold": str(identity.signature_threshold),
     }
