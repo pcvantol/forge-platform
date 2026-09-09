@@ -163,6 +163,47 @@ public struct GitHubInstallerReleaseAsset: Equatable, Sendable {
 /// feed implementation must verify its signature and GitHub provenance before
 /// constructing this value.  The coordinator then binds the downloaded bundle
 /// to all of this identity evidence before it asks for an atomic relaunch.
+public struct InstallerReleaseProvenanceExpectation: Equatable, Sendable {
+    public let installerVersion: InstallerVersion
+    public let channel: InstallerReleaseChannel
+    public let releaseSequence: UInt64
+    public let sourceRevision: String
+    public let policyRevision: String
+    /// Strictly ascending, unique capability identities carried by the signed
+    /// descriptor and expected from the staged V1 provenance resource.
+    public let capabilities: [String]
+    public let provenanceSHA256: String
+    public let releaseTrustConfigurationSHA256: String
+
+    public init(
+        installerVersion: InstallerVersion,
+        channel: InstallerReleaseChannel,
+        releaseSequence: UInt64,
+        sourceRevision: String,
+        policyRevision: String,
+        capabilities: [String],
+        provenanceSHA256: String,
+        releaseTrustConfigurationSHA256: String
+    ) throws {
+        guard releaseSequence > 0,
+              InstallerSelfUpdateValidation.isGitRevision(sourceRevision),
+              InstallerSelfUpdateValidation.isPublicProvenanceIdentifier(policyRevision),
+              InstallerSelfUpdateValidation.hasStrictlyAscendingUniqueProvenanceIdentifiers(capabilities),
+              InstallerSelfUpdateValidation.isSHA256(provenanceSHA256),
+              InstallerSelfUpdateValidation.isSHA256(releaseTrustConfigurationSHA256) else {
+            throw InstallerSelfUpdateMetadataError.invalidRecoveryRecord
+        }
+        self.installerVersion = installerVersion
+        self.channel = channel
+        self.releaseSequence = releaseSequence
+        self.sourceRevision = sourceRevision
+        self.policyRevision = policyRevision
+        self.capabilities = capabilities
+        self.provenanceSHA256 = provenanceSHA256
+        self.releaseTrustConfigurationSHA256 = releaseTrustConfigurationSHA256
+    }
+}
+
 public struct VerifiedInstallerReleaseRecord: Equatable, Sendable {
     public let release: VerifiedInstallerRelease
     public let sequence: UInt64
@@ -171,10 +212,12 @@ public struct VerifiedInstallerReleaseRecord: Equatable, Sendable {
     public let expectedBundleIdentifier: String
     public let expectedTeamIdentifier: String
     public let expectedCodeDirectorySHA256: String
-    /// Canonical digest of the code-signed bundled release provenance record.
-    /// It is signed feed evidence, rather than metadata supplied by an
-    /// unverified staged bundle.
-    public let provenanceSHA256: String
+    /// Complete expected identity of the code-signed bundled V1 provenance
+    /// resource. A verifier must bind every field, not merely its digest.
+    public let provenanceExpectation: InstallerReleaseProvenanceExpectation
+    /// Compatibility projection of `provenanceExpectation` for receipts and
+    /// current-bundle comparison.
+    public var provenanceSHA256: String { provenanceExpectation.provenanceSHA256 }
     /// Digest of the release package's canonical sealed-trust descriptor. It
     /// is signed release metadata, not an unchecked checksum supplied by the
     /// bundle currently being launched.
@@ -190,6 +233,8 @@ public struct VerifiedInstallerReleaseRecord: Equatable, Sendable {
         expectedBundleIdentifier: String,
         expectedTeamIdentifier: String,
         expectedCodeDirectorySHA256: String,
+        policyRevision: String,
+        capabilities: [String],
         provenanceSHA256: String,
         expectedReleaseTrustConfigurationSHA256: String,
         notarizationReference: String,
@@ -231,7 +276,16 @@ public struct VerifiedInstallerReleaseRecord: Equatable, Sendable {
         self.expectedBundleIdentifier = expectedBundleIdentifier
         self.expectedTeamIdentifier = expectedTeamIdentifier
         self.expectedCodeDirectorySHA256 = expectedCodeDirectorySHA256
-        self.provenanceSHA256 = provenanceSHA256
+        self.provenanceExpectation = try InstallerReleaseProvenanceExpectation(
+            installerVersion: release.version,
+            channel: channel,
+            releaseSequence: sequence,
+            sourceRevision: sourceRevision,
+            policyRevision: policyRevision,
+            capabilities: capabilities,
+            provenanceSHA256: provenanceSHA256,
+            releaseTrustConfigurationSHA256: expectedReleaseTrustConfigurationSHA256
+        )
         self.expectedReleaseTrustConfigurationSHA256 = expectedReleaseTrustConfigurationSHA256
         self.notarizationReference = notarizationReference
         self.githubAsset = githubAsset
@@ -397,10 +451,12 @@ public protocol StagedInstallerArtifactVerifying: Sendable {
         for release: VerifiedInstallerReleaseRecord
     ) async -> Result<Void, InstallerSelfUpdateFailure>
 
-    /// Checks the staged app bundle's sealed provenance against the exact
-    /// descriptor provenance digest.  This is deliberately separate from the
-    /// V2 trust-resource check: both resources are code-signed and both must
-    /// bind to the signed target identity before activation.
+    /// Loads both staged code-signed public resources and checks the V1
+    /// provenance against `release.provenanceExpectation`. In the same
+    /// observation it must require V1's trust-config digest to equal the
+    /// staged V2 trust-config digest and V2's digest to equal the signed
+    /// target expectation. This prevents individually valid but mutually
+    /// inconsistent target resources from reaching handoff.
     func verifySealedReleaseProvenance(
         of stagedAsset: StagedInstallerAsset,
         for release: VerifiedInstallerReleaseRecord
@@ -1109,6 +1165,29 @@ enum InstallerSelfUpdateValidation {
                 || scalar.value == 46
                 || scalar.value == 95
         }
+    }
+
+    static func isPublicProvenanceIdentifier(_ value: String) -> Bool {
+        guard value.utf8.count <= 128,
+              let first = value.unicodeScalars.first,
+              isLowercaseLetterOrDigit(first) else {
+            return false
+        }
+        return value.unicodeScalars.allSatisfy { scalar in
+            isLowercaseLetterOrDigit(scalar)
+                || scalar.value == 45
+                || scalar.value == 46
+                || scalar.value == 95
+                || scalar.value == 47
+        }
+    }
+
+    static func hasStrictlyAscendingUniqueProvenanceIdentifiers(_ values: [String]) -> Bool {
+        guard !values.isEmpty,
+              values.allSatisfy(isPublicProvenanceIdentifier) else {
+            return false
+        }
+        return zip(values, values.dropFirst()).allSatisfy { current, next in current < next }
     }
 
     static func isOpaqueReference(_ value: String) -> Bool {

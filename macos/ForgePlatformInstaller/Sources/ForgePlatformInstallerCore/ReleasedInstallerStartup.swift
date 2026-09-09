@@ -288,6 +288,20 @@ public struct SealedInstallerReleaseProvenance: Equatable, Sendable {
             && releaseTrustConfigurationSHA256 == expectedReleaseTrustConfigurationSHA256
     }
 
+    /// Complete target comparison used after the staged bundle's static code
+    /// seal has been checked. The signed descriptor and V1 provenance must
+    /// agree on every semantic field, not merely on a self-consistent digest.
+    public func matches(_ expectation: InstallerReleaseProvenanceExpectation) -> Bool {
+        installerVersion == expectation.installerVersion
+            && channel == expectation.channel
+            && releaseSequence == expectation.releaseSequence
+            && sourceRevision == expectation.sourceRevision
+            && policyRevision == expectation.policyRevision
+            && capabilities == expectation.capabilities
+            && provenanceSHA256 == expectation.provenanceSHA256
+            && releaseTrustConfigurationSHA256 == expectation.releaseTrustConfigurationSHA256
+    }
+
     /// Strictly decodes the complete public provenance v1 shape. Exact field
     /// matching makes private keys, credentials, transports, component state,
     /// filesystem input, and any other operational fields fail closed.

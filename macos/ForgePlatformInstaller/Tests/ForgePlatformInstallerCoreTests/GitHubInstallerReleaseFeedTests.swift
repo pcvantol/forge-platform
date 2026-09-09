@@ -41,6 +41,8 @@ final class GitHubInstallerReleaseFeedTests: XCTestCase {
         XCTAssertEqual(record.githubAsset.assetName, "forge-platform-installer-arm64.zip")
         XCTAssertEqual(record.expectedReleaseTrustConfigurationSHA256, fixture.configuration.configurationSHA256)
         XCTAssertEqual(record.provenanceSHA256, fixture.descriptorProvenanceSHA256)
+        XCTAssertEqual(record.provenanceExpectation.policyRevision, "release/v2")
+        XCTAssertEqual(record.provenanceExpectation.capabilities, ["composition/v1", "provider-gate/v1"])
         XCTAssertEqual(record.expectedCodeDirectorySHA256, fixture.codeDirectorySHA256)
         XCTAssertEqual(record.notarizationReference, "receipt:installer-arm64-v2")
         XCTAssertEqual(

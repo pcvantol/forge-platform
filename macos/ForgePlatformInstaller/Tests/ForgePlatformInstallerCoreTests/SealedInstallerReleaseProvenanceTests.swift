@@ -237,6 +237,44 @@ final class SealedInstallerReleaseProvenanceTests: XCTestCase {
         )
     }
 
+    func testProvenanceMatchesCompleteSignedReleaseExpectation() throws {
+        let provenance = try makeProvenance()
+        let exact = try InstallerReleaseProvenanceExpectation(
+            installerVersion: provenance.installerVersion,
+            channel: provenance.channel,
+            releaseSequence: provenance.releaseSequence,
+            sourceRevision: provenance.sourceRevision,
+            policyRevision: provenance.policyRevision,
+            capabilities: provenance.capabilities,
+            provenanceSHA256: provenance.provenanceSHA256,
+            releaseTrustConfigurationSHA256: provenance.releaseTrustConfigurationSHA256
+        )
+        let changedPolicy = try InstallerReleaseProvenanceExpectation(
+            installerVersion: provenance.installerVersion,
+            channel: provenance.channel,
+            releaseSequence: provenance.releaseSequence,
+            sourceRevision: provenance.sourceRevision,
+            policyRevision: "other-policy/v1",
+            capabilities: provenance.capabilities,
+            provenanceSHA256: provenance.provenanceSHA256,
+            releaseTrustConfigurationSHA256: provenance.releaseTrustConfigurationSHA256
+        )
+        let changedTrustConfiguration = try InstallerReleaseProvenanceExpectation(
+            installerVersion: provenance.installerVersion,
+            channel: provenance.channel,
+            releaseSequence: provenance.releaseSequence,
+            sourceRevision: provenance.sourceRevision,
+            policyRevision: provenance.policyRevision,
+            capabilities: provenance.capabilities,
+            provenanceSHA256: provenance.provenanceSHA256,
+            releaseTrustConfigurationSHA256: String(repeating: "b", count: 64)
+        )
+
+        XCTAssertTrue(provenance.matches(exact))
+        XCTAssertFalse(provenance.matches(changedPolicy))
+        XCTAssertFalse(provenance.matches(changedTrustConfiguration))
+    }
+
     func testSourceBuildWithoutProvenanceFailsClosedAfterSealedBundleValidation() async {
         let validator = ProvenanceBundleValidatorSpy(result: .success(()))
         let loader = BundleSealedInstallerReleaseProvenanceLoader(

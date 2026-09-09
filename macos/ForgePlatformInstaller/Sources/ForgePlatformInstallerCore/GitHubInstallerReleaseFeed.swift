@@ -310,6 +310,8 @@ struct GitHubInstallerReleaseDescriptor: Sendable {
     let channel: InstallerReleaseChannel
     let version: InstallerVersion
     let sourceRevision: String
+    let policyRevision: String
+    let capabilities: [String]
     let expectedReleaseTrustConfigurationSHA256: String
     let provenanceSHA256: String
     let githubRepository: String
@@ -442,6 +444,8 @@ struct GitHubInstallerReleaseDescriptor: Sendable {
             channel: channel,
             version: version,
             sourceRevision: sourceRevision,
+            policyRevision: policyRevision,
+            capabilities: parsedCapabilities,
             expectedReleaseTrustConfigurationSHA256: releaseTrustConfigurationSHA256,
             provenanceSHA256: provenanceSHA256,
             githubRepository: githubRepository,
@@ -477,6 +481,8 @@ struct GitHubInstallerReleaseDescriptor: Sendable {
                 expectedBundleIdentifier: asset.bundleIdentifier,
                 expectedTeamIdentifier: asset.teamIdentifier,
                 expectedCodeDirectorySHA256: asset.codeDirectorySHA256,
+                policyRevision: policyRevision,
+                capabilities: capabilities,
                 provenanceSHA256: provenanceSHA256,
                 expectedReleaseTrustConfigurationSHA256: expectedReleaseTrustConfigurationSHA256,
                 notarizationReference: asset.notarizationReceiptReference,
