@@ -32,6 +32,12 @@ The canonical target is defined in [Evidence-gated cross-repository component co
 
 ## Lifecycle boundary
 
-The future platform manages install, role add/remove, upgrade, repair, uninstall, health diagnostics, and deployment receipts. Privileged installer logic is intentionally not implemented in this foundation.
+The source-level component-operation contract can retain a product-owned
+resolver readback, candidate update assessment, and execute/resume evidence
+for an exact qualified artifact. It does not implement a product adapter or
+select a runtime itself. The future platform manages install, role add/remove,
+upgrade, repair, uninstall, health diagnostics, and deployment receipts;
+privileged installer logic remains intentionally unimplemented in this
+foundation.
 
 Read the [system architecture](FORGE_PLATFORM_ARCHITECTURE.md), [evidence-gated composition contract](EVIDENCE_GATED_COMPONENT_COMPOSITION.md), [governed knowledge learning loop](KNOWLEDGE_LEARNING_LOOP.md), [ADRs](adr/README.md), [cross-repository ownership matrix](OWNERSHIP_MATRIX.md), [component-manifest contract](COMPONENT_MANIFEST_CONTRACT.md), [compatibility model](COMPATIBILITY.md), [roles and presets](ROLES_AND_PRESETS.md), and [security boundary](SECURITY.md).

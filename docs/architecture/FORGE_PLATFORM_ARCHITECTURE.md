@@ -158,7 +158,23 @@ It consumes independently published artifacts and does not compile or repackage 
 
 A Forge Platform release is a tested composition, not a monorepo source version. Each product owns its version and protocol implementation; Forge Platform owns the cross-product compatibility declaration used for a platform release/install.
 
-For an Engineering Platform component, Forge Platform supplies an exact qualified artifact digest and requested role to the EP-owned provisioner, then consumes the returned EP installation record and health/cleanup evidence. It never selects an EP runtime through `PATH`, writes EP service registrations or databases, or leaves a parallel EP operational environment behind.
+For an Engineering Platform component, Forge Platform supplies the complete
+exact qualified artifact identity and requested role to an EP-owned provisioner
+adapter, then consumes its correlated installation readback, update assessment,
+and health/cleanup evidence. The EP resolver alone selects the operational
+runtime, executable, server, and instance; it also determines candidate
+compatibility and machine-wide conflict coverage. Forge Platform may retain
+those product-issued identities for a composition receipt. Forge Platform never selects an EP runtime through `PATH`.
+It does not use HTTP reachability, local package discovery, service
+registrations, or EP databases, and does not leave a parallel EP operational environment behind.
+An incomplete inventory or a per-user service observation cannot prove a
+Mac-wide single EP installation.
+
+The adapter is a source-level consumer contract until Engineering Platform
+publishes and qualifies a concrete provisioner endpoint. Its durable operation
+record and target-dispatch lock coordinate only Forge Platform's own requests;
+they do not replace EP's installation lock, migration/rollback/cleanup engine,
+or crash/reboot recovery authority.
 
 ### CENTRAL transition and future relocation boundary
 
