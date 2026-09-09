@@ -81,18 +81,121 @@ final class ReleasedInstallerStartupTests: XCTestCase {
         )
     }
 
-    func testSealedConfigurationRejectsAChangedTrustSelectorWithAnOldDigest() {
-        let digest = SealedInstallerReleaseTrustConfiguration.canonicalSHA256(
-            schemaVersion: 1,
-            trustKeyReference: "test-release-trust-key-a"
-        )
+    func testSealedConfigurationRejectsAChangedPublicPolicyWithAnOldDigest() throws {
+        let configuration = try makeConfiguration()
 
         XCTAssertThrowsError(
             try SealedInstallerReleaseTrustConfiguration(
-                schemaVersion: 1,
-                configurationSHA256: digest,
-                trustKeyReference: "test-release-trust-key-b"
+                configurationSHA256: configuration.configurationSHA256,
+                repository: "other-owner/example-installer",
+                releaseDescriptorLocator: configuration.releaseDescriptorLocator,
+                releaseDescriptorAssetName: configuration.releaseDescriptorAssetName,
+                expectedBundleIdentifier: configuration.expectedBundleIdentifier,
+                expectedTeamIdentifier: configuration.expectedTeamIdentifier,
+                signatureThreshold: configuration.signatureThreshold,
+                ed25519PublicKeys: configuration.ed25519PublicKeys
             )
+        )
+    }
+
+    func testSealedConfigurationV2CanonicalDigestMatchesPublicVector() throws {
+        let configuration = try makeConfiguration()
+
+        XCTAssertEqual(
+            configuration.configurationSHA256,
+            "5988f1dd473caef0a2963f3a6cec06099007e740eced84e3a03fc0e04f343b19"
+        )
+    }
+
+    func testSealedConfigurationStrictlyDecodesACompletePublicV2Resource() throws {
+        let configuration = try makeConfiguration()
+
+        let decoded = try SealedInstallerReleaseTrustConfiguration.decodeJSONResource(
+            Data(makeConfigurationJSON(configuration).utf8)
+        )
+
+        XCTAssertEqual(decoded, configuration)
+    }
+
+    func testSealedConfigurationStrictlyDecodesEscapedUnicodeWhenItRepresentsValidASCII() throws {
+        let configuration = try makeConfiguration()
+        let json = makeConfigurationJSON(configuration).replacingOccurrences(
+            of: "\"repository\":\"example-owner/example-installer\"",
+            with: "\"repository\":\"\\u0065xample-owner/example-installer\""
+        )
+
+        let decoded = try SealedInstallerReleaseTrustConfiguration.decodeJSONResource(Data(json.utf8))
+
+        XCTAssertEqual(decoded, configuration)
+    }
+
+    func testSealedConfigurationRejectsDuplicateKeysAndNonFiniteJSONConstants() throws {
+        let configuration = try makeConfiguration()
+        let validJSON = makeConfigurationJSON(configuration)
+        let duplicateRepository = String(validJSON.dropLast())
+            + ",\"repository\":\"example-owner/example-installer\"}"
+        let nonFiniteThreshold = validJSON.replacingOccurrences(
+            of: "\"signature_threshold\":2",
+            with: "\"signature_threshold\":NaN"
+        )
+
+        XCTAssertThrowsError(
+            try SealedInstallerReleaseTrustConfiguration.decodeJSONResource(Data(duplicateRepository.utf8))
+        )
+        XCTAssertThrowsError(
+            try SealedInstallerReleaseTrustConfiguration.decodeJSONResource(Data(nonFiniteThreshold.utf8))
+        )
+    }
+
+    func testSealedConfigurationRejectsMalformedUTF8AndOversizedResources() {
+        XCTAssertThrowsError(
+            try SealedInstallerReleaseTrustConfiguration.decodeJSONResource(Data([0xff]))
+        )
+        XCTAssertThrowsError(
+            try SealedInstallerReleaseTrustConfiguration.decodeJSONResource(
+                Data(repeating: 0x20, count: (32 * 1024) + 1)
+            )
+        )
+    }
+
+    func testSealedConfigurationRejectsNonIntegerAndNonCanonicalIntegerForms() throws {
+        let configuration = try makeConfiguration()
+        let validJSON = makeConfigurationJSON(configuration)
+        let decimalThreshold = validJSON.replacingOccurrences(
+            of: "\"signature_threshold\":2",
+            with: "\"signature_threshold\":2.0"
+        )
+        let exponentThreshold = validJSON.replacingOccurrences(
+            of: "\"signature_threshold\":2",
+            with: "\"signature_threshold\":2e0"
+        )
+        let leadingZeroSchema = validJSON.replacingOccurrences(
+            of: "\"schema_version\":2",
+            with: "\"schema_version\":02"
+        )
+
+        XCTAssertThrowsError(
+            try SealedInstallerReleaseTrustConfiguration.decodeJSONResource(Data(decimalThreshold.utf8))
+        )
+        XCTAssertThrowsError(
+            try SealedInstallerReleaseTrustConfiguration.decodeJSONResource(Data(exponentThreshold.utf8))
+        )
+        XCTAssertThrowsError(
+            try SealedInstallerReleaseTrustConfiguration.decodeJSONResource(Data(leadingZeroSchema.utf8))
+        )
+    }
+
+    func testSealedConfigurationRejectsUppercaseOrDuplicatePublicKeyIdentity() throws {
+        let keys = try makePublicKeys()
+
+        XCTAssertThrowsError(
+            try SealedInstallerReleaseTrustEd25519PublicKey(
+                keyID: "Descriptor-key-a",
+                publicKeyBase64: keys[0].publicKeyBase64
+            )
+        )
+        XCTAssertThrowsError(
+            try makeConfiguration(ed25519PublicKeys: [keys[0], keys[0]])
         )
     }
 
@@ -139,16 +242,64 @@ final class ReleasedInstallerStartupTests: XCTestCase {
         XCTAssertEqual(calls, 2)
     }
 
-    private func makeConfiguration() throws -> SealedInstallerReleaseTrustConfiguration {
-        let trustKeyReference = "test-release-trust-key"
+    private func makeConfiguration(
+        ed25519PublicKeys: [SealedInstallerReleaseTrustEd25519PublicKey]? = nil
+    ) throws -> SealedInstallerReleaseTrustConfiguration {
+        let keys = try ed25519PublicKeys ?? makePublicKeys()
+        let repository = "example-owner/example-installer"
+        let releaseDescriptorLocator = SealedInstallerReleaseTrustConfiguration.githubReleaseAssetLocator
+        let releaseDescriptorAssetName = "ForgePlatformInstallerReleaseDescriptor.json"
+        let expectedBundleIdentifier = "com.example.forge-platform-installer"
+        let expectedTeamIdentifier = "AB12CD34EF"
+        let signatureThreshold = 2
         return try SealedInstallerReleaseTrustConfiguration(
-            schemaVersion: 1,
             configurationSHA256: SealedInstallerReleaseTrustConfiguration.canonicalSHA256(
-                schemaVersion: 1,
-                trustKeyReference: trustKeyReference
+                repository: repository,
+                releaseDescriptorLocator: releaseDescriptorLocator,
+                releaseDescriptorAssetName: releaseDescriptorAssetName,
+                expectedBundleIdentifier: expectedBundleIdentifier,
+                expectedTeamIdentifier: expectedTeamIdentifier,
+                signatureThreshold: signatureThreshold,
+                ed25519PublicKeys: keys
             ),
-            trustKeyReference: trustKeyReference
+            repository: repository,
+            releaseDescriptorLocator: releaseDescriptorLocator,
+            releaseDescriptorAssetName: releaseDescriptorAssetName,
+            expectedBundleIdentifier: expectedBundleIdentifier,
+            expectedTeamIdentifier: expectedTeamIdentifier,
+            signatureThreshold: signatureThreshold,
+            ed25519PublicKeys: keys
         )
+    }
+
+    private func makePublicKeys() throws -> [SealedInstallerReleaseTrustEd25519PublicKey] {
+        [
+            try SealedInstallerReleaseTrustEd25519PublicKey(
+                keyID: "descriptor-key-a",
+                publicKeyBase64: Data((0..<32).map { UInt8($0) }).base64EncodedString()
+            ),
+            try SealedInstallerReleaseTrustEd25519PublicKey(
+                keyID: "descriptor-key-b",
+                publicKeyBase64: Data((32..<64).map { UInt8($0) }).base64EncodedString()
+            ),
+        ]
+    }
+
+    private func makeConfigurationJSON(_ configuration: SealedInstallerReleaseTrustConfiguration) -> String {
+        let keys = configuration.ed25519PublicKeys.map { key in
+            "{\"key_id\":\"\(key.keyID)\",\"public_key_base64\":\"\(key.publicKeyBase64)\"}"
+        }.joined(separator: ",")
+        return "{"
+            + "\"schema_version\":2,"
+            + "\"configuration_sha256\":\"\(configuration.configurationSHA256)\","
+            + "\"repository\":\"\(configuration.repository)\","
+            + "\"release_descriptor_locator\":\"\(configuration.releaseDescriptorLocator)\","
+            + "\"release_descriptor_asset_name\":\"\(configuration.releaseDescriptorAssetName)\","
+            + "\"expected_bundle_identifier\":\"\(configuration.expectedBundleIdentifier)\","
+            + "\"expected_team_identifier\":\"\(configuration.expectedTeamIdentifier)\","
+            + "\"signature_threshold\":\(configuration.signatureThreshold),"
+            + "\"ed25519_public_keys\":[\(keys)]"
+            + "}"
     }
 
     private func makeRelease(_ version: String) throws -> VerifiedInstallerRelease {

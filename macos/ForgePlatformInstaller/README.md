@@ -50,11 +50,23 @@ number of times. Production composition must place this state root under its
 privileged, machine-wide installer controller. A per-user directory does not
 prove cross-account uniqueness.
 
-The sealed trust descriptor has a canonical SHA-256 over its accepted semantic
-fields, is checked inside a strictly validated macOS code-signed bundle, and is
-bound separately into signed release/current/staged-bundle identity checks. The
-checksum is not a substitute for code signing or the signed release-feed trust
-root; those remain required and absent configuration still fails closed.
+The sealed trust descriptor is a public V2 policy resource named
+`ForgePlatformInstallerReleaseTrust.json`. It has exact fields for the GitHub
+repository, the fixed `github-release-asset-v1` descriptor convention and
+asset name, expected bundle/team identity, threshold, and ordered Ed25519 key
+IDs plus canonical Base64-encoded public keys. Its SHA-256 covers a
+domain-separated, NUL-delimited representation of those accepted semantics.
+The package's bundle packager validates that exact V2 form and copies an
+explicit, non-symlink resource verbatim; source builds carry no resource and
+therefore fail closed. The descriptor never contains a private key, credential,
+URL, arbitrary transport setting, product authority, or installed-component
+state.
+
+The descriptor is checked inside a strictly validated macOS code-signed bundle
+and is bound separately into signed release/current/staged-bundle identity
+checks. Its checksum is not a substitute for code signing or the signed
+release-feed trust root; those remain required and absent configuration still
+fails closed.
 
 The default coordinator fails closed. This package deliberately ships no real
 release URL, signing key, credential, shell invocation, privileged helper or

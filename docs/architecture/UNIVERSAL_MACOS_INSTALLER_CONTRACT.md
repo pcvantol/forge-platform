@@ -27,6 +27,65 @@ bundle identifier, Apple Team identifier and public descriptor-key threshold
 are approved. An unconfigured policy blocks the release workflow; no source
 literal or test fixture is an implicit production identity.
 
+## Sealed installer release-trust resource V2
+
+A released native installer may carry exactly one code-signed public resource,
+`ForgePlatformInstallerReleaseTrust.json`, that defines the future GitHub
+Release bootstrap trust policy. This is a format contract only: this repository
+commits no production resource, repository, bundle identity, Team identifier,
+or signing key. A source build without the resource remains fail-closed.
+
+The strict JSON object has exactly these fields:
+
+```text
+schema_version = 2
+configuration_sha256
+repository
+release_descriptor_locator = "github-release-asset-v1"
+release_descriptor_asset_name
+expected_bundle_identifier
+expected_team_identifier
+signature_threshold
+ed25519_public_keys = [{ key_id, public_key_base64 }, ...]
+```
+
+`repository` matches `^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$` and
+`release_descriptor_asset_name` matches
+`^[A-Za-z0-9._-]{1,123}\.json$`; it is therefore bounded and slash-free.
+`expected_bundle_identifier` matches
+`^[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)+$` and `expected_team_identifier` matches
+`^[A-Z0-9]{10}$`. Each `key_id` matches
+`^[a-z0-9][a-z0-9._-]{0,127}$`; keys are strictly ascending by ID, key IDs and
+public keys are each unique, and `public_key_base64` is canonical standard
+Base64 for exactly 32 raw Ed25519 public-key bytes. The threshold is an integer
+from one through the number of keys (maximum sixteen).
+
+`configuration_sha256` is lower-case SHA-256 of UTF-8 bytes obtained by joining
+these tokens with one NUL byte, in the exact order shown (followed by the two
+key tokens per key in strict key-ID order):
+
+```text
+forge-platform-installer-release-trust-v2
+schema_version=2
+repository=<repository>
+release_descriptor_locator=<release_descriptor_locator>
+release_descriptor_asset_name=<release_descriptor_asset_name>
+expected_bundle_identifier=<expected_bundle_identifier>
+expected_team_identifier=<expected_team_identifier>
+signature_threshold=<signature_threshold>
+ed25519_public_key_count=<count>
+ed25519_public_key_id=<key_id>
+ed25519_public_key_base64=<public_key_base64>
+```
+
+Duplicate JSON members (including nested key objects), unknown fields,
+non-integer JSON numbers, malformed UTF-8, noncanonical Base64 and any private
+or operational input are rejected. A resource is limited to 32 KiB. The bundle
+packager reads a caller-supplied resource only from a regular non-symlink file,
+validates this exact contract, and copies its captured bytes into the unsigned
+candidate. It does not fetch, publish, sign, stage, hand off, or activate an
+installer.
+
 ## Mandatory self-update
 
 ```text
