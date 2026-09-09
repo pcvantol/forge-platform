@@ -1,0 +1,25 @@
+name: macOS installer validation
+
+on:
+  pull_request:
+    paths:
+      - "macos/ForgePlatformInstaller/**"
+      - ".github/workflows/macos-installer-validation.yml"
+  push:
+    branches: [main]
+    paths:
+      - "macos/ForgePlatformInstaller/**"
+      - ".github/workflows/macos-installer-validation.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  swift-package-tests:
+    name: Swift installer-domain tests
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v5
+      - name: Run native installer tests
+        working-directory: macos/ForgePlatformInstaller
+        run: swift test

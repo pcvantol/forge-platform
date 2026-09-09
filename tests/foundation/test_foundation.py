@@ -47,6 +47,11 @@ REQUIRED = (
     "schemas/universal-installer-release.schema.json",
     "schemas/universal-installer-composition-catalog.schema.json",
     "schemas/universal-installer-composition.schema.json",
+    "macos/ForgePlatformInstaller/Package.swift",
+    "macos/ForgePlatformInstaller/Sources/ForgePlatformInstaller/ForgePlatformInstallerApp.swift",
+    "macos/ForgePlatformInstaller/Sources/ForgePlatformInstallerCore/InstallerDomain.swift",
+    "macos/ForgePlatformInstaller/Tests/ForgePlatformInstallerCoreTests/InstallerDomainTests.swift",
+    ".github/workflows/macos-installer-validation.yml",
 )
 
 
