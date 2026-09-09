@@ -54,6 +54,8 @@ REQUIRED = (
     ".github/workflows/macos-installer-validation.yml",
     "installer-version.json",
     "scripts/validate_installer_version.py",
+    "scripts/advance_installer_version.py",
+    "tests/installer/test_installer_version_preparation.py",
 )
 
 
