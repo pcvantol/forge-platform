@@ -14,6 +14,6 @@ python3 tests/component_operations/test_durable_component_operations.py
 python3 scripts/advance_product_version.py --check
 python3 docs/ai-development/validate_projection.py \
   --profile forge-platform \
-  --source-commit 4a39841a0c85b0e9962c85a74a3fd49d9803c13d \
+  --source-commit 6ec3b443c3ab3bdf76c626c2046d3778db570eb0 \
   --extension-identity FORGE_PLATFORM_DEVELOPMENT_EXTENSION
 git diff --check

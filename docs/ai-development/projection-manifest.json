@@ -12,9 +12,9 @@
   "extension_identity": "FORGE_PLATFORM_DEVELOPMENT_EXTENSION",
   "materializer_version": "1",
   "profile": "forge-platform",
-  "projection_digest": "34d04daa1668d5ee1288a22d77aa143fecf4e167cb7fdc443d4082cb3ed45d77",
-  "projection_file_digest": "193b69287e070da2e2a0f4c17118ebab477b5ca0a2689cdc3c0787dc39af450f",
+  "projection_digest": "6f77e0a7cf5d641c753dbcfde867f530bf3aaeb7a9da77be3380943e43f4f0c1",
+  "projection_file_digest": "b9f086ec10879a081189a6eeb58d509be230a9126da8c90a8a94472ddf568a02",
   "schema_version": "1",
-  "source_commit": "4a39841a0c85b0e9962c85a74a3fd49d9803c13d",
+  "source_commit": "6ec3b443c3ab3bdf76c626c2046d3778db570eb0",
   "source_repo": "pcvantol/ai-development-contracts"
 }
