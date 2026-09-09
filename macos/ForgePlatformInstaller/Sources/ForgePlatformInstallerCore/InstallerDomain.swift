@@ -3,9 +3,11 @@ import Foundation
 /// Strict three-part release version used only for the installer bootstrap gate.
 /// Product and component versions remain independently owned by their artifacts.
 public struct InstallerVersion: Comparable, Equatable, Hashable, Sendable, CustomStringConvertible {
-    public let major: Int
-    public let minor: Int
-    public let patch: Int
+    /// The release contract carries signed 64-bit semantic-version components.
+    /// Do not depend on the host's word size for descriptor acceptance.
+    public let major: Int64
+    public let minor: Int64
+    public let patch: Int64
 
     public init(_ rawValue: String) throws {
         let parts = rawValue.split(separator: ".", omittingEmptySubsequences: false)
@@ -13,8 +15,8 @@ public struct InstallerVersion: Comparable, Equatable, Hashable, Sendable, Custo
             throw InstallerVersionError.invalid(rawValue)
         }
 
-        let values = try parts.map { part -> Int in
-            guard let value = Int(part), value >= 0, String(value) == part else {
+        let values = try parts.map { part -> Int64 in
+            guard let value = Int64(part), value >= 0, String(value) == String(part) else {
                 throw InstallerVersionError.invalid(rawValue)
             }
             return value

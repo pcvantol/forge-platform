@@ -1034,7 +1034,11 @@ enum InstallerSelfUpdateValidation {
             return false
         }
         return labels.allSatisfy { label in
-            !label.isEmpty && label.unicodeScalars.allSatisfy(isRepositoryScalar)
+            guard let first = label.unicodeScalars.first,
+                  isASCIILetterOrDigit(first) else {
+                return false
+            }
+            return label.unicodeScalars.allSatisfy(isRepositoryScalar)
         }
     }
 
@@ -1057,6 +1061,12 @@ enum InstallerSelfUpdateValidation {
 
     private static func isLowercaseHex(_ scalar: Unicode.Scalar) -> Bool {
         (scalar.value >= 48 && scalar.value <= 57) || (scalar.value >= 97 && scalar.value <= 102)
+    }
+
+    private static func isASCIILetterOrDigit(_ scalar: Unicode.Scalar) -> Bool {
+        (scalar.value >= 48 && scalar.value <= 57)
+            || (scalar.value >= 65 && scalar.value <= 90)
+            || (scalar.value >= 97 && scalar.value <= 122)
     }
 
     private static func isRepositoryScalar(_ scalar: Unicode.Scalar) -> Bool {

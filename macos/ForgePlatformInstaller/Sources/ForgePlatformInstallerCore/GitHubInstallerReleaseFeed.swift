@@ -389,7 +389,6 @@ struct GitHubInstallerReleaseDescriptor: Sendable {
               let policyRevision = installer["policy_revision"]?.stringValue,
               GitHubInstallerReleaseDescriptorValidation.isPublicIdentifier(policyRevision),
               let releaseTrustConfigurationSHA256 = installer["release_trust_configuration_sha256"]?.stringValue,
-              releaseTrustConfigurationSHA256 == trustConfiguration.configurationSHA256,
               InstallerSelfUpdateValidation.isSHA256(releaseTrustConfigurationSHA256),
               let provenanceSHA256 = installer["provenance_sha256"]?.stringValue,
               InstallerSelfUpdateValidation.isSHA256(provenanceSHA256),
@@ -433,6 +432,11 @@ struct GitHubInstallerReleaseDescriptor: Sendable {
             throw GitHubInstallerReleaseDescriptorError.invalid
         }
 
+        // The descriptor is authorized by the currently sealed key threshold,
+        // locator and bundle/team policy.  Its target trust-config digest is
+        // intentionally not required to equal that current configuration: a
+        // verified target may rotate the config.  The staged target bundle is
+        // checked against this exact digest before any handoff.
         return GitHubInstallerReleaseDescriptor(
             sequence: sequence,
             channel: channel,
@@ -681,13 +685,13 @@ enum GitHubInstallerReleaseDescriptorValidation {
     }
 
     static func isDescriptorAssetName(_ value: String) -> Bool {
-        guard !value.isEmpty, value.count <= 128, value.hasSuffix(".json") else {
+        guard !value.isEmpty, value.utf8.count <= 128, value.hasSuffix(".json") else {
             return false
         }
         let stem = value.dropLast(5)
         guard !stem.isEmpty,
               let first = stem.unicodeScalars.first,
-              isRepositoryScalar(first) else {
+              isASCIILetterOrDigit(first) else {
             return false
         }
         return stem.unicodeScalars.allSatisfy(isRepositoryScalar)
@@ -766,6 +770,12 @@ enum GitHubInstallerReleaseDescriptorValidation {
 
     private static func isLowercaseLetterOrDigit(_ scalar: Unicode.Scalar) -> Bool {
         (48...57).contains(scalar.value) || (97...122).contains(scalar.value)
+    }
+
+    private static func isASCIILetterOrDigit(_ scalar: Unicode.Scalar) -> Bool {
+        (48...57).contains(scalar.value)
+            || (65...90).contains(scalar.value)
+            || (97...122).contains(scalar.value)
     }
 
     private static func isRepositoryScalar(_ scalar: Unicode.Scalar) -> Bool {

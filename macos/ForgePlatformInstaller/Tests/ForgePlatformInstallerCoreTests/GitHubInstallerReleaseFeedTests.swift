@@ -75,6 +75,31 @@ final class GitHubInstallerReleaseFeedTests: XCTestCase {
         XCTAssertEqual(acceptance, .success(nil))
     }
 
+    func testTargetTrustConfigurationRotationIsAuthorizedByCurrentThresholdAndCarriedForward() async throws {
+        let fixture = try makeFixture()
+        let targetTrustConfigurationSHA256 = String(repeating: "9", count: 64)
+        let bytes = try fixture.signedDescriptorBytes(
+            version: "0.2.0",
+            sequence: 2,
+            targetTrustConfigurationSHA256: targetTrustConfigurationSHA256
+        )
+        let feed = try GitHubSignedInstallerReleaseFeed(
+            trustConfiguration: fixture.configuration,
+            sealedReleaseProvenance: fixture.provenance,
+            architecture: "arm64",
+            fetcher: DescriptorFetcher(tag: fixture.tag, bytes: bytes, observedAt: fixture.observedAt),
+            acceptanceStore: InMemoryInstallerReleaseAcceptanceStore()
+        )
+
+        let result = await feed.latestVerifiedInstallerRelease()
+
+        guard case .success(let record) = result else {
+            return XCTFail("A current-threshold-signed target configuration rotation should be accepted")
+        }
+        XCTAssertEqual(record.expectedReleaseTrustConfigurationSHA256, targetTrustConfigurationSHA256)
+        XCTAssertNotEqual(record.expectedReleaseTrustConfigurationSHA256, fixture.configuration.configurationSHA256)
+    }
+
     func testDifferentDescriptorBytesUnderAcceptedSequenceFailClosed() async throws {
         let fixture = try makeFixture()
         let firstBytes = try fixture.signedDescriptorBytes(version: "0.2.0", sequence: 2)
@@ -184,11 +209,21 @@ final class GitHubInstallerReleaseFeedTests: XCTestCase {
             "https://github.com/example-owner/forge-platform-installer/releases/download/installer-0.2.0/forge-platform-installer-release.json"
         )
         XCTAssertNil(GitHubReleaseTransportEndpoint.latestReleaseURL(repository: "example-owner/../evil"))
+        XCTAssertNil(GitHubReleaseTransportEndpoint.latestReleaseURL(repository: ".owner/repository"))
+        XCTAssertNil(GitHubReleaseTransportEndpoint.latestReleaseURL(repository: "owner/.repository"))
+        XCTAssertNil(GitHubReleaseTransportEndpoint.latestReleaseURL(repository: "owner/.."))
         XCTAssertNil(
             GitHubReleaseTransportEndpoint.descriptorURL(
                 repository: "example-owner/forge-platform-installer",
                 tag: "installer-0.2.0",
                 descriptorAssetName: "../../evil.json"
+            )
+        )
+        XCTAssertNil(
+            GitHubReleaseTransportEndpoint.descriptorURL(
+                repository: "example-owner/forge-platform-installer",
+                tag: "installer-0.2.0",
+                descriptorAssetName: ".descriptor.json"
             )
         )
         XCTAssertFalse(GitHubReleaseTransportEndpoint.isHTTPS(URL(string: "http://github.com/example")!))
@@ -207,6 +242,24 @@ final class GitHubInstallerReleaseFeedTests: XCTestCase {
         )
 
         XCTAssertNoThrow(
+            try GitHubInstallerReleaseDescriptor.decode(
+                bytes: bytes,
+                trustConfiguration: fixture.configuration,
+                expectedChannel: .stable,
+                expectedTag: fixture.tag,
+                observedAt: fixture.observedAt
+            )
+        )
+    }
+
+    func testDescriptorRejectsSemanticVersionOutsideSigned64BitRange() throws {
+        let fixture = try makeFixture()
+        let bytes = try fixture.signedDescriptorBytes(
+            version: "9223372036854775808.0.0",
+            sequence: 2
+        )
+
+        XCTAssertThrowsError(
             try GitHubInstallerReleaseDescriptor.decode(
                 bytes: bytes,
                 trustConfiguration: fixture.configuration,
@@ -328,11 +381,12 @@ private struct DescriptorFixture {
         sourceRevision: String = String(repeating: "b", count: 40),
         expiresAt: String = "2027-12-31T00:00:00Z",
         capabilities: [String] = ["composition/v1", "provider-gate/v1"],
+        targetTrustConfigurationSHA256: String? = nil,
         signingKeyIndexes: [Int] = [0, 1]
     ) throws -> Data {
         let capabilitiesJSON = capabilities.map { "\"\($0)\"" }.joined(separator: ",")
         let unsigned = """
-        {"channel":"stable","composition_catalog":{"url":"https://catalog.example.test/feed.json"},"expires_at":"\(expiresAt)","github_release":{"descriptor_asset_name":"\(configuration.releaseDescriptorAssetName)","repository":"\(configuration.repository)","tag":"\(tag)"},"installer":{"assets":[{"architecture":"arm64","asset_name":"forge-platform-installer-arm64.zip","bundle_identifier":"\(configuration.expectedBundleIdentifier)","code_directory_sha256":"\(codeDirectorySHA256)","digest":"sha256:\(String(repeating: "f", count: 64))","notarization_receipt_reference":"receipt:installer-arm64-v2","operating_system":"macos","team_identifier":"\(configuration.expectedTeamIdentifier)"}],"capabilities":[\(capabilitiesJSON)],"policy_revision":"release/v2","provenance_sha256":"\(descriptorProvenanceSHA256)","release_trust_configuration_sha256":"\(configuration.configurationSHA256)","source_revision":"\(sourceRevision)","version":"\(version)"},"published_at":"2026-09-09T18:00:00Z","schema":"forge-platform.installer-release/v1","sequence":\(sequence)}
+        {"channel":"stable","composition_catalog":{"url":"https://catalog.example.test/feed.json"},"expires_at":"\(expiresAt)","github_release":{"descriptor_asset_name":"\(configuration.releaseDescriptorAssetName)","repository":"\(configuration.repository)","tag":"\(tag)"},"installer":{"assets":[{"architecture":"arm64","asset_name":"forge-platform-installer-arm64.zip","bundle_identifier":"\(configuration.expectedBundleIdentifier)","code_directory_sha256":"\(codeDirectorySHA256)","digest":"sha256:\(String(repeating: "f", count: 64))","notarization_receipt_reference":"receipt:installer-arm64-v2","operating_system":"macos","team_identifier":"\(configuration.expectedTeamIdentifier)"}],"capabilities":[\(capabilitiesJSON)],"policy_revision":"release/v2","provenance_sha256":"\(descriptorProvenanceSHA256)","release_trust_configuration_sha256":"\(targetTrustConfigurationSHA256 ?? configuration.configurationSHA256)","source_revision":"\(sourceRevision)","version":"\(version)"},"published_at":"2026-09-09T18:00:00Z","schema":"forge-platform.installer-release/v1","sequence":\(sequence)}
         """
         let canonicalUnsigned = unsigned.trimmingCharacters(in: .newlines)
         let signatures = try signingKeyIndexes.map { index -> String in
