@@ -487,13 +487,17 @@ private enum InstallerReleaseTrustValidation {
     }
 
     static func isDescriptorAssetName(_ value: String) -> Bool {
-        guard value.hasSuffix(".json"), value.count > ".json".count, value.count <= 128,
+        guard value.hasSuffix(".json"), value.utf8.count <= 128,
               !value.contains("/"), !value.contains("\\") else {
             return false
         }
-        return value.unicodeScalars.allSatisfy { scalar in
-            isMetadataScalar(scalar)
+        let stem = value.dropLast(5)
+        guard !stem.isEmpty,
+              let first = stem.unicodeScalars.first,
+              isASCIILetterOrDigit(first) else {
+            return false
         }
+        return stem.unicodeScalars.allSatisfy(isMetadataScalar)
     }
 
     static func hasStrictlyAscendingUniqueKeys(
@@ -519,6 +523,12 @@ private enum InstallerReleaseTrustValidation {
 
     private static func isLowercaseLetterOrDigit(_ scalar: Unicode.Scalar) -> Bool {
         (scalar.value >= 48 && scalar.value <= 57)
+            || (scalar.value >= 97 && scalar.value <= 122)
+    }
+
+    private static func isASCIILetterOrDigit(_ scalar: Unicode.Scalar) -> Bool {
+        (scalar.value >= 48 && scalar.value <= 57)
+            || (scalar.value >= 65 && scalar.value <= 90)
             || (scalar.value >= 97 && scalar.value <= 122)
     }
 }

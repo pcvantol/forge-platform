@@ -81,7 +81,7 @@ final class SelfUpdateRecoveryStoreTests: XCTestCase {
             expectedCodeDirectorySHA256: String(repeating: "c", count: 64),
             provenanceSHA256: String(repeating: "d", count: 64),
             expectedReleaseTrustConfigurationSHA256: String(repeating: "e", count: 64),
-            notarizationReference: "ticket-1",
+            notarizationReference: "receipt:ticket-1",
             githubAsset: asset
         )
         return try InstallerSelfUpdateOperationIdentity(

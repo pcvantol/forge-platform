@@ -214,7 +214,7 @@ public struct VerifiedInstallerReleaseRecord: Equatable, Sendable {
             throw InstallerSelfUpdateMetadataError.invalidDigest(release.sha256)
         }
         guard InstallerSelfUpdateValidation.isOpaqueReference(release.signingKeyID),
-              InstallerSelfUpdateValidation.isOpaqueReference(notarizationReference) else {
+              InstallerSelfUpdateValidation.isNotarizationReceiptReference(notarizationReference) else {
             throw InstallerSelfUpdateMetadataError.invalidOpaqueReference(notarizationReference)
         }
         guard release.releasePage == githubAsset.releasePage else {
@@ -1060,7 +1060,8 @@ enum InstallerSelfUpdateValidation {
             return false
         }
         return labels.allSatisfy { label in
-            guard let first = label.unicodeScalars.first,
+            guard label.utf8.count <= 100,
+                  let first = label.unicodeScalars.first,
                   isASCIILetterOrDigit(first) else {
                 return false
             }
@@ -1069,14 +1070,45 @@ enum InstallerSelfUpdateValidation {
     }
 
     static func isGitHubTag(_ value: String) -> Bool {
-        !value.isEmpty && value.count <= 128 && value.unicodeScalars.allSatisfy(isRepositoryScalar)
-    }
-
-    static func isInstallerArchiveName(_ value: String) -> Bool {
-        guard value.count <= 128, value.hasSuffix(".zip"), !value.contains("/"), !value.contains("\\") else {
+        guard value.utf8.count <= 128,
+              let first = value.unicodeScalars.first,
+              isASCIILetterOrDigit(first) else {
             return false
         }
         return value.unicodeScalars.allSatisfy(isRepositoryScalar)
+    }
+
+    static func isInstallerArchiveName(_ value: String) -> Bool {
+        guard value.utf8.count <= 128, value.hasSuffix(".zip"), !value.contains("/"), !value.contains("\\") else {
+            return false
+        }
+        let stem = value.dropLast(4)
+        guard !stem.isEmpty,
+              let first = stem.unicodeScalars.first,
+              isASCIILetterOrDigit(first) else {
+            return false
+        }
+        return stem.unicodeScalars.allSatisfy(isRepositoryScalar)
+    }
+
+    /// Public descriptor evidence for Apple's notarization is a bounded,
+    /// typed receipt reference. It is not a general opaque transport value.
+    static func isNotarizationReceiptReference(_ value: String) -> Bool {
+        guard value.hasPrefix("receipt:") else {
+            return false
+        }
+        let suffix = value.dropFirst("receipt:".count)
+        guard suffix.utf8.count <= 128,
+              let first = suffix.unicodeScalars.first,
+              isLowercaseLetterOrDigit(first) else {
+            return false
+        }
+        return suffix.unicodeScalars.allSatisfy { scalar in
+            isLowercaseLetterOrDigit(scalar)
+                || scalar.value == 45
+                || scalar.value == 46
+                || scalar.value == 95
+        }
     }
 
     static func isOpaqueReference(_ value: String) -> Bool {
@@ -1092,6 +1124,11 @@ enum InstallerSelfUpdateValidation {
     private static func isASCIILetterOrDigit(_ scalar: Unicode.Scalar) -> Bool {
         (scalar.value >= 48 && scalar.value <= 57)
             || (scalar.value >= 65 && scalar.value <= 90)
+            || (scalar.value >= 97 && scalar.value <= 122)
+    }
+
+    private static func isLowercaseLetterOrDigit(_ scalar: Unicode.Scalar) -> Bool {
+        (scalar.value >= 48 && scalar.value <= 57)
             || (scalar.value >= 97 && scalar.value <= 122)
     }
 

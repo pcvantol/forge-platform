@@ -515,7 +515,7 @@ struct GitHubInstallerReleaseDescriptor: Sendable {
               let codeDirectorySHA256 = fields["code_directory_sha256"]?.stringValue,
               InstallerSelfUpdateValidation.isSHA256(codeDirectorySHA256),
               let notarizationReceiptReference = fields["notarization_receipt_reference"]?.stringValue,
-              InstallerSelfUpdateValidation.isOpaqueReference(notarizationReceiptReference) else {
+              InstallerSelfUpdateValidation.isNotarizationReceiptReference(notarizationReceiptReference) else {
             throw GitHubInstallerReleaseDescriptorError.invalid
         }
         return Asset(

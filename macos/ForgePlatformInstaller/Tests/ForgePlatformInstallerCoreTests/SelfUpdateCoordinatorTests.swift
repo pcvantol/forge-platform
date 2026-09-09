@@ -731,7 +731,7 @@ final class SelfUpdateCoordinatorTests: XCTestCase {
             expectedCodeDirectorySHA256: String(repeating: "b", count: 64),
             provenanceSHA256: String(repeating: "c", count: 64),
             expectedReleaseTrustConfigurationSHA256: String(repeating: "d", count: 64),
-            notarizationReference: "notarization-ticket-v1",
+            notarizationReference: "receipt:notarization-ticket-v1",
             githubAsset: asset
         )
     }
