@@ -8,11 +8,16 @@ The shell provides these gated screens:
 
 - a mandatory self-update gate that accepts only a verified GitHub Release
   descriptor from a future trusted bootstrap coordinator;
+- one verified, immutable composition-session selection that atomically binds
+  the public composition/catalog/manifest identities to its provider
+  requirements before any downstream gate;
 - host-preflight evidence, including installer-owned Git and Python toolchain
-  checks without selecting or modifying an unrelated global toolchain;
+  checks for that accepted session without selecting or modifying an unrelated
+  global toolchain;
 - a dynamic Codex CLI / GitHub CLI provider screen, with independent selection,
-  install, authentication, and verification states;
-- qualified composition-diff review;
+  install, authentication, and verification states derived only from that
+  session;
+- product-owned inventory and qualified composition-diff review;
 - product-owned execution/readiness evidence; and
 - an installation summary including product-supplied dashboard URLs and a
   `System LaunchDaemon` service scope where applicable.
@@ -25,9 +30,11 @@ running bundle, stages one exact release asset, verifies its SHA-256,
 code-signature and notarization independently, and only then delegates an
 atomic handoff/relaunch. A release sequence plus source, provenance and code
 directory digests rejects rollback, replay and same-version/different-bytes
-replacement. Required providers cannot be bypassed: every manifest-required
-provider must be selected and in the `verified` state before the wizard can
-continue.
+replacement. The updater-only coordinator has no composition-selector
+authority and returns a typed unavailable session result. A future trusted
+selector must first accept one immutable composition session; every enabled
+provider from that session must then be in the `verified` state before the
+wizard can continue.
 
 The released app is wired through `ReleasedInstallerStartupBoundary`: it does
 not construct a wizard with `UnavailableInstallerWizardCoordinator`, and it

@@ -18,5 +18,9 @@ let package = Package(
             name: "ForgePlatformInstallerCoreTests",
             dependencies: ["ForgePlatformInstallerCore"]
         ),
+        .testTarget(
+            name: "ForgePlatformInstallerTests",
+            dependencies: ["ForgePlatformInstaller", "ForgePlatformInstallerCore"]
+        ),
     ]
 )

@@ -52,6 +52,20 @@ final class InstallerWizardViewModel: ObservableObject {
         }
     }
 
+    /// The coordinator must return one typed, immutable composition session
+    /// before this UI can show composition-derived preflight or providers.
+    /// Source builds have no such coordinator and therefore remain blocked.
+    func prepareVerifiedCompositionSession() {
+        guard state.beginSessionPreparation() else {
+            return
+        }
+        let coordinator = coordinator
+        Task { @MainActor [weak self] in
+            let result = await coordinator.prepareVerifiedCompositionSession()
+            _ = self?.state.recordSessionPreparation(result)
+        }
+    }
+
     func setProviderSelected(_ provider: ProviderID, isSelected: Bool) {
         _ = state.setProviderSelected(provider, isSelected: isSelected)
     }
@@ -68,7 +82,7 @@ final class InstallerWizardViewModel: ObservableObject {
     }
 
     func setCompositionAcknowledged(_ acknowledged: Bool) {
-        state.composition.isAcknowledged = acknowledged
+        _ = state.setCompositionAcknowledged(acknowledged)
     }
 
     func advance() {
@@ -127,12 +141,17 @@ struct InstallerWizardView: View {
         switch viewModel.state.step {
         case .selfUpdate:
             SelfUpdateScreen(viewModel: viewModel)
+        case .composition:
+            CompositionSelectionScreen(viewModel: viewModel)
         case .preflight:
-            PreflightScreen(preflight: viewModel.state.preflight)
+            PreflightScreen(
+                preflight: viewModel.state.preflight,
+                sessionPlan: viewModel.state.acceptedSessionPlan
+            )
         case .providers:
             ProviderScreen(viewModel: viewModel)
-        case .composition:
-            CompositionScreen(viewModel: viewModel)
+        case .review:
+            CompositionReviewScreen(viewModel: viewModel)
         case .execution:
             ExecutionScreen(
                 stages: viewModel.state.executionStages,
@@ -148,7 +167,7 @@ struct InstallerWizardView: View {
             Button("Terug") {
                 viewModel.goBack()
             }
-            .disabled(viewModel.state.step == .selfUpdate)
+            .disabled(!viewModel.state.canGoBack)
 
             Spacer()
 
@@ -200,9 +219,10 @@ private struct WizardSidebar: View {
     private func icon(for step: WizardStep) -> String {
         switch step {
         case .selfUpdate: return "arrow.triangle.2.circlepath"
+        case .composition: return "square.stack.3d.up"
         case .preflight: return "checklist"
         case .providers: return "person.badge.key"
-        case .composition: return "square.stack.3d.up"
+        case .review: return "doc.text.magnifyingglass"
         case .execution: return "gearshape.2"
         case .summary: return "checkmark.seal"
         }
@@ -273,16 +293,76 @@ private struct ReleaseEvidenceView: View {
     }
 }
 
+private struct CompositionSelectionScreen: View {
+    @ObservedObject var viewModel: InstallerWizardViewModel
+
+    var body: some View {
+        ScreenHeader(
+            title: "Geverifieerde compositie kiezen",
+            subtitle: "Eerst wordt één immutable compositiesessie geverifieerd. Pas daarna worden de bijbehorende host-, tool- en providervereisten beschikbaar."
+        )
+
+        VStack(alignment: .leading, spacing: 18) {
+            switch viewModel.state.sessionPreparation {
+            case .pending:
+                Label(
+                    "Nog geen geverifieerde compositiesessie geselecteerd.",
+                    systemImage: "square.stack.3d.up.slash"
+                )
+                Button("Laad geverifieerde compositie") {
+                    viewModel.prepareVerifiedCompositionSession()
+                }
+                .buttonStyle(.borderedProminent)
+
+            case .preparing:
+                HStack(spacing: 10) {
+                    ProgressView()
+                    Text("Geverifieerde compositiesessie wordt voorbereid.")
+                }
+                .foregroundStyle(.secondary)
+
+            case .prepared(let plan):
+                GroupBox("Geverifieerde sessie") {
+                    Grid(alignment: .leading, horizontalSpacing: 20, verticalSpacing: 8) {
+                        GridRow { Text("Compositie").foregroundStyle(.secondary); Text(plan.compositionIdentity).textSelection(.enabled) }
+                        GridRow { Text("Manifest").foregroundStyle(.secondary); Text(plan.manifestSHA256).font(.caption.monospaced()).textSelection(.enabled) }
+                        GridRow { Text("Catalogus").foregroundStyle(.secondary); Text("Sequentie \(plan.catalogSequence)") }
+                        GridRow { Text("Catalogusdigest").foregroundStyle(.secondary); Text(plan.catalogSHA256).font(.caption.monospaced()).textSelection(.enabled) }
+                    }
+                }
+                Label(
+                    "De providervereisten zijn eenmalig aan deze sessie gebonden en worden pas na de host- en toolcontrole getoond.",
+                    systemImage: "checkmark.seal.fill"
+                )
+                .foregroundStyle(.green)
+
+            case .unavailable(let failure):
+                FailureCallout(reason: failure.userFacingMessage)
+                Button("Opnieuw proberen") {
+                    viewModel.prepareVerifiedCompositionSession()
+                }
+            }
+        }
+        .padding(.top, 12)
+    }
+}
+
 private struct PreflightScreen: View {
     let preflight: HostPreflight
+    let sessionPlan: VerifiedCompositionSessionPlan?
 
     var body: some View {
         ScreenHeader(
             title: "Host-preflight",
-            subtitle: "Een trusted coordinator levert de gecontroleerde hostfeiten. Deze UI voert geen globale toolupdate of systeembewerking uit."
+            subtitle: "De gecontroleerde host- en toolfeiten horen bij de eerder geverifieerde compositiesessie. Deze UI voert geen globale toolupdate of systeembewerking uit."
         )
 
         VStack(alignment: .leading, spacing: 12) {
+            if let sessionPlan {
+                Label("Compositie: \(sessionPlan.compositionIdentity)", systemImage: "square.stack.3d.up")
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+            }
             ForEach(preflight.checks) { check in
                 GroupBox {
                     HStack(alignment: .top, spacing: 12) {
@@ -314,17 +394,24 @@ private struct ProviderScreen: View {
     var body: some View {
         ScreenHeader(
             title: "Providers toevoegen",
-            subtitle: "Codex CLI en GitHub CLI worden per manifestselectie getoond. Vereiste providers moeten onafhankelijk zijn geïnstalleerd, geauthenticeerd en geverifieerd voordat u verder kunt."
+            subtitle: "Codex CLI en GitHub CLI komen uitsluitend uit de eerder geverifieerde compositiesessie. Iedere ingeschakelde provider moet onafhankelijk zijn geïnstalleerd, geauthenticeerd en geverifieerd voordat u verder kunt."
         )
 
         VStack(alignment: .leading, spacing: 14) {
-            ForEach(viewModel.state.providers) { provider in
-                ProviderRow(provider: provider, viewModel: viewModel)
+            if viewModel.state.providers.isEmpty {
+                ContentUnavailableView(
+                    "Geen gebruikersproviders vereist",
+                    systemImage: "person.badge.key",
+                    description: Text("De geverifieerde compositiesessie heeft geen user-scoped providervereisten. Deze stap kan alleen door wanneer die sessie nog steeds geldig is."))
+            } else {
+                ForEach(viewModel.state.providers) { provider in
+                    ProviderRow(provider: provider, viewModel: viewModel)
+                }
             }
 
-            let verified = viewModel.state.requiredProvidersVerified
+            let verified = viewModel.state.enabledProvidersVerified
             Label(
-                verified ? "Alle vereiste providers zijn geverifieerd." : "De volgende stap blijft geblokkeerd totdat iedere vereiste provider is geverifieerd.",
+                verified ? "Alle ingeschakelde providers zijn geverifieerd." : "De volgende stap blijft geblokkeerd totdat iedere ingeschakelde provider is geverifieerd.",
                 systemImage: verified ? "checkmark.circle.fill" : "lock.fill"
             )
             .foregroundStyle(verified ? .green : .secondary)
@@ -383,7 +470,7 @@ private struct ProviderRow: View {
     }
 
     private func nextAction(for provider: ProviderProgress) -> ProviderAction? {
-        guard provider.isSelected else { return nil }
+        guard provider.isEnabled else { return nil }
         switch provider.state {
         case .selected, .failed:
             return .install
@@ -403,13 +490,13 @@ private struct ProviderRow: View {
     }
 }
 
-private struct CompositionScreen: View {
+private struct CompositionReviewScreen: View {
     @ObservedObject var viewModel: InstallerWizardViewModel
 
     var body: some View {
         ScreenHeader(
             title: "Compositie en wijzigingsplan",
-            subtitle: "De wizard toont uitsluitend de diff uit een gekwalificeerd, immutable compositiemanifest. Product-adapters beslissen afzonderlijk over runtime, data, migratie en rollback."
+            subtitle: "Na host-, tool- en providergates toont de wizard uitsluitend de reviewdiff voor de eerder geverifieerde immutable compositie. Product-adapters beslissen afzonderlijk over runtime, data, migratie en rollback."
         )
 
         VStack(alignment: .leading, spacing: 16) {

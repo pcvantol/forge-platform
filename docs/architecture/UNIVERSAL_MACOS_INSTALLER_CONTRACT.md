@@ -281,10 +281,10 @@ contract.
 The macOS application is a native SwiftUI shell over a bounded trusted coordinator. The UI never constructs a shell command from input, stores a credential, selects a product runtime, writes a product database, creates a product venv, or registers a service itself.
 
 1. Self-update.
-2. Host preflight and managed-tool inventory.
-3. Dynamic **Add providers**.
-4. Signed composition selection and product-owned installation inventory.
-5. Reviewed add/update/repair/remove diff.
+2. Verified signed composition/session selection. Its accepted immutable session binds the composition, catalog and manifest identities to its exact provider requirements; a provider projection cannot be supplied separately or before this gate.
+3. Host preflight and managed-tool inventory for that accepted session.
+4. Dynamic **Add providers** for the provider requirements bound to that same session.
+5. Product-owned installation inventory and reviewed add/update/repair/remove diff for that same session.
 6. Product-owned execution and cross-component readiness.
 7. Final per-component status, installer-log reference, artifact identities, and only product-verified HTTP(S) links.
 
@@ -294,7 +294,7 @@ Every gate fails closed. A future privileged helper communicates only with the c
 
 Git and Python are inventoried and, where a qualified composition requires them, bootstrapped from installer-owned digest-pinned artifacts. The installer uses explicit managed-tool identities. It does not replace `/usr/bin/git`, a Homebrew installation, an arbitrary user Python, or a PATH-selected executable. A tool upgrade is explicit and must not mutate unrelated global toolchains. Product component venvs remain separate from managed tools and from every other component.
 
-The dynamic provider screen can show Codex CLI and GitHub CLI independently as selected, optional, or required. For every enabled provider the state is `ABSENT → INSTALLED → AUTHENTICATION_REQUIRED → VERIFIED`. The wizard advances only when every enabled required provider is `VERIFIED`. If a profile requires both Codex and GitHub CLI, both are selected and both must finish installation, interactive authentication, and non-secret validation. Either failure blocks the next screen. Optional providers may be deselected only when the selected composition permits it. Vendor actions are fixed audited commands or UI handoffs; the UI never accepts command text. Credentials stay in provider user-scoped secure storage and never enter a system service, composition, receipt, diagnostic, or installer log.
+The dynamic provider screen can show Codex CLI and GitHub CLI independently as selected, optional, or required. For every enabled provider the state is `ABSENT → INSTALLED → AUTHENTICATION_REQUIRED → VERIFIED`. The wizard advances only when every enabled provider is `VERIFIED`; a selected optional provider therefore cannot be silently bypassed. If a profile requires both Codex and GitHub CLI, both are selected and both must finish installation, interactive authentication, and non-secret validation. Either failure blocks the next screen. Optional providers may be deselected only when the selected composition permits it. Vendor actions are fixed audited commands or UI handoffs; the UI never accepts command text. Credentials stay in provider user-scoped secure storage and never enter a system service, composition, receipt, diagnostic, or installer log.
 
 A server-only profile can omit user-scoped provider requirements only when its qualified composition explicitly says so. This is not a bypass for a profile that needs a local Project Agent or interactive provider execution.
 

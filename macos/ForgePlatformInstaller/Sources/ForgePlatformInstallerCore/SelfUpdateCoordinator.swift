@@ -589,6 +589,14 @@ public actor VerifiedInstallerSelfUpdateCoordinator: TrustedInstallerRuntime {
         }
     }
 
+    /// This coordinator owns only the installer release-update lifecycle. It
+    /// intentionally has no catalog/manifest verifier or composition-session
+    /// authority, so even a successfully current installer cannot continue to
+    /// preflight, provider, or product work through this runtime alone.
+    public func prepareVerifiedCompositionSession() async -> InstallerSessionPreparationResult {
+        .unavailable(.coordinatorUnavailable)
+    }
+
     /// The startup path deliberately owns one lease from interrupted-operation
     /// recovery through release qualification and atomic handoff.  Releasing
     /// between these transitions would let a second process replace the same

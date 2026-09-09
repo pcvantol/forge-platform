@@ -86,6 +86,22 @@ final class SelfUpdateCoordinatorTests: XCTestCase {
         XCTAssertEqual(stagedReleaseCount, 0)
     }
 
+    func testSelfUpdateOnlyCoordinatorCannotPrepareACompositionSession() async throws {
+        let current = try makeCurrentIdentity(version: "1.0.0", sequence: 10)
+        let feed = FeedSpy(result: .success(try makeReleaseRecord(version: "1.0.0", sequence: 10)))
+        let coordinator = makeCoordinator(
+            feed: feed,
+            inspector: InspectorSpy(responses: [.success(current)]),
+            staging: StagingSpy(result: .success(try makeStagedAsset()))
+        )
+
+        let result = await coordinator.prepareVerifiedCompositionSession()
+        let feedCalls = await feed.callCount()
+
+        XCTAssertEqual(result, .unavailable(.coordinatorUnavailable))
+        XCTAssertEqual(feedCalls, 0)
+    }
+
     func testSameVersionWithChangedSignedIdentityFailsClosed() async throws {
         let release = try makeReleaseRecord(version: "1.0.0", sequence: 10)
         let current = try makeCurrentIdentity(
