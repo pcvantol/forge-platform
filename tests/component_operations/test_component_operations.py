@@ -11,6 +11,7 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
 
 from forge_platform.component_operations import (  # noqa: E402
+    ArtifactCorrelation,
     ComponentOperationCoordinator,
     ComponentOperationRequest,
     ProductInstallationReadback,
@@ -36,7 +37,7 @@ OLD_ARTIFACT = QualifiedArtifact(
 
 def active_readback(
     *,
-    artifact: QualifiedArtifact = ARTIFACT,
+    artifact: ArtifactCorrelation = ARTIFACT.correlation,
     component: str = "engineering-platform-server",
     installation_identity: str = "ep-primary",
     runtime_identity: str = "ep-runtime-2.3.1",
@@ -68,7 +69,7 @@ def active_readback(
 
 
 def unhealthy_readback(
-    *, artifact: QualifiedArtifact = ARTIFACT,
+    *, artifact: ArtifactCorrelation = ARTIFACT.correlation,
     instance_identity: str = "wrong-instance",
 ) -> ProductInstallationReadback:
     return ProductInstallationReadback(
@@ -91,7 +92,7 @@ def unhealthy_readback(
 def assessment(
     *,
     state: str = "UPDATE_AVAILABLE",
-    artifact: QualifiedArtifact = ARTIFACT,
+    artifact: ArtifactCorrelation = ARTIFACT.correlation,
     component: str = "engineering-platform-server",
     installation_identity: str = "ep-primary",
 ) -> ProductUpdateAssessment:
@@ -107,7 +108,7 @@ def assessment(
 def receipt(
     *,
     state: str = "COMPLETED",
-    artifact: QualifiedArtifact = ARTIFACT,
+    artifact: ArtifactCorrelation = ARTIFACT.correlation,
     component: str = "engineering-platform-server",
     installation_identity: str = "ep-primary",
     product_operation_id: str = "ep-operation-001",
@@ -141,7 +142,7 @@ class RecordingAdapter:
         self.readback_requests: list[ComponentOperationRequest] = []
         self.assessment_requests: list[ComponentOperationRequest] = []
         self.resume_requests: list[tuple[ComponentOperationRequest, ProductOperationReceipt]] = []
-        self._readbacks = readbacks or [active_readback(artifact=OLD_ARTIFACT), active_readback()]
+        self._readbacks = readbacks or [active_readback(artifact=OLD_ARTIFACT.correlation), active_readback()]
         self._next_readback = 0
         self._update_assessment = update_assessment or assessment()
         self._operation_receipt = operation_receipt or receipt()
@@ -194,8 +195,25 @@ class ComponentOperationTests(unittest.TestCase):
         self.assertEqual(adapter.execution_requests[0].artifact, ARTIFACT)
         self.assertEqual(record.update_assessment, assessment())
         self.assertEqual(record.product_receipt.product_operation_id, "ep-operation-001")
+        self.assertEqual(record.artifact, ARTIFACT)
+        self.assertEqual(record.product_receipt.artifact, ARTIFACT.correlation)
+        self.assertEqual(record.update_assessment.candidate_artifact, ARTIFACT.correlation)
         self.assertEqual(record.postflight.selected_runtime_identity, "ep-runtime-2.3.1")
         self.assertTrue(record.postflight.single_operational_installation_verified)
+
+    def test_product_outputs_accept_only_the_exact_correlation_while_record_retains_qualification(self):
+        record = ComponentOperationCoordinator().delegate(request(), RecordingAdapter())
+        self.assertEqual(record.artifact.source, ARTIFACT.source)
+        self.assertEqual(record.artifact.qualification, ARTIFACT.qualification)
+        self.assertEqual(record.postflight.artifact, ARTIFACT.correlation)
+        self.assertFalse(hasattr(record.postflight.artifact, "source"))
+        self.assertFalse(hasattr(record.product_receipt.artifact, "qualification"))
+        with self.assertRaisesRegex(ValueError, "artifact correlation"):
+            active_readback(artifact=ARTIFACT)  # type: ignore[arg-type]
+        with self.assertRaisesRegex(ValueError, "artifact correlation"):
+            assessment(artifact=ARTIFACT)  # type: ignore[arg-type]
+        with self.assertRaisesRegex(ValueError, "artifact correlation"):
+            receipt(artifact=ARTIFACT)  # type: ignore[arg-type]
 
     def test_retry_is_idempotent_and_any_artifact_locator_or_selection_change_fails_closed(self):
         coordinator, adapter = ComponentOperationCoordinator(), RecordingAdapter()
@@ -211,9 +229,14 @@ class ComponentOperationTests(unittest.TestCase):
             "https://other.example.invalid/engineering-platform-2.3.1.whl",
             ARTIFACT.digest, ARTIFACT.qualification,
         )
+        different_qualification = QualifiedArtifact(
+            ARTIFACT.version, ARTIFACT.source_revision, ARTIFACT.source,
+            ARTIFACT.digest, "https://other.example.invalid/qualification",
+        )
         for changed_request in (
             request(artifact=different_digest),
             request(artifact=different_source),
+            request(artifact=different_qualification),
             request(product_request={"channel": "candidate"}),
         ):
             with self.assertRaisesRegex(RuntimeError, "different component artifact or action"):
@@ -241,7 +264,7 @@ class ComponentOperationTests(unittest.TestCase):
             request(product_request={"PATH": "/old/ep-2.3.0/bin"})
 
     def test_completed_operation_rejects_product_health_that_flags_the_wrong_instance(self):
-        adapter = RecordingAdapter(readbacks=[active_readback(artifact=OLD_ARTIFACT), unhealthy_readback()])
+        adapter = RecordingAdapter(readbacks=[active_readback(artifact=OLD_ARTIFACT.correlation), unhealthy_readback()])
         with self.assertRaisesRegex(RuntimeError, "healthy selected runtime"):
             ComponentOperationCoordinator().delegate(request(), adapter)
         self.assertEqual(len(adapter.execution_requests), 1)
@@ -250,8 +273,8 @@ class ComponentOperationTests(unittest.TestCase):
         wrong_receipt = RecordingAdapter(operation_receipt=receipt(component="workspace-server"))
         with self.assertRaisesRegex(RuntimeError, "receipt does not describe the requested component"):
             ComponentOperationCoordinator().delegate(request(), wrong_receipt)
-        wrong_assessment = RecordingAdapter(update_assessment=assessment(artifact=OLD_ARTIFACT))
-        with self.assertRaisesRegex(RuntimeError, "assessment does not describe the requested qualified artifact"):
+        wrong_assessment = RecordingAdapter(update_assessment=assessment(artifact=OLD_ARTIFACT.correlation))
+        with self.assertRaisesRegex(RuntimeError, "assessment does not correlate to the requested artifact"):
             ComponentOperationCoordinator().delegate(request(), wrong_assessment)
         self.assertEqual(len(wrong_assessment.execution_requests), 0)
 
@@ -269,7 +292,7 @@ class ComponentOperationTests(unittest.TestCase):
             operation_receipt=pending,
             resume_receipt=receipt(),
             readbacks=[
-                active_readback(artifact=OLD_ARTIFACT), active_readback(),
+                active_readback(artifact=OLD_ARTIFACT.correlation), active_readback(),
                 active_readback(), active_readback(),
             ],
         )

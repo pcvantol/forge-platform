@@ -165,6 +165,11 @@ and health/cleanup evidence. The EP resolver alone selects the operational
 runtime, executable, server, and instance; it also determines candidate
 compatibility and machine-wide conflict coverage. Forge Platform may retain
 those product-issued identities for a composition receipt. Forge Platform never selects an EP runtime through `PATH`.
+The Forge Platform request and durable record retain the full qualified artifact
+(including locator and qualification evidence); product-issued readback,
+assessment, and receipt data retain only the exact version/source-revision/digest
+correlation. A product endpoint therefore cannot silently replace composition
+provenance while still proving the bytes it selected.
 It does not use HTTP reachability, local package discovery, service
 registrations, or EP databases, and does not leave a parallel EP operational environment behind.
 An incomplete inventory or a per-user service observation cannot prove a
