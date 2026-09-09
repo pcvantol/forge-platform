@@ -49,6 +49,9 @@ public protocol MacOSInstallerBundleCodeSigningInspecting: Sendable {
 /// absent, duplicate or malformed evidence fails closed.
 public struct MacOSInstallerBundleCodeSigningInspector: MacOSInstallerBundleCodeSigningInspecting {
     private static let codeSignToolURL = URL(fileURLWithPath: "/usr/bin/codesign", isDirectory: false)
+    private static let codeSignTimeout: DispatchTimeInterval = .seconds(20)
+    private static let terminationGracePeriod: DispatchTimeInterval = .seconds(2)
+    private static let outputDrainTimeout: DispatchTimeInterval = .seconds(2)
 
     public init() {}
 
@@ -124,6 +127,10 @@ public struct MacOSInstallerBundleCodeSigningInspector: MacOSInstallerBundleCode
         process.standardOutput = output
         process.standardError = output
         let collector = BoundedProcessOutputCollector(maximumBytes: 128 * 1024)
+        let termination = DispatchSemaphore(value: 0)
+        process.terminationHandler = { _ in
+            termination.signal()
+        }
         try process.run()
         let outputGroup = DispatchGroup()
         outputGroup.enter()
@@ -131,8 +138,22 @@ public struct MacOSInstallerBundleCodeSigningInspector: MacOSInstallerBundleCode
             defer { outputGroup.leave() }
             collector.consume(output.fileHandleForReading)
         }
-        process.waitUntilExit()
-        outputGroup.wait()
+        guard termination.wait(timeout: .now() + Self.codeSignTimeout) == .success else {
+            // The executable and arguments above are fixed by this source;
+            // termination is therefore confined to the exact inspection child
+            // rather than an application, provider, or component process.
+            process.terminate()
+            if termination.wait(timeout: .now() + Self.terminationGracePeriod) != .success {
+                _ = Darwin.kill(process.processIdentifier, SIGKILL)
+                guard termination.wait(timeout: .now() + Self.terminationGracePeriod) == .success else {
+                    throw MacOSInstallerBundleCodeSigningInspectorError.invalidCode
+                }
+            }
+            throw MacOSInstallerBundleCodeSigningInspectorError.invalidCode
+        }
+        guard outputGroup.wait(timeout: .now() + Self.outputDrainTimeout) == .success else {
+            throw MacOSInstallerBundleCodeSigningInspectorError.invalidCode
+        }
         guard process.terminationReason == .exit,
               process.terminationStatus == 0 else {
             throw MacOSInstallerBundleCodeSigningInspectorError.invalidCode
