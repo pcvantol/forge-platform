@@ -561,7 +561,10 @@ private enum InstallerReleaseProvenanceValidation {
     }
 }
 
-private indirect enum StrictJSONResourceValue {
+/// Internal strict JSON value shared by the sealed-resource and signed-release
+/// parsers.  It deliberately retains integer literals instead of silently
+/// converting them through floating point.
+indirect enum StrictJSONResourceValue {
     case object([String: StrictJSONResourceValue])
     case array([StrictJSONResourceValue])
     case string(String)
@@ -607,7 +610,7 @@ private indirect enum StrictJSONResourceValue {
     }
 }
 
-private enum StrictJSONResourceError: Error {
+enum StrictJSONResourceError: Error {
     case invalid
 }
 
@@ -615,7 +618,7 @@ private enum StrictJSONResourceError: Error {
 /// JSON decoding intentionally accepts duplicate object keys, which is
 /// unsuitable for a code-signed trust-policy input. This reader rejects them
 /// at every object depth before semantic validation occurs.
-private struct StrictJSONResourceReader {
+struct StrictJSONResourceReader {
     private let scalars: [Unicode.Scalar]
     private var position = 0
 

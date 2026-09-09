@@ -1004,7 +1004,7 @@ enum InstallerSelfUpdateValidation {
     }
 
     static func isGitRevision(_ value: String) -> Bool {
-        (value.count == 40 || value.count == 64) && value.unicodeScalars.allSatisfy(isLowercaseHex)
+        (40...64).contains(value.count) && value.unicodeScalars.allSatisfy(isLowercaseHex)
     }
 
     static func isTeamIdentifier(_ value: String) -> Bool {
@@ -1039,11 +1039,11 @@ enum InstallerSelfUpdateValidation {
     }
 
     static func isGitHubTag(_ value: String) -> Bool {
-        !value.isEmpty && value.unicodeScalars.allSatisfy(isRepositoryScalar)
+        !value.isEmpty && value.count <= 128 && value.unicodeScalars.allSatisfy(isRepositoryScalar)
     }
 
     static func isInstallerArchiveName(_ value: String) -> Bool {
-        guard value.hasSuffix(".zip"), !value.contains("/"), !value.contains("\\") else {
+        guard value.count <= 128, value.hasSuffix(".zip"), !value.contains("/"), !value.contains("\\") else {
             return false
         }
         return value.unicodeScalars.allSatisfy(isRepositoryScalar)
