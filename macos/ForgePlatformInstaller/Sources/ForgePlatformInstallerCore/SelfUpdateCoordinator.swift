@@ -410,9 +410,22 @@ public protocol CurrentInstallerBundleInspecting: Sendable {
     func inspectCurrentInstallerBundle() async -> Result<CurrentInstallerBundleIdentity, InstallerSelfUpdateFailure>
 }
 
+/// Re-inspects an opaque staged archive immediately before a security
+/// boundary.  This deliberately narrower protocol lets the atomic handoff
+/// verify that the exact archive which was qualified still exists without
+/// gaining authority to stage or delete an update.
+public protocol StagedInstallerAssetIdentityInspecting: Sendable {
+    /// Re-reads the immutable file identity without exposing a raw path.  The
+    /// coordinator calls this before verification, after every verifier and
+    /// immediately before handoff to reject a staged-file replacement.
+    func inspectStagedInstallerAssetIdentity(
+        _ stagedAsset: StagedInstallerAsset
+    ) async -> Result<StagedInstallerFileIdentity, InstallerSelfUpdateFailure>
+}
+
 /// Stages exactly one verified GitHub Release asset in an operation-owned
 /// location.  It never decides product installation/update behavior.
-public protocol InstallerUpdateStaging: Sendable {
+public protocol InstallerUpdateStaging: StagedInstallerAssetIdentityInspecting {
     func stageInstallerUpdate(
         for release: VerifiedInstallerReleaseRecord
     ) async -> Result<StagedInstallerAsset, InstallerSelfUpdateFailure>
@@ -421,12 +434,6 @@ public protocol InstallerUpdateStaging: Sendable {
         _ stagedAsset: StagedInstallerAsset
     ) async -> Result<Void, InstallerSelfUpdateFailure>
 
-    /// Re-reads the immutable file identity without exposing a raw path.  The
-    /// coordinator calls this before verification, after every verifier and
-    /// immediately before handoff to reject a staged-file replacement.
-    func inspectStagedInstallerAssetIdentity(
-        _ stagedAsset: StagedInstallerAsset
-    ) async -> Result<StagedInstallerFileIdentity, InstallerSelfUpdateFailure>
 }
 
 /// Performs independent integrity checks on a staged installer bundle.  Each
