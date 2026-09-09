@@ -39,6 +39,23 @@ Interrupted installer-only work is recorded in a separate non-secret recovery
 journal with typed staged-file identity and handoff-receipt evidence. It is not
 a product database or a component installation journal.
 
+Before startup recovery, release qualification, staging, verification, or
+handoff, a trusted runtime also obtains one non-blocking host-wide self-update
+lease. The supplied file-backed implementation uses a permanent, installer
+owned lock inode with restrictive permissions and an advisory kernel lock; a
+busy or unsafe lock state blocks rather than racing a second installer. A
+successful handoff keeps its lease until the old process exits (or `exec`s),
+while the replacement retries that specific short handoff window only a bounded
+number of times. Production composition must place this state root under its
+privileged, machine-wide installer controller. A per-user directory does not
+prove cross-account uniqueness.
+
+The sealed trust descriptor has a canonical SHA-256 over its accepted semantic
+fields, is checked inside a strictly validated macOS code-signed bundle, and is
+bound separately into signed release/current/staged-bundle identity checks. The
+checksum is not a substitute for code signing or the signed release-feed trust
+root; those remain required and absent configuration still fails closed.
+
 The default coordinator fails closed. This package deliberately ships no real
 release URL, signing key, credential, shell invocation, privileged helper or
 product adapter. A production composition must inject implementations for the

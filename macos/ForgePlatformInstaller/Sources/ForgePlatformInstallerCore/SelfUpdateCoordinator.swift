@@ -8,6 +8,9 @@ public enum InstallerSelfUpdateFailureCode: String, Equatable, Sendable {
     case releaseMetadataRejected
     case sealedReleaseTrustConfigurationAbsent
     case trustedUpdaterUnavailable
+    case selfUpdateOperationInProgress
+    case selfUpdateOperationLockUnavailable
+    case selfUpdateOperationLockReleaseFailed
     case currentBundleUnavailable
     case currentBundleIdentityMismatch
     case currentBundleChanged
@@ -20,6 +23,7 @@ public enum InstallerSelfUpdateFailureCode: String, Equatable, Sendable {
     case stagedAssetIdentityChanged
     case sha256VerificationFailed
     case codeSignatureVerificationFailed
+    case sealedReleaseTrustConfigurationMismatch
     case notarizationVerificationFailed
     case stagingCleanupFailed
     case recoveryLoadFailed
@@ -38,6 +42,12 @@ public enum InstallerSelfUpdateFailureCode: String, Equatable, Sendable {
             return "De verzegelde release-trustconfiguratie ontbreekt of is niet geldig."
         case .trustedUpdaterUnavailable:
             return "Er is geen vertrouwde installer-updater beschikbaar voor deze release."
+        case .selfUpdateOperationInProgress:
+            return "Een andere installer-update of herstelbewerking is al actief; doorgaan is geblokkeerd."
+        case .selfUpdateOperationLockUnavailable:
+            return "De exclusieve installer-updatevergrendeling kon niet veilig worden verkregen."
+        case .selfUpdateOperationLockReleaseFailed:
+            return "De exclusieve installer-updatevergrendeling kon niet veilig worden vrijgegeven."
         case .currentBundleUnavailable:
             return "De identiteit van deze installer kon niet worden gecontroleerd."
         case .currentBundleIdentityMismatch:
@@ -62,6 +72,8 @@ public enum InstallerSelfUpdateFailureCode: String, Equatable, Sendable {
             return "De SHA-256-controle van de installer-update is mislukt."
         case .codeSignatureVerificationFailed:
             return "De codeondertekening van de installer-update is niet geldig."
+        case .sealedReleaseTrustConfigurationMismatch:
+            return "De verzegelde trustconfiguratie van de installer-update hoort niet bij de geverifieerde release."
         case .notarizationVerificationFailed:
             return "De notarization-controle van de installer-update is niet geldig."
         case .stagingCleanupFailed:
@@ -145,6 +157,10 @@ public struct VerifiedInstallerReleaseRecord: Equatable, Sendable {
     public let expectedTeamIdentifier: String
     public let expectedCodeDirectorySHA256: String
     public let metadataSHA256: String
+    /// Digest of the release package's canonical sealed-trust descriptor. It
+    /// is signed release metadata, not an unchecked checksum supplied by the
+    /// bundle currently being launched.
+    public let expectedReleaseTrustConfigurationSHA256: String
     public let notarizationReference: String
     public let githubAsset: GitHubInstallerReleaseAsset
 
@@ -156,6 +172,7 @@ public struct VerifiedInstallerReleaseRecord: Equatable, Sendable {
         expectedTeamIdentifier: String,
         expectedCodeDirectorySHA256: String,
         metadataSHA256: String,
+        expectedReleaseTrustConfigurationSHA256: String,
         notarizationReference: String,
         githubAsset: GitHubInstallerReleaseAsset
     ) throws {
@@ -173,7 +190,8 @@ public struct VerifiedInstallerReleaseRecord: Equatable, Sendable {
         }
         guard InstallerSelfUpdateValidation.isSHA256(release.sha256),
               InstallerSelfUpdateValidation.isSHA256(expectedCodeDirectorySHA256),
-              InstallerSelfUpdateValidation.isSHA256(metadataSHA256) else {
+              InstallerSelfUpdateValidation.isSHA256(metadataSHA256),
+              InstallerSelfUpdateValidation.isSHA256(expectedReleaseTrustConfigurationSHA256) else {
             throw InstallerSelfUpdateMetadataError.invalidDigest(release.sha256)
         }
         guard InstallerSelfUpdateValidation.isOpaqueReference(release.signingKeyID),
@@ -194,6 +212,7 @@ public struct VerifiedInstallerReleaseRecord: Equatable, Sendable {
         self.expectedTeamIdentifier = expectedTeamIdentifier
         self.expectedCodeDirectorySHA256 = expectedCodeDirectorySHA256
         self.metadataSHA256 = metadataSHA256
+        self.expectedReleaseTrustConfigurationSHA256 = expectedReleaseTrustConfigurationSHA256
         self.notarizationReference = notarizationReference
         self.githubAsset = githubAsset
     }
@@ -211,6 +230,9 @@ public struct CurrentInstallerBundleIdentity: Equatable, Sendable {
     public let teamIdentifier: String
     public let codeDirectorySHA256: String
     public let metadataSHA256: String
+    /// Canonical digest read from the current bundle's sealed trust descriptor.
+    /// It is compared to signed release evidence for an exact-current decision.
+    public let releaseTrustConfigurationSHA256: String
 
     public init(
         version: InstallerVersion,
@@ -219,7 +241,8 @@ public struct CurrentInstallerBundleIdentity: Equatable, Sendable {
         bundleIdentifier: String,
         teamIdentifier: String,
         codeDirectorySHA256: String,
-        metadataSHA256: String
+        metadataSHA256: String,
+        releaseTrustConfigurationSHA256: String
     ) throws {
         guard acceptedReleaseSequence > 0 else {
             throw InstallerSelfUpdateMetadataError.invalidReleaseSequence
@@ -234,7 +257,8 @@ public struct CurrentInstallerBundleIdentity: Equatable, Sendable {
             throw InstallerSelfUpdateMetadataError.invalidTeamIdentifier(teamIdentifier)
         }
         guard InstallerSelfUpdateValidation.isSHA256(codeDirectorySHA256),
-              InstallerSelfUpdateValidation.isSHA256(metadataSHA256) else {
+              InstallerSelfUpdateValidation.isSHA256(metadataSHA256),
+              InstallerSelfUpdateValidation.isSHA256(releaseTrustConfigurationSHA256) else {
             throw InstallerSelfUpdateMetadataError.invalidDigest(codeDirectorySHA256)
         }
 
@@ -245,6 +269,7 @@ public struct CurrentInstallerBundleIdentity: Equatable, Sendable {
         self.teamIdentifier = teamIdentifier
         self.codeDirectorySHA256 = codeDirectorySHA256
         self.metadataSHA256 = metadataSHA256
+        self.releaseTrustConfigurationSHA256 = releaseTrustConfigurationSHA256
     }
 }
 
@@ -338,6 +363,14 @@ public protocol StagedInstallerArtifactVerifying: Sendable {
         for release: VerifiedInstallerReleaseRecord
     ) async -> Result<Void, InstallerSelfUpdateFailure>
 
+    /// Checks the staged app bundle's sealed trust descriptor against the
+    /// exact digest carried in signed release evidence.  This prevents a valid
+    /// app archive with a different trust selector from reaching handoff.
+    func verifySealedReleaseTrustConfiguration(
+        of stagedAsset: StagedInstallerAsset,
+        for release: VerifiedInstallerReleaseRecord
+    ) async -> Result<Void, InstallerSelfUpdateFailure>
+
     func verifyNotarization(
         of stagedAsset: StagedInstallerAsset,
         for release: VerifiedInstallerReleaseRecord
@@ -363,6 +396,10 @@ public protocol InstallerAtomicHandoffPerforming: Sendable {
 public enum InstallerSelfUpdateEnforcementResult: Equatable, Sendable {
     case current(VerifiedInstallerRelease)
     case relaunching(VerifiedInstallerRelease)
+    /// The replacement process may start while its predecessor still owns the
+    /// handoff lease.  Startup may perform a short bounded retry, but no wizard
+    /// session may be created from this result.
+    case concurrentOperationInProgress
     case failed(String)
 }
 
@@ -377,8 +414,14 @@ public actor VerifiedInstallerSelfUpdateCoordinator: TrustedInstallerRuntime {
     private let artifactVerifier: any StagedInstallerArtifactVerifying
     private let atomicHandoff: any InstallerAtomicHandoffPerforming
     private let recoveryStore: any InstallerSelfUpdateRecoveryStoring
+    private let operationLock: any InstallerSelfUpdateOperationLocking
 
     private var pendingUpdate: PendingUpdate?
+    /// Retained only after a verified atomic handoff has persisted its receipt.
+    /// `O_CLOEXEC`/process termination releases a real file lease; keeping it
+    /// here closes the gap where an old installer is still alive while its
+    /// replacement begins startup.
+    private var retainedHandoffLease: (any InstallerSelfUpdateOperationLock)?
 
     public init(
         releaseFeed: any SignedInstallerReleaseFeedVerifying,
@@ -386,7 +429,8 @@ public actor VerifiedInstallerSelfUpdateCoordinator: TrustedInstallerRuntime {
         staging: any InstallerUpdateStaging,
         artifactVerifier: any StagedInstallerArtifactVerifying,
         atomicHandoff: any InstallerAtomicHandoffPerforming,
-        recoveryStore: any InstallerSelfUpdateRecoveryStoring
+        recoveryStore: any InstallerSelfUpdateRecoveryStoring,
+        operationLock: any InstallerSelfUpdateOperationLocking
     ) {
         self.releaseFeed = releaseFeed
         self.currentBundleInspector = currentBundleInspector
@@ -394,9 +438,18 @@ public actor VerifiedInstallerSelfUpdateCoordinator: TrustedInstallerRuntime {
         self.artifactVerifier = artifactVerifier
         self.atomicHandoff = atomicHandoff
         self.recoveryStore = recoveryStore
+        self.operationLock = operationLock
     }
 
     public func checkForUpdate(currentVersion: InstallerVersion) async -> SelfUpdateCheckResult {
+        await whileExclusivelyLocked(
+            unavailable: { self.rejected($0.code) }
+        ) {
+            await self.checkForUpdateWhileLocked(currentVersion: currentVersion)
+        }
+    }
+
+    private func checkForUpdateWhileLocked(currentVersion: InstallerVersion) async -> SelfUpdateCheckResult {
         pendingUpdate = nil
 
         switch await recoverInterruptedUpdate() {
@@ -421,14 +474,38 @@ public actor VerifiedInstallerSelfUpdateCoordinator: TrustedInstallerRuntime {
     public func enforceCurrentInstaller(
         currentVersion: InstallerVersion
     ) async -> InstallerSelfUpdateEnforcementResult {
-        switch await checkForUpdate(currentVersion: currentVersion) {
+        await whileExclusivelyLocked(
+            unavailable: { failure in
+                failure.code == .selfUpdateOperationInProgress
+                    ? .concurrentOperationInProgress
+                    : .failed(failure.code.userFacingMessage)
+            },
+            retainLeaseWhen: { result in
+                if case .relaunching = result {
+                    return true
+                }
+                return false
+            }
+        ) {
+            await self.enforceCurrentInstallerWhileLocked(currentVersion: currentVersion)
+        }
+    }
+
+    /// The startup path deliberately owns one lease from interrupted-operation
+    /// recovery through release qualification and atomic handoff.  Releasing
+    /// between these transitions would let a second process replace the same
+    /// recovery record or staged asset.
+    private func enforceCurrentInstallerWhileLocked(
+        currentVersion: InstallerVersion
+    ) async -> InstallerSelfUpdateEnforcementResult {
+        switch await checkForUpdateWhileLocked(currentVersion: currentVersion) {
         case .rejected(let reason):
             return .failed(reason)
         case .verifiedGitHubRelease(let release):
             if release.version == currentVersion {
                 return .current(release)
             }
-            switch await handOffSelfUpdate(release) {
+            switch await handOffSelfUpdateWhileLocked(release) {
             case .relaunching:
                 return .relaunching(release)
             case .failed(let reason):
@@ -490,6 +567,20 @@ public actor VerifiedInstallerSelfUpdateCoordinator: TrustedInstallerRuntime {
     }
 
     public func handOffSelfUpdate(_ release: VerifiedInstallerRelease) async -> SelfUpdateHandoffResult {
+        await whileExclusivelyLocked(
+            unavailable: { self.failed($0.code) },
+            retainLeaseWhen: { result in
+                if case .relaunching = result {
+                    return true
+                }
+                return false
+            }
+        ) {
+            await self.handOffSelfUpdateWhileLocked(release)
+        }
+    }
+
+    private func handOffSelfUpdateWhileLocked(_ release: VerifiedInstallerRelease) async -> SelfUpdateHandoffResult {
         guard let pendingUpdate, pendingUpdate.release.release == release else {
             return failed(.noVerifiedPendingUpdate)
         }
@@ -547,6 +638,23 @@ public actor VerifiedInstallerSelfUpdateCoordinator: TrustedInstallerRuntime {
                 stagedAsset,
                 operation: pendingUpdate.operation,
                 because: .codeSignatureVerificationFailed
+            )
+        }
+        guard await stagedAssetIdentityIsCurrent(stagedAsset) else {
+            return await discardAndFail(
+                stagedAsset,
+                operation: pendingUpdate.operation,
+                because: .stagedAssetIdentityChanged
+            )
+        }
+        guard case .success = await artifactVerifier.verifySealedReleaseTrustConfiguration(
+            of: stagedAsset,
+            for: pendingUpdate.release
+        ) else {
+            return await discardAndFail(
+                stagedAsset,
+                operation: pendingUpdate.operation,
+                because: .sealedReleaseTrustConfigurationMismatch
             )
         }
         guard await stagedAssetIdentityIsCurrent(stagedAsset) else {
@@ -701,6 +809,7 @@ public actor VerifiedInstallerSelfUpdateCoordinator: TrustedInstallerRuntime {
             && currentBundle.sourceRevision == release.sourceRevision
             && currentBundle.codeDirectorySHA256 == release.expectedCodeDirectorySHA256
             && currentBundle.metadataSHA256 == release.metadataSHA256
+            && currentBundle.releaseTrustConfigurationSHA256 == release.expectedReleaseTrustConfigurationSHA256
     }
 
     private func isValidNewerRelease(
@@ -776,6 +885,39 @@ public actor VerifiedInstallerSelfUpdateCoordinator: TrustedInstallerRuntime {
             return true
         } catch {
             return false
+        }
+    }
+
+    /// Runs a complete public self-update operation under one host-wide lease.
+    /// The file-backed implementation is non-blocking, so a concurrent
+    /// installer fails closed rather than waiting behind an unknown update or
+    /// attempting recovery against the same durable record.
+    private func whileExclusivelyLocked<ResultValue: Sendable>(
+        unavailable: (InstallerSelfUpdateFailure) -> ResultValue,
+        retainLeaseWhen: (ResultValue) -> Bool = { _ in false },
+        operation: () async -> ResultValue
+    ) async -> ResultValue {
+        guard retainedHandoffLease == nil else {
+            return unavailable(InstallerSelfUpdateFailure(.selfUpdateOperationInProgress))
+        }
+        let lease: any InstallerSelfUpdateOperationLock
+        switch operationLock.acquireExclusiveSelfUpdateOperationLock() {
+        case .success(let acquiredLease):
+            lease = acquiredLease
+        case .failure(let failure):
+            return unavailable(failure)
+        }
+
+        let result = await operation()
+        if retainLeaseWhen(result) {
+            retainedHandoffLease = lease
+            return result
+        }
+        switch lease.releaseExclusiveSelfUpdateOperationLock() {
+        case .success:
+            return result
+        case .failure(let failure):
+            return unavailable(failure)
         }
     }
 

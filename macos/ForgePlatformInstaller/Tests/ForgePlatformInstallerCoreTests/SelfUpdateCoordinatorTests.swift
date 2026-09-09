@@ -31,7 +31,7 @@ final class SelfUpdateCoordinatorTests: XCTestCase {
         XCTAssertEqual(update, .relaunching)
         XCTAssertEqual(stagedReleaseCount, 1)
         XCTAssertEqual(discardedAssets, [])
-        XCTAssertEqual(verifierCalls, [.sha256, .codeSignature, .notarization])
+        XCTAssertEqual(verifierCalls, [.sha256, .codeSignature, .sealedReleaseTrustConfiguration, .notarization])
         XCTAssertEqual(handoffCallCount, 1)
         XCTAssertEqual(handedOffRelease, release)
         XCTAssertEqual(receiptCount, 1)
@@ -133,6 +133,108 @@ final class SelfUpdateCoordinatorTests: XCTestCase {
         XCTAssertEqual(stagedReleaseCount, 0)
     }
 
+    func testBusyCrossProcessOperationLockFailsClosedBeforeRecoveryOrFeedInspection() async throws {
+        let current = try makeCurrentIdentity(version: "1.0.0", sequence: 10)
+        let feed = FeedSpy(result: .success(try makeReleaseRecord(version: "1.0.0", sequence: 10)))
+        let inspector = InspectorSpy(responses: [.success(current)])
+        let coordinator = makeCoordinator(
+            feed: feed,
+            inspector: inspector,
+            staging: StagingSpy(result: .success(try makeStagedAsset())),
+            operationLock: OperationLockSpy(
+                acquisitionFailure: InstallerSelfUpdateFailure(.selfUpdateOperationInProgress)
+            )
+        )
+
+        let result = await coordinator.checkForUpdate(currentVersion: current.version)
+        let feedCalls = await feed.callCount()
+        let inspectorCalls = await inspector.callCount()
+
+        XCTAssertEqual(
+            result,
+            .rejected(InstallerSelfUpdateFailureCode.selfUpdateOperationInProgress.userFacingMessage)
+        )
+        XCTAssertEqual(feedCalls, 0)
+        XCTAssertEqual(inspectorCalls, 0)
+    }
+
+    func testVerifiedHandoffRetainsExclusiveLeaseUntilOldProcessTerminates() async throws {
+        let current = try makeCurrentIdentity(version: "1.0.0", sequence: 10)
+        let release = try makeReleaseRecord(version: "1.1.0", sequence: 11)
+        let operationLock = OperationLockSpy()
+        let coordinator = makeCoordinator(
+            feed: FeedSpy(result: .success(release)),
+            inspector: InspectorSpy(responses: [.success(current), .success(current), .success(current), .success(current)]),
+            staging: StagingSpy(result: .success(try makeStagedAsset())),
+            handoff: AtomicHandoffSpy(result: .success(())),
+            operationLock: operationLock
+        )
+
+        let result = await coordinator.enforceCurrentInstaller(currentVersion: current.version)
+
+        XCTAssertEqual(result, .relaunching(release.release))
+        XCTAssertEqual(operationLock.activeLeases(), 1)
+        XCTAssertEqual(operationLock.releases(), 0)
+
+        let repeatedStartup = await coordinator.enforceCurrentInstaller(currentVersion: current.version)
+        XCTAssertEqual(repeatedStartup, .concurrentOperationInProgress)
+    }
+
+    func testStagedTrustConfigurationMismatchCannotReachNotarizationOrHandoff() async throws {
+        let current = try makeCurrentIdentity(version: "1.0.0", sequence: 10)
+        let release = try makeReleaseRecord(version: "1.1.0", sequence: 11)
+        let stagedAsset = try makeStagedAsset()
+        let verifier = ArtifactVerifierSpy(
+            sealedReleaseTrustConfigurationResult: .failure(
+                InstallerSelfUpdateFailure(.sealedReleaseTrustConfigurationMismatch)
+            )
+        )
+        let handoff = AtomicHandoffSpy(result: .success(()))
+        let coordinator = makeCoordinator(
+            feed: FeedSpy(result: .success(release)),
+            inspector: InspectorSpy(responses: [.success(current), .success(current)]),
+            staging: StagingSpy(result: .success(stagedAsset)),
+            verifier: verifier,
+            handoff: handoff
+        )
+
+        _ = await coordinator.checkForUpdate(currentVersion: current.version)
+        let result = await coordinator.handOffSelfUpdate(release.release)
+        let verifierCalls = await verifier.calls()
+        let handoffCalls = await handoff.callCount()
+
+        XCTAssertEqual(
+            result,
+            .failed(InstallerSelfUpdateFailureCode.sealedReleaseTrustConfigurationMismatch.userFacingMessage)
+        )
+        XCTAssertEqual(verifierCalls, [.sha256, .codeSignature, .sealedReleaseTrustConfiguration])
+        XCTAssertEqual(handoffCalls, 0)
+    }
+
+    func testExactCurrentVersionWithDifferentSignedTrustConfigurationFailsClosed() async throws {
+        let release = try makeReleaseRecord(version: "1.0.0", sequence: 10)
+        let current = try makeCurrentIdentity(
+            version: "1.0.0",
+            sequence: 10,
+            sourceRevision: release.sourceRevision,
+            codeDirectorySHA256: release.expectedCodeDirectorySHA256,
+            metadataSHA256: release.metadataSHA256,
+            releaseTrustConfigurationSHA256: String(repeating: "e", count: 64)
+        )
+        let coordinator = makeCoordinator(
+            feed: FeedSpy(result: .success(release)),
+            inspector: InspectorSpy(responses: [.success(current)]),
+            staging: StagingSpy(result: .success(try makeStagedAsset()))
+        )
+
+        let result = await coordinator.checkForUpdate(currentVersion: current.version)
+
+        XCTAssertEqual(
+            result,
+            .rejected(InstallerSelfUpdateFailureCode.releaseIdentityConflict.userFacingMessage)
+        )
+    }
+
     func testUnexpectedCurrentBundleIdentityBlocksUpdateBeforeStaging() async throws {
         let current = try CurrentInstallerBundleIdentity(
             version: try InstallerVersion("1.0.0"),
@@ -141,7 +243,8 @@ final class SelfUpdateCoordinatorTests: XCTestCase {
             bundleIdentifier: "com.pcvantol.forge-platform-installer",
             teamIdentifier: "ZZZZZZZZZZ",
             codeDirectorySHA256: String(repeating: "b", count: 64),
-            metadataSHA256: String(repeating: "c", count: 64)
+            metadataSHA256: String(repeating: "c", count: 64),
+            releaseTrustConfigurationSHA256: String(repeating: "d", count: 64)
         )
         let release = try makeReleaseRecord(version: "1.1.0", sequence: 11)
         let staging = StagingSpy(result: .success(try makeStagedAsset()))
@@ -219,7 +322,7 @@ final class SelfUpdateCoordinatorTests: XCTestCase {
             result,
             .failed(InstallerSelfUpdateFailureCode.notarizationVerificationFailed.userFacingMessage)
         )
-        XCTAssertEqual(verifierCalls, [.sha256, .codeSignature, .notarization])
+        XCTAssertEqual(verifierCalls, [.sha256, .codeSignature, .sealedReleaseTrustConfiguration, .notarization])
         XCTAssertEqual(discardedAssets, [stagedAsset])
         XCTAssertEqual(handoffCallCount, 0)
     }
@@ -285,7 +388,7 @@ final class SelfUpdateCoordinatorTests: XCTestCase {
             .failed(InstallerSelfUpdateFailureCode.currentBundleChanged.userFacingMessage)
         )
         XCTAssertEqual(discardedAssets, [stagedAsset])
-        XCTAssertEqual(verifierCalls, [.sha256, .codeSignature, .notarization])
+        XCTAssertEqual(verifierCalls, [.sha256, .codeSignature, .sealedReleaseTrustConfiguration, .notarization])
         XCTAssertEqual(handoffCallCount, 0)
     }
 
@@ -527,7 +630,8 @@ final class SelfUpdateCoordinatorTests: XCTestCase {
         staging: any InstallerUpdateStaging,
         verifier: any StagedInstallerArtifactVerifying = ArtifactVerifierSpy(),
         handoff: any InstallerAtomicHandoffPerforming = AtomicHandoffSpy(result: .success(())),
-        recoveryStore: any InstallerSelfUpdateRecoveryStoring = RecoveryStoreSpy()
+        recoveryStore: any InstallerSelfUpdateRecoveryStoring = RecoveryStoreSpy(),
+        operationLock: any InstallerSelfUpdateOperationLocking = OperationLockSpy()
     ) -> VerifiedInstallerSelfUpdateCoordinator {
         VerifiedInstallerSelfUpdateCoordinator(
             releaseFeed: feed,
@@ -535,7 +639,8 @@ final class SelfUpdateCoordinatorTests: XCTestCase {
             staging: staging,
             artifactVerifier: verifier,
             atomicHandoff: handoff,
-            recoveryStore: recoveryStore
+            recoveryStore: recoveryStore,
+            operationLock: operationLock
         )
     }
 
@@ -560,6 +665,7 @@ final class SelfUpdateCoordinatorTests: XCTestCase {
             expectedTeamIdentifier: "ABCDE12345",
             expectedCodeDirectorySHA256: String(repeating: "b", count: 64),
             metadataSHA256: String(repeating: "c", count: 64),
+            expectedReleaseTrustConfigurationSHA256: String(repeating: "d", count: 64),
             notarizationReference: "notarization-ticket-v1",
             githubAsset: asset
         )
@@ -570,7 +676,8 @@ final class SelfUpdateCoordinatorTests: XCTestCase {
         sequence: UInt64,
         sourceRevision: String = String(repeating: "a", count: 40),
         codeDirectorySHA256: String = String(repeating: "b", count: 64),
-        metadataSHA256: String = String(repeating: "c", count: 64)
+        metadataSHA256: String = String(repeating: "c", count: 64),
+        releaseTrustConfigurationSHA256: String = String(repeating: "d", count: 64)
     ) throws -> CurrentInstallerBundleIdentity {
         try CurrentInstallerBundleIdentity(
             version: try InstallerVersion(version),
@@ -579,7 +686,8 @@ final class SelfUpdateCoordinatorTests: XCTestCase {
             bundleIdentifier: "com.pcvantol.forge-platform-installer",
             teamIdentifier: "ABCDE12345",
             codeDirectorySHA256: codeDirectorySHA256,
-            metadataSHA256: metadataSHA256
+            metadataSHA256: metadataSHA256,
+            releaseTrustConfigurationSHA256: releaseTrustConfigurationSHA256
         )
     }
 
@@ -602,13 +710,19 @@ final class SelfUpdateCoordinatorTests: XCTestCase {
 
 private actor FeedSpy: SignedInstallerReleaseFeedVerifying {
     private let result: Result<VerifiedInstallerReleaseRecord, InstallerSelfUpdateFailure>
+    private var calls = 0
 
     init(result: Result<VerifiedInstallerReleaseRecord, InstallerSelfUpdateFailure>) {
         self.result = result
     }
 
     func latestVerifiedInstallerRelease() async -> Result<VerifiedInstallerReleaseRecord, InstallerSelfUpdateFailure> {
-        result
+        calls += 1
+        return result
+    }
+
+    func callCount() -> Int {
+        calls
     }
 }
 
@@ -683,21 +797,25 @@ private actor ArtifactVerifierSpy: StagedInstallerArtifactVerifying {
     enum Call: Equatable, Sendable {
         case sha256
         case codeSignature
+        case sealedReleaseTrustConfiguration
         case notarization
     }
 
     private let sha256Result: Result<Void, InstallerSelfUpdateFailure>
     private let codeSignatureResult: Result<Void, InstallerSelfUpdateFailure>
+    private let sealedReleaseTrustConfigurationResult: Result<Void, InstallerSelfUpdateFailure>
     private let notarizationResult: Result<Void, InstallerSelfUpdateFailure>
     private var recordedCalls: [Call] = []
 
     init(
         sha256Result: Result<Void, InstallerSelfUpdateFailure> = .success(()),
         codeSignatureResult: Result<Void, InstallerSelfUpdateFailure> = .success(()),
+        sealedReleaseTrustConfigurationResult: Result<Void, InstallerSelfUpdateFailure> = .success(()),
         notarizationResult: Result<Void, InstallerSelfUpdateFailure> = .success(())
     ) {
         self.sha256Result = sha256Result
         self.codeSignatureResult = codeSignatureResult
+        self.sealedReleaseTrustConfigurationResult = sealedReleaseTrustConfigurationResult
         self.notarizationResult = notarizationResult
     }
 
@@ -715,6 +833,14 @@ private actor ArtifactVerifierSpy: StagedInstallerArtifactVerifying {
     ) async -> Result<Void, InstallerSelfUpdateFailure> {
         recordedCalls.append(.codeSignature)
         return codeSignatureResult
+    }
+
+    func verifySealedReleaseTrustConfiguration(
+        of stagedAsset: StagedInstallerAsset,
+        for release: VerifiedInstallerReleaseRecord
+    ) async -> Result<Void, InstallerSelfUpdateFailure> {
+        recordedCalls.append(.sealedReleaseTrustConfiguration)
+        return sealedReleaseTrustConfigurationResult
     }
 
     func verifyNotarization(
@@ -763,6 +889,7 @@ private actor AtomicHandoffSpy: InstallerAtomicHandoffPerforming {
                         artifactSHA256: operation.artifactSHA256,
                         expectedCodeDirectorySHA256: operation.expectedCodeDirectorySHA256,
                         metadataSHA256: operation.metadataSHA256,
+                        releaseTrustConfigurationSHA256: operation.releaseTrustConfigurationSHA256,
                         bundleIdentifier: operation.bundleIdentifier,
                         teamIdentifier: operation.teamIdentifier
                     )
@@ -833,5 +960,81 @@ private actor RecoveryStoreSpy: InstallerSelfUpdateRecoveryStoring {
 
     func receiptCount() -> Int {
         receipts.count
+    }
+}
+
+/// Synchronous because the production file lock itself is a short POSIX call.
+/// The mutex keeps this test double safe when an async collaborator observes
+/// lock state during a coordinator operation.
+private final class OperationLockSpy: InstallerSelfUpdateOperationLocking, @unchecked Sendable {
+    private let stateLock = NSLock()
+    private let acquisitionFailure: InstallerSelfUpdateFailure?
+    private var acquisitionCalls = 0
+    private var activeLeaseCount = 0
+    private var releaseCalls = 0
+
+    init(acquisitionFailure: InstallerSelfUpdateFailure? = nil) {
+        self.acquisitionFailure = acquisitionFailure
+    }
+
+    func acquireExclusiveSelfUpdateOperationLock() -> Result<any InstallerSelfUpdateOperationLock, InstallerSelfUpdateFailure> {
+        stateLock.lock()
+        defer { stateLock.unlock() }
+        acquisitionCalls += 1
+        if let acquisitionFailure {
+            return .failure(acquisitionFailure)
+        }
+        activeLeaseCount += 1
+        return .success(OperationLockLeaseSpy(owner: self))
+    }
+
+    fileprivate func releaseLease() -> Result<Void, InstallerSelfUpdateFailure> {
+        stateLock.lock()
+        defer { stateLock.unlock() }
+        guard activeLeaseCount > 0 else {
+            return .success(())
+        }
+        activeLeaseCount -= 1
+        releaseCalls += 1
+        return .success(())
+    }
+
+    func calls() -> Int {
+        stateLock.lock()
+        defer { stateLock.unlock() }
+        return acquisitionCalls
+    }
+
+    func activeLeases() -> Int {
+        stateLock.lock()
+        defer { stateLock.unlock() }
+        return activeLeaseCount
+    }
+
+    func releases() -> Int {
+        stateLock.lock()
+        defer { stateLock.unlock() }
+        return releaseCalls
+    }
+}
+
+private final class OperationLockLeaseSpy: InstallerSelfUpdateOperationLock, @unchecked Sendable {
+    private let stateLock = NSLock()
+    private var owner: OperationLockSpy?
+
+    init(owner: OperationLockSpy) {
+        self.owner = owner
+    }
+
+    deinit {
+        _ = releaseExclusiveSelfUpdateOperationLock()
+    }
+
+    func releaseExclusiveSelfUpdateOperationLock() -> Result<Void, InstallerSelfUpdateFailure> {
+        stateLock.lock()
+        let lockOwner = owner
+        owner = nil
+        stateLock.unlock()
+        return lockOwner?.releaseLease() ?? .success(())
     }
 }

@@ -79,6 +79,7 @@ final class SelfUpdateRecoveryStoreTests: XCTestCase {
             expectedTeamIdentifier: "ABCDE12345",
             expectedCodeDirectorySHA256: String(repeating: "c", count: 64),
             metadataSHA256: String(repeating: "d", count: 64),
+            expectedReleaseTrustConfigurationSHA256: String(repeating: "e", count: 64),
             notarizationReference: "ticket-1",
             githubAsset: asset
         )

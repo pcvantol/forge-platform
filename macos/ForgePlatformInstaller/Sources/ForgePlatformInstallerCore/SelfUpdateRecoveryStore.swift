@@ -12,6 +12,7 @@ public struct InstallerSelfUpdateOperationIdentity: Codable, Equatable, Sendable
     public let artifactSHA256: String
     public let expectedCodeDirectorySHA256: String
     public let metadataSHA256: String
+    public let releaseTrustConfigurationSHA256: String
     public let bundleIdentifier: String
     public let teamIdentifier: String
 
@@ -23,6 +24,7 @@ public struct InstallerSelfUpdateOperationIdentity: Codable, Equatable, Sendable
         artifactSHA256: String,
         expectedCodeDirectorySHA256: String,
         metadataSHA256: String,
+        releaseTrustConfigurationSHA256: String,
         bundleIdentifier: String,
         teamIdentifier: String
     ) throws {
@@ -35,6 +37,7 @@ public struct InstallerSelfUpdateOperationIdentity: Codable, Equatable, Sendable
               InstallerSelfUpdateValidation.isSHA256(artifactSHA256),
               InstallerSelfUpdateValidation.isSHA256(expectedCodeDirectorySHA256),
               InstallerSelfUpdateValidation.isSHA256(metadataSHA256),
+              InstallerSelfUpdateValidation.isSHA256(releaseTrustConfigurationSHA256),
               InstallerSelfUpdateValidation.isBundleIdentifier(bundleIdentifier),
               InstallerSelfUpdateValidation.isTeamIdentifier(teamIdentifier) else {
             throw InstallerSelfUpdateMetadataError.invalidRecoveryRecord
@@ -47,6 +50,7 @@ public struct InstallerSelfUpdateOperationIdentity: Codable, Equatable, Sendable
         self.artifactSHA256 = artifactSHA256
         self.expectedCodeDirectorySHA256 = expectedCodeDirectorySHA256
         self.metadataSHA256 = metadataSHA256
+        self.releaseTrustConfigurationSHA256 = releaseTrustConfigurationSHA256
         self.bundleIdentifier = bundleIdentifier
         self.teamIdentifier = teamIdentifier
     }
@@ -60,6 +64,7 @@ public struct InstallerSelfUpdateOperationIdentity: Codable, Equatable, Sendable
             artifactSHA256: release.release.sha256,
             expectedCodeDirectorySHA256: release.expectedCodeDirectorySHA256,
             metadataSHA256: release.metadataSHA256,
+            releaseTrustConfigurationSHA256: release.expectedReleaseTrustConfigurationSHA256,
             bundleIdentifier: release.expectedBundleIdentifier,
             teamIdentifier: release.expectedTeamIdentifier
         )
@@ -72,6 +77,7 @@ public struct InstallerSelfUpdateOperationIdentity: Codable, Equatable, Sendable
             && artifactSHA256 == release.release.sha256
             && expectedCodeDirectorySHA256 == release.expectedCodeDirectorySHA256
             && metadataSHA256 == release.metadataSHA256
+            && releaseTrustConfigurationSHA256 == release.expectedReleaseTrustConfigurationSHA256
             && bundleIdentifier == release.expectedBundleIdentifier
             && teamIdentifier == release.expectedTeamIdentifier
     }
@@ -305,6 +311,7 @@ private extension InstallerSelfUpdateOperationIdentity {
             artifactSHA256: artifactSHA256,
             expectedCodeDirectorySHA256: expectedCodeDirectorySHA256,
             metadataSHA256: metadataSHA256,
+            releaseTrustConfigurationSHA256: releaseTrustConfigurationSHA256,
             bundleIdentifier: bundleIdentifier,
             teamIdentifier: teamIdentifier
         )
