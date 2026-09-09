@@ -17,6 +17,7 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
 
 from forge_platform.installer_release_operation import (  # noqa: E402
+    InstallerPreparationEvidence,
     InstallerQualificationEvidence,
     InstallerReleaseIdentity,
     InstallerReleaseOperation,
@@ -27,6 +28,7 @@ SCRIPT = ROOT / "scripts" / "verify_installer_release_evidence.py"
 SOURCE_SHA = "a" * 40
 CAPABILITIES = ["composition/v1", "provider-gate/v1", "system-launchdaemon/v1"]
 POLICY_REVISION = "forge-platform-installer-release-v1"
+CANDIDATE_MANIFEST_DIGEST = "sha256:" + "b" * 64
 IDENTITY = InstallerReleaseIdentity(
     github_repository="example/forge-platform",
     bundle_identifier="com.example.forge-platform-installer",
@@ -210,6 +212,8 @@ class VerifyInstallerReleaseEvidenceTests(unittest.TestCase):
         qualification = InstallerQualificationEvidence(
             source_revision=SOURCE_SHA,
             policy_revision=POLICY_REVISION,
+            candidate_manifest_digest=CANDIDATE_MANIFEST_DIGEST,
+            candidate_archives={"arm64": archive_digest},
             descriptor_digest=descriptor_digest,
             archives={"arm64": archive_digest},
             qualification_receipt_reference="receipt:protected-signing-qualification-001",
@@ -222,6 +226,11 @@ class VerifyInstallerReleaseEvidenceTests(unittest.TestCase):
             policy_revision=POLICY_REVISION,
             release_identity=IDENTITY,
             capabilities=CAPABILITIES,
+            preparation=InstallerPreparationEvidence(
+                candidate_manifest_digest=CANDIDATE_MANIFEST_DIGEST,
+                candidate_archives={"arm64": archive_digest},
+                preparation_receipt_reference="receipt:installer-preparation-001",
+            ),
             archives={"arm64": archive_digest},
             descriptor_digest=descriptor_digest,
             qualification=qualification,

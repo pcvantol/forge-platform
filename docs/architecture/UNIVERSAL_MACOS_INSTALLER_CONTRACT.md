@@ -46,6 +46,16 @@ The catalog is a deliberately separate signed, expiring, monotonic feed. It cont
 
 The old process never starts component work while a newer verified installer is available. A crash/reboot after staging resumes the same non-secret handoff; it does not execute an arbitrary downloaded binary or silently continue with stale installer logic.
 
+The release-side counterpart is equally restartable: the unsigned candidate
+first becomes a durable, immutable `PREPARED` record under one operation ID,
+including its candidate manifest and per-architecture digests. A later
+qualification record must bind that exact prepared input as well as the signed
+descriptor and release archives. Retrying with changed source, policy,
+identity, capability, candidate bytes, or signed bytes under the same
+operation ID fails closed. `PREPARED`, `QUALIFIED`, `PUBLISHED`,
+`CLEANUP_PENDING`, and `RELEASE_COMPLETE` are distinct evidence states; no
+public side effect is inferred from an unsigned candidate or a lost response.
+
 ## Native wizard and gates
 
 The macOS application is a native SwiftUI shell over a bounded trusted coordinator. The UI never constructs a shell command from input, stores a credential, selects a product runtime, writes a product database, creates a product venv, or registers a service itself.
@@ -107,7 +117,7 @@ Discovery produces a candidate only. Product APIs verify product, instance, fing
 
 ## Current source and remaining work
 
-Forge Platform now contains strict schemas and a tested policy kernel for signed-release selection, fresh/trusted-clock feed gates, catalog signature/sequence/digest anti-replay, context-bound composition selection, installer capability checks, preflight, Git/Python planning, provider gating, system-service declaration checks, and read-only composition diffs. It also contains a tested native SwiftUI wizard shell, a separate installer release-operation journal, and a source-only release workflow framework. That framework verifies an exact merged `main` candidate, requires its exact version-preparation receipt, requires a reviewed release-identity policy, packages an **unsigned** `.app` candidate, records the digest of the exact staged archive, and binds the later operation/descriptor handoff to the configured GitHub repository, tag, asset names, bundle identifier and Team identifier. Its signing/notarization and public-GitHub-Release environments deliberately fail closed until a real protected Apple signer, notarization adapter, descriptor trust root, and publisher are configured. The structural handoff verifier intentionally reports that cryptographic signature verification was not performed; it is never a publication authorization.
+Forge Platform now contains strict schemas and a tested policy kernel for signed-release selection, fresh/trusted-clock feed gates, catalog signature/sequence/digest anti-replay, context-bound composition selection, installer capability checks, preflight, Git/Python planning, provider gating, system-service declaration checks, and read-only composition diffs. It also contains a tested native SwiftUI wizard shell, a separate installer release-operation journal with an immutable `PREPARED` candidate precursor, and a source-only release workflow framework. That framework verifies an exact merged `main` candidate, requires its exact version-preparation receipt, requires a reviewed release-identity policy, packages an **unsigned** `.app` candidate, records the digest of the exact staged archive, and binds the later operation/descriptor handoff to the configured GitHub repository, tag, asset names, bundle identifier and Team identifier. Its signing/notarization and public-GitHub-Release environments deliberately fail closed until a real protected Apple signer, notarization adapter, descriptor trust root, and publisher are configured. The structural handoff verifier intentionally reports that cryptographic signature verification was not performed; it is never a publication authorization.
 
 Next owning increments are: connect the protected signer/notarization/publisher to the installer release framework and qualify an actual GitHub Release; native trusted bootstrap/handoff; EP then Forge/Workspace execute/resume/uninstall adapters; managed-tool/provider coordinators that retain no secrets; and installed-artifact clean-Mac, add/update/remove, migration/rollback, reboot-recovery, pairing, readiness, and summary qualification.
 
