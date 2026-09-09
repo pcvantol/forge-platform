@@ -26,6 +26,7 @@ REQUIRED = (
     "docs/architecture/adr/ADR-0004-universal-installer-artifact-composition.md",
     "docs/architecture/adr/ADR-0005-governed-engineering-learning-loop.md",
     "docs/architecture/COMPONENT_MANIFEST_CONTRACT.md",
+    "docs/architecture/COMPONENT_OPERATION_DELEGATION_CONTRACT.md",
     "docs/architecture/COMPATIBILITY.md",
     "docs/architecture/ROLES_AND_PRESETS.md",
     "docs/roadmap/README.md",

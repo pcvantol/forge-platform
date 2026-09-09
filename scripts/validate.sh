@@ -7,6 +7,7 @@ cd "$root_dir"
 python3 tests/foundation/test_foundation.py
 python3 tests/foundation/test_product_version_operations.py
 python3 tests/foundation/test_release_composition_qualification.py
+python3 tests/component_operations/test_component_operations.py
 python3 scripts/advance_product_version.py --check
 python3 docs/ai-development/validate_projection.py \
   --profile forge-platform \
