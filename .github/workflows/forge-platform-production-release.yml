@@ -432,6 +432,7 @@ jobs:
                   if (
                       pending.state != "CLEANUP_PENDING"
                       or not ReleaseOperationStore.same_identity(current, pending)
+                      or pending.qualification != current.qualification
                       or pending.publication_receipt != current.publication_receipt
                       or pending.cleanup != pending_evidence
                       or pending_path.read_bytes() != canonical_bytes(pending)

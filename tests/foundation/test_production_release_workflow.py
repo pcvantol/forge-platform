@@ -2,6 +2,7 @@
 """Guard Forge Platform's durable, main-first production release ordering."""
 
 from dataclasses import asdict
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -67,6 +68,7 @@ class ProductionReleaseWorkflowTests(unittest.TestCase):
         self.assertIn('ReleaseOperationStore(Path("published-input", "release-operation"))', workflow)
         self.assertIn('current = store.replace(current, pending)', workflow)
         self.assertIn('ReleaseOperationStore.same_identity(current, pending)', workflow)
+        self.assertIn('pending.qualification != current.qualification', workflow)
         self.assertIn("store.mark_cleanup_pending(", workflow)
         self.assertIn("complete = store.complete(", workflow)
         self.assertNotIn('.transition("CLEANUP_PENDING"', workflow)
@@ -186,6 +188,105 @@ class ProductionReleaseWorkflowTests(unittest.TestCase):
             )
             self.assertEqual(pending.state, "CLEANUP_PENDING")
             self.assertEqual(pending.operation_id, operation.operation_id)
+
+    def test_pending_hydration_rejects_a_canonical_receipt_with_changed_qualification(self) -> None:
+        workflow = Path(".github/workflows/forge-platform-production-release.yml").read_text(encoding="utf-8")
+        pending_present = workflow.index('          export PENDING_PRESENT="$pending_present"')
+        heredoc_start = workflow.index("          PYTHONPATH=. python3 - <<'PY'", pending_present)
+        body_start = workflow.index("\n", heredoc_start) + 1
+        body_end = workflow.index("          PY\n", body_start)
+        body = "\n".join(
+            line[10:] if line.startswith("          ") else line
+            for line in workflow[body_start:body_end].splitlines()
+        )
+
+        with tempfile.TemporaryDirectory() as temporary:
+            workdir = Path(temporary)
+            (workdir / "forge_platform").symlink_to(ROOT / "forge_platform", target_is_directory=True)
+            composition = b"exact composition bytes"
+            digest = "sha256:" + hashlib.sha256(composition).hexdigest()
+            operation = ReleaseOperation.create(
+                operation_id="release-0001",
+                product="forge-platform",
+                component="composition",
+                version="2.3.0",
+                policy_revision="forge-platform-production-release-v3",
+                source_revision="a" * 40,
+                artifacts={"composition_manifest": digest},
+            )
+            qualification = {
+                "exact_main_sha": operation.source_revision,
+                "artifact_digests": dict(operation.artifacts),
+                "composition_asset": "composition.json",
+                "qualification_marker": "forge-platform-composition-artifact-compatibility-v3",
+            }
+            publication = {
+                "registry": "github-release",
+                "tag": "forge-platform-v2.3.0",
+                "composition_asset": "composition.json",
+                "artifact_digests": dict(operation.artifacts),
+                "readback": "PASS",
+                "release_visibility": "PUBLIC",
+            }
+            store = ReleaseOperationStore(workdir / "published-input" / "release-operation")
+            store.acquire(operation.operation_id)
+            try:
+                qualified = store.prepare_qualified(operation, evidence=qualification)
+                published = store.mark_published(qualified, evidence=publication)
+            finally:
+                store.release(operation.operation_id)
+
+            def receipt(record: ReleaseOperation) -> bytes:
+                return (
+                    json.dumps(asdict(record), indent=2, sort_keys=True, allow_nan=False) + "\n"
+                ).encode("utf-8")
+
+            (workdir / "operation-readback").mkdir()
+            (workdir / "operation-readback" / "composition.json").write_bytes(composition)
+            (workdir / "published-input" / "composition.json").write_bytes(composition)
+            for root in (workdir / "operation-readback", workdir / "published-input"):
+                (root / "qualified.json").write_bytes(receipt(qualified))
+                (root / "published.json").write_bytes(receipt(published))
+            pending_values = asdict(published)
+            pending_values["state"] = "CLEANUP_PENDING"
+            pending_values["qualification"] = {**qualification, "qualification_marker": "tampered"}
+            pending_values["cleanup"] = {
+                "result": "CLEANUP_PENDING",
+                "targets": [
+                    "operation-readback",
+                    "published-input/composition.json",
+                    "published-input/qualified.json",
+                    "published-input/published.json",
+                ],
+            }
+            pending = ReleaseOperation.parse(pending_values)
+            (workdir / "pending-readback").mkdir()
+            (workdir / "pending-readback" / "pending.json").write_bytes(receipt(pending))
+            environment = dict(os.environ)
+            environment.update(
+                {
+                    "OPERATION_ID": operation.operation_id,
+                    "COMPOSITION": "composition.json",
+                    "QUALIFIED": "qualified.json",
+                    "PUBLISHED": "published.json",
+                    "PENDING": "pending.json",
+                    "PENDING_PRESENT": "true",
+                    "SOURCE_SHA": operation.source_revision,
+                    "TAG": "forge-platform-v2.3.0",
+                    "VERSION": operation.version,
+                }
+            )
+            result = subprocess.run(
+                ["python3", "-"],
+                cwd=workdir,
+                env=environment,
+                input=body,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("durable cleanup-pending receipt does not match PUBLISHED release identity", result.stderr)
 
 
 if __name__ == "__main__":
