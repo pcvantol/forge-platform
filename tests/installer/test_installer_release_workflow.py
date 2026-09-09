@@ -27,6 +27,8 @@ class InstallerReleaseWorkflowTests(unittest.TestCase):
     def test_qualifies_only_the_exact_current_main_candidate_and_builds_an_app_archive(self) -> None:
         self.assertIn('test "$SOURCE_SHA" = "$(git rev-parse HEAD)"', self.workflow)
         self.assertIn('test "$SOURCE_SHA" = "$(git rev-parse origin/main)"', self.workflow)
+        self.assertIn("scripts/advance_installer_version.py", self.workflow)
+        self.assertIn("--verify-operation --candidate-head \"$SOURCE_SHA\"", self.workflow)
         self.assertIn("runs-on: macos-14", self.workflow)
         self.assertIn("swift test", self.workflow)
         self.assertIn("swift build -c release --show-bin-path", self.workflow)

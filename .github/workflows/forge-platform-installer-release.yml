@@ -53,6 +53,8 @@ jobs:
           test "$SOURCE_SHA" = "$(git rev-parse HEAD)"
           test "$SOURCE_SHA" = "$(git rev-parse origin/main)"
           python3 scripts/validate_installer_version.py
+          python3 scripts/advance_installer_version.py \
+            --verify-operation --candidate-head "$SOURCE_SHA"
           INSTALLER_VERSION="$(python3 -c 'import json; print(json.load(open("installer-version.json"))["version"])')"
           CHANNEL="$(python3 -c 'import json; print(json.load(open("installer-version.json"))["channel"])')"
           TAG="forge-platform-installer-v$INSTALLER_VERSION"
