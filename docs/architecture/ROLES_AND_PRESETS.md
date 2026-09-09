@@ -16,4 +16,4 @@ Roles are independently installable; one machine may host any compatible combina
 | Developer Workstation | EP Project Agent, Workspace Client |
 | Custom | Any compatible component combination |
 
-Presets are conceptual only; this repository does not implement an installer yet.
+The native Universal Installer source shell presents these profiles through a signed composition rather than hard-coding versions. A selected composition may require managed Git/Python and user-scoped Codex/GitHub CLI provider validation before it can proceed. The server components use a product-owned system-domain `LaunchDaemon` contract; an EP Project Agent and user provider credentials remain user/host scoped. The shell does not itself install or mutate a product until a qualified product provisioner adapter exists.

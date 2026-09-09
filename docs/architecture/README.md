@@ -6,9 +6,9 @@ Forge Platform is the distribution and deployment composition boundary for the F
 
 | Product repository | Published conceptual artifact | Forge Platform responsibility |
 | --- | --- | --- |
-| `pcvantol/forge` | Forge Runtime | Select, verify, install, and compose |
-| `pcvantol/workspace` | Workspace Server and Workspace Client | Select, verify, install, and compose |
-| `pcvantol/engineering-platform` | Engineering Platform Server and EP Project Agent | Select, verify, install, and compose |
+| `pcvantol/forge` | Forge Runtime | Select, verify, coordinate product-owned provisioning, and compose |
+| `pcvantol/workspace` | Workspace Server and Workspace Client | Select, verify, coordinate product-owned provisioning, and compose |
+| `pcvantol/engineering-platform` | Engineering Platform Server and EP Project Agent | Select, verify, coordinate EP-owned provisioning, and compose |
 
 Each product retains ownership of its artifact build, protocol implementation, and product-specific compatibility guarantees. Forge Platform owns the validated cross-product release composition and compatibility declarations.
 
@@ -30,14 +30,23 @@ Installer/component support may be implemented in parallel with producer work, b
 
 The canonical target is defined in [Evidence-gated cross-repository component composition](EVIDENCE_GATED_COMPONENT_COMPOSITION.md) and the [component-manifest contract](COMPONENT_MANIFEST_CONTRACT.md). Manifest entries keep source revision distinct from the digest of the installable artifact bytes.
 
+## Universal macOS installer lifecycle
+
+Forge Platform has a separately versioned native macOS Universal Installer and immutable qualified composition manifests; it does not build a combinatorial installer package for every Forge/Workspace/EP version combination. At every launch, an older installer must verify and hand off to a newer signed/notarized installer release before platform mutation. The signed composition catalog then selects only an installer-capable exact component set. See the [Universal macOS Installer contract](UNIVERSAL_MACOS_INSTALLER_CONTRACT.md).
+
+The source foundation and native SwiftUI shell are present, but the first published installer, privileged bootstrapper, and product-owned execution adapters remain separately qualified work. No current source merge proves a live Mac installation.
+
 ## Lifecycle boundary
 
 The source-level component-operation contract can retain a product-owned
 resolver readback, candidate update assessment, and execute/resume evidence
 for an exact qualified artifact. It does not implement a product adapter or
-select a runtime itself. The future platform manages install, role add/remove,
-upgrade, repair, uninstall, health diagnostics, and deployment receipts;
-privileged installer logic remains intentionally unimplemented in this
-foundation.
+select a runtime itself. The future platform coordinates product-owned install,
+role add/remove, upgrade, repair, uninstall, health diagnostics, and deployment
+receipts; privileged installer logic remains product-bound and is not a
+replacement product provisioner in this foundation. For EP, Forge Platform
+dispatches an exact qualified artifact/role only to the EP-owned
+resolver/provisioner and consumes its correlated readbacks; EP retains service,
+migration, data and cleanup authority.
 
-Read the [system architecture](FORGE_PLATFORM_ARCHITECTURE.md), [evidence-gated composition contract](EVIDENCE_GATED_COMPONENT_COMPOSITION.md), [governed knowledge learning loop](KNOWLEDGE_LEARNING_LOOP.md), [ADRs](adr/README.md), [cross-repository ownership matrix](OWNERSHIP_MATRIX.md), [component-manifest contract](COMPONENT_MANIFEST_CONTRACT.md), [compatibility model](COMPATIBILITY.md), [roles and presets](ROLES_AND_PRESETS.md), and [security boundary](SECURITY.md).
+Read the [system architecture](FORGE_PLATFORM_ARCHITECTURE.md), [universal macOS installer contract](UNIVERSAL_MACOS_INSTALLER_CONTRACT.md), [evidence-gated composition contract](EVIDENCE_GATED_COMPONENT_COMPOSITION.md), [governed knowledge learning loop](KNOWLEDGE_LEARNING_LOOP.md), [ADRs](adr/README.md), [cross-repository ownership matrix](OWNERSHIP_MATRIX.md), [component-manifest contract](COMPONENT_MANIFEST_CONTRACT.md), [compatibility model](COMPATIBILITY.md), [roles and presets](ROLES_AND_PRESETS.md), and [security boundary](SECURITY.md).

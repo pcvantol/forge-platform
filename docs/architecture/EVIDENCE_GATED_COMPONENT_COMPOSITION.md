@@ -4,7 +4,7 @@
 
 ## Purpose
 
-Forge Platform owns installation and release composition of independently published Forge, Workspace and Engineering Platform artifacts. It must support a development flow where installer-role implementation can advance in parallel with producer work, while final release composition waits for exact published artifact evidence.
+Forge Platform owns installer-support and release composition of independently published Forge, Workspace and Engineering Platform artifacts, not product-local installation execution. It must support a development flow where installer-role implementation can advance in parallel with producer work, while final release composition waits for exact published artifact evidence.
 
 This document defines that boundary for cross-repository Forge Missions. Forge owns the engineering Action graph; EP owns execution/admission/evidence; Forge Platform owns the final component manifest and installer behavior.
 
