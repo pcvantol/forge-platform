@@ -364,6 +364,285 @@ final class MacOSInstallerArchiveLayoutInspectorTests: XCTestCase {
     }
 }
 
+final class MacOSStagedInstallerArchiveExtractorTests: XCTestCase {
+    func testExtractsStoredBundleWithSpacesAndResolvesOnlyReadyBundleIdempotently() async throws {
+        let appRoot = "Forge Platform Installer.app"
+        let archive = try makeArchiveFixture(
+            entries: validAppBundleEntries(root: appRoot),
+            label: "stored-spaces"
+        )
+        defer { try? FileManager.default.removeItem(at: archive.directory) }
+        let extractionRoot = archive.directory.appendingPathComponent(
+            "private extraction root",
+            isDirectory: true
+        )
+        let stagedAsset = try makeStagedAsset(byteCount: archive.byteCount)
+        let resolver = ArchiveLayoutResolver(
+            responses: Array(repeating: .success(archive.url), count: 4)
+        )
+        let extractor = try makeArchiveExtractor(
+            extractionRoot: extractionRoot,
+            resolver: resolver
+        )
+
+        let firstBundleURL = try requireExtractedBundleSuccess(
+            await extractor.resolveStagedInstallerBundle(stagedAsset)
+        )
+        XCTAssertEqual(firstBundleURL.lastPathComponent, appRoot)
+        XCTAssertTrue(firstBundleURL.path.contains("/ready/"))
+        XCTAssertFalse(firstBundleURL.path.contains("/candidate/"))
+        XCTAssertEqual(
+            try Data(contentsOf: firstBundleURL.appendingPathComponent("Contents/Info.plist")),
+            Data("<plist/>".utf8)
+        )
+        XCTAssertEqual(try posixMode(at: extractionRoot), mode_t(0o700))
+        XCTAssertEqual(try posixMode(at: firstBundleURL.deletingLastPathComponent()), mode_t(0o700))
+        XCTAssertEqual(
+            try posixMode(at: firstBundleURL.appendingPathComponent("Contents/Info.plist")),
+            mode_t(0o600)
+        )
+        XCTAssertEqual(
+            try posixMode(at: firstBundleURL.appendingPathComponent("Contents/MacOS/ForgePlatformInstaller")),
+            mode_t(0o700)
+        )
+
+        let secondBundleURL = try requireExtractedBundleSuccess(
+            await extractor.resolveStagedInstallerBundle(stagedAsset)
+        )
+        let resolutionCount = await resolver.resolutionCount()
+        XCTAssertEqual(secondBundleURL, firstBundleURL)
+        XCTAssertEqual(resolutionCount, 4)
+    }
+
+    func testRejectsDeflateTraversalAndZipSymlinkWithoutCreatingReadyBundle() async throws {
+        let root = "ForgePlatformInstaller.app"
+        let malformedArchives: [(String, Data)] = [
+            (
+                "deflate",
+                makeZIPArchive(
+                    entries: validAppBundleEntries(
+                        overriding: [
+                            .file(
+                                "\(root)/Contents/Info.plist",
+                                bytes: Data("<plist/>".utf8),
+                                compressionMethod: 8
+                            )
+                        ]
+                    )
+                )
+            ),
+            (
+                "traversal",
+                makeZIPArchive(
+                    entries: validAppBundleEntries() + [
+                        .file("\(root)/Contents/../MacOS/escape", bytes: Data("x".utf8))
+                    ]
+                )
+            ),
+            (
+                "zip-symlink",
+                makeZIPArchive(
+                    entries: validAppBundleEntries(
+                        overriding: [
+                            .file(
+                                "\(root)/Contents/MacOS/ForgePlatformInstaller",
+                                bytes: Data("binary".utf8),
+                                mode: 0o120755
+                            )
+                        ]
+                    )
+                )
+            )
+        ]
+
+        for (label, bytes) in malformedArchives {
+            let archive = try makeArchiveFixture(bytes: bytes, label: "extract-\(label)")
+            defer { try? FileManager.default.removeItem(at: archive.directory) }
+            let extractionRoot = archive.directory.appendingPathComponent("private extraction", isDirectory: true)
+            let stagedAsset = try makeStagedAsset(byteCount: archive.byteCount)
+            let resolver = ArchiveLayoutResolver(responses: [.success(archive.url)])
+            let extractor = try makeArchiveExtractor(
+                extractionRoot: extractionRoot,
+                resolver: resolver
+            )
+
+            let result = await extractor.resolveStagedInstallerBundle(stagedAsset)
+            XCTAssertEqual(
+                extractedBundleFailureCode(result),
+                .stagingFailed,
+                "Expected \(label) archive to fail closed"
+            )
+            XCTAssertFalse(try containsDirectory(named: "ready", below: extractionRoot))
+        }
+    }
+
+    func testRejectsSymlinkedStagedArchiveBeforeAnyBundleCanBeReady() async throws {
+        let archive = try makeArchiveFixture(entries: validAppBundleEntries(), label: "archive-symlink")
+        defer { try? FileManager.default.removeItem(at: archive.directory) }
+        let outsideArchive = archive.directory.appendingPathComponent("outside.zip")
+        try makeZIPArchive(entries: validAppBundleEntries()).write(to: outsideArchive)
+        try setArchiveMode(at: outsideArchive, to: mode_t(0o600))
+        try FileManager.default.removeItem(at: archive.url)
+        try FileManager.default.createSymbolicLink(at: archive.url, withDestinationURL: outsideArchive)
+
+        let extractionRoot = archive.directory.appendingPathComponent("private extraction", isDirectory: true)
+        let stagedAsset = try makeStagedAsset(byteCount: archive.byteCount)
+        let resolver = ArchiveLayoutResolver(responses: [.success(archive.url)])
+        let extractor = try makeArchiveExtractor(
+            extractionRoot: extractionRoot,
+            resolver: resolver
+        )
+
+        let result = await extractor.resolveStagedInstallerBundle(stagedAsset)
+        XCTAssertEqual(extractedBundleFailureCode(result), .stagedAssetIdentityChanged)
+        XCTAssertFalse(try containsDirectory(named: "ready", below: extractionRoot))
+    }
+
+    func testRejectsPermissiveAndSymlinkedPrivateExtractionRoots() async throws {
+        let archive = try makeArchiveFixture(entries: validAppBundleEntries(), label: "unsafe-root")
+        defer { try? FileManager.default.removeItem(at: archive.directory) }
+        let stagedAsset = try makeStagedAsset(byteCount: archive.byteCount)
+
+        let permissiveRoot = archive.directory.appendingPathComponent("permissive extraction", isDirectory: true)
+        try FileManager.default.createDirectory(
+            at: permissiveRoot,
+            withIntermediateDirectories: false,
+            attributes: [.posixPermissions: NSNumber(value: 0o755)]
+        )
+        try setArchiveMode(at: permissiveRoot, to: mode_t(0o755))
+        let permissiveResolver = ArchiveLayoutResolver(responses: [.success(archive.url)])
+        let permissiveExtractor = try makeArchiveExtractor(
+            extractionRoot: permissiveRoot,
+            resolver: permissiveResolver
+        )
+        let permissiveResult = await permissiveExtractor.resolveStagedInstallerBundle(stagedAsset)
+        XCTAssertEqual(extractedBundleFailureCode(permissiveResult), .stagingFailed)
+
+        let privateTarget = archive.directory.appendingPathComponent("private target", isDirectory: true)
+        try FileManager.default.createDirectory(
+            at: privateTarget,
+            withIntermediateDirectories: false,
+            attributes: [.posixPermissions: NSNumber(value: 0o700)]
+        )
+        try setArchiveMode(at: privateTarget, to: mode_t(0o700))
+        let symlinkedRoot = archive.directory.appendingPathComponent("symlinked extraction", isDirectory: true)
+        try FileManager.default.createSymbolicLink(at: symlinkedRoot, withDestinationURL: privateTarget)
+        let symlinkedResolver = ArchiveLayoutResolver(responses: [.success(archive.url)])
+        let symlinkedExtractor = try makeArchiveExtractor(
+            extractionRoot: symlinkedRoot,
+            resolver: symlinkedResolver
+        )
+        let symlinkedResult = await symlinkedExtractor.resolveStagedInstallerBundle(stagedAsset)
+        XCTAssertEqual(extractedBundleFailureCode(symlinkedResult), .stagingFailed)
+    }
+
+    func testRejectsArchiveBeyondConfiguredByteBoundBeforeCreatingExtractionState() async throws {
+        let archive = try makeArchiveFixture(entries: validAppBundleEntries(), label: "small-bound")
+        defer { try? FileManager.default.removeItem(at: archive.directory) }
+        let extractionRoot = archive.directory.appendingPathComponent("private extraction", isDirectory: true)
+        let stagedAsset = try makeStagedAsset(byteCount: archive.byteCount)
+        let resolver = ArchiveLayoutResolver(responses: [.success(archive.url)])
+        let extractor = try MacOSStagedInstallerArchiveExtractor(
+            extractionRoot: extractionRoot,
+            archiveResolver: resolver,
+            maximumArchiveBytes: 64,
+            maximumCentralDirectoryBytes: 64,
+            maximumEntryCount: 64,
+            maximumPathBytes: 256,
+            maximumTotalUncompressedBytes: 32 * 1024
+        )
+
+        let result = await extractor.resolveStagedInstallerBundle(stagedAsset)
+        XCTAssertEqual(extractedBundleFailureCode(result), .stagingFailed)
+        XCTAssertFalse(try containsDirectory(named: "ready", below: extractionRoot))
+    }
+
+    func testRejectsInvalidStoredCRCAndLeavesCandidateUnresolvable() async throws {
+        let root = "ForgePlatformInstaller.app"
+        let archive = try makeArchiveFixture(
+            entries: validAppBundleEntries(
+                overriding: [
+                    .file(
+                        "\(root)/Contents/Info.plist",
+                        bytes: Data("<plist/>".utf8),
+                        declaredCRC32: 0xdead_beef
+                    )
+                ]
+            ),
+            label: "invalid-crc"
+        )
+        defer { try? FileManager.default.removeItem(at: archive.directory) }
+        let extractionRoot = archive.directory.appendingPathComponent("private extraction", isDirectory: true)
+        let stagedAsset = try makeStagedAsset(byteCount: archive.byteCount)
+        let resolver = ArchiveLayoutResolver(responses: [.success(archive.url)])
+        let extractor = try makeArchiveExtractor(
+            extractionRoot: extractionRoot,
+            resolver: resolver
+        )
+
+        let result = await extractor.resolveStagedInstallerBundle(stagedAsset)
+        XCTAssertEqual(extractedBundleFailureCode(result), .stagingFailed)
+        XCTAssertFalse(try containsDirectory(named: "ready", below: extractionRoot))
+        XCTAssertTrue(try containsDirectory(named: "candidate", below: extractionRoot))
+    }
+
+    func testRejectsArchiveReplacementBeforeCandidatePromotion() async throws {
+        let archive = try makeArchiveFixture(entries: validAppBundleEntries(), label: "replacement")
+        defer { try? FileManager.default.removeItem(at: archive.directory) }
+        let replacement = makeZIPArchive(
+            entries: validAppBundleEntries(
+                overriding: [
+                    .file(
+                        "ForgePlatformInstaller.app/Contents/Resources/installer-release.json",
+                        bytes: Data("[]".utf8)
+                    )
+                ]
+            )
+        )
+        XCTAssertEqual(replacement.count, Int(archive.byteCount))
+        let extractionRoot = archive.directory.appendingPathComponent("private extraction", isDirectory: true)
+        let stagedAsset = try makeStagedAsset(byteCount: archive.byteCount)
+        let resolver = TamperingArchiveLayoutResolver(
+            archiveURL: archive.url,
+            replacementBytes: replacement
+        )
+        let extractor = try makeArchiveExtractor(
+            extractionRoot: extractionRoot,
+            resolver: resolver
+        )
+
+        let result = await extractor.resolveStagedInstallerBundle(stagedAsset)
+        XCTAssertEqual(extractedBundleFailureCode(result), .stagedAssetIdentityChanged)
+        XCTAssertFalse(try containsDirectory(named: "ready", below: extractionRoot))
+        XCTAssertTrue(try containsDirectory(named: "candidate", below: extractionRoot))
+    }
+
+    func testRejectsPostExtractionBundleTamperingOnRepeatedResolution() async throws {
+        let archive = try makeArchiveFixture(entries: validAppBundleEntries(), label: "output-tamper")
+        defer { try? FileManager.default.removeItem(at: archive.directory) }
+        let extractionRoot = archive.directory.appendingPathComponent("private extraction", isDirectory: true)
+        let stagedAsset = try makeStagedAsset(byteCount: archive.byteCount)
+        let resolver = ArchiveLayoutResolver(
+            responses: Array(repeating: .success(archive.url), count: 4)
+        )
+        let extractor = try makeArchiveExtractor(
+            extractionRoot: extractionRoot,
+            resolver: resolver
+        )
+        let bundleURL = try requireExtractedBundleSuccess(
+            await extractor.resolveStagedInstallerBundle(stagedAsset)
+        )
+        let infoPlist = bundleURL.appendingPathComponent("Contents/Info.plist")
+        try Data("<alter/>".utf8).write(to: infoPlist)
+        try setArchiveMode(at: infoPlist, to: mode_t(0o600))
+
+        let result = await extractor.resolveStagedInstallerBundle(stagedAsset)
+        XCTAssertEqual(extractedBundleFailureCode(result), .stagingFailed)
+        XCTAssertNil(extractedBundleURL(result))
+        XCTAssertFalse(bundleURL.path.contains("/candidate/"))
+    }
+}
+
 private struct ArchiveFixture {
     let directory: URL
     let url: URL
@@ -373,6 +652,87 @@ private struct ArchiveFixture {
 private enum ArchiveLayoutTestError: Error {
     case unexpectedResult
     case filesystem
+}
+
+private func makeArchiveExtractor(
+    extractionRoot: URL,
+    resolver: any MacOSInstallerArchiveStagingResolving
+) throws -> MacOSStagedInstallerArchiveExtractor {
+    try MacOSStagedInstallerArchiveExtractor(
+        extractionRoot: extractionRoot,
+        archiveResolver: resolver,
+        maximumArchiveBytes: 16 * 1024,
+        maximumCentralDirectoryBytes: 8 * 1024,
+        maximumEntryCount: 64,
+        maximumPathBytes: 256,
+        maximumTotalUncompressedBytes: 32 * 1024
+    )
+}
+
+private func requireExtractedBundleSuccess(
+    _ result: Result<URL, InstallerSelfUpdateFailure>,
+    file: StaticString = #filePath,
+    line: UInt = #line
+) throws -> URL {
+    switch result {
+    case .success(let bundleURL):
+        return bundleURL
+    case .failure(let failure):
+        XCTFail("Expected extracted bundle success, got \(failure.code)", file: file, line: line)
+        throw ArchiveLayoutTestError.unexpectedResult
+    }
+}
+
+private func extractedBundleFailureCode(
+    _ result: Result<URL, InstallerSelfUpdateFailure>
+) -> InstallerSelfUpdateFailureCode? {
+    switch result {
+    case .success:
+        return nil
+    case .failure(let failure):
+        return failure.code
+    }
+}
+
+private func extractedBundleURL(
+    _ result: Result<URL, InstallerSelfUpdateFailure>
+) -> URL? {
+    switch result {
+    case .success(let bundleURL):
+        return bundleURL
+    case .failure:
+        return nil
+    }
+}
+
+private func posixMode(at url: URL) throws -> mode_t {
+    var details = stat()
+    let result = url.withUnsafeFileSystemRepresentation { path -> Int32 in
+        guard let path else { return -1 }
+        return Darwin.lstat(path, &details)
+    }
+    guard result == 0 else {
+        throw ArchiveLayoutTestError.filesystem
+    }
+    return details.st_mode & mode_t(0o7777)
+}
+
+private func containsDirectory(named name: String, below root: URL) throws -> Bool {
+    guard FileManager.default.fileExists(atPath: root.path) else {
+        return false
+    }
+    let enumerator = FileManager.default.enumerator(
+        at: root,
+        includingPropertiesForKeys: [.isDirectoryKey],
+        options: [.skipsHiddenFiles]
+    )
+    while let candidate = enumerator?.nextObject() as? URL {
+        let values = try candidate.resourceValues(forKeys: [.isDirectoryKey])
+        if candidate.lastPathComponent == name, values.isDirectory == true {
+            return true
+        }
+    }
+    return false
 }
 
 private func makeArchiveFixture(
@@ -516,6 +876,7 @@ private struct ZIPFixtureEntry {
     let centralComment: Data
     let versionMadeBy: UInt16
     let declaredUncompressedByteCount: UInt32?
+    let declaredCRC32: UInt32?
 
     static func directory(_ path: String, mode: UInt16 = 0o040755) -> ZIPFixtureEntry {
         let name = path.hasSuffix("/") ? path : "\(path)/"
@@ -530,7 +891,8 @@ private struct ZIPFixtureEntry {
             localExtra: Data(),
             centralComment: Data(),
             versionMadeBy: 0x0314,
-            declaredUncompressedByteCount: nil
+            declaredUncompressedByteCount: nil,
+            declaredCRC32: nil
         )
     }
 
@@ -545,7 +907,8 @@ private struct ZIPFixtureEntry {
         localExtra: Data = Data(),
         centralComment: Data = Data(),
         versionMadeBy: UInt16 = 0x0314,
-        declaredUncompressedByteCount: UInt32? = nil
+        declaredUncompressedByteCount: UInt32? = nil,
+        declaredCRC32: UInt32? = nil
     ) -> ZIPFixtureEntry {
         ZIPFixtureEntry(
             centralName: path,
@@ -558,15 +921,16 @@ private struct ZIPFixtureEntry {
             localExtra: localExtra,
             centralComment: centralComment,
             versionMadeBy: versionMadeBy,
-            declaredUncompressedByteCount: declaredUncompressedByteCount
+            declaredUncompressedByteCount: declaredUncompressedByteCount,
+            declaredCRC32: declaredCRC32
         )
     }
 }
 
 private func validAppBundleEntries(
+    root: String = "ForgePlatformInstaller.app",
     overriding replacements: [ZIPFixtureEntry] = []
 ) -> [ZIPFixtureEntry] {
-    let root = "ForgePlatformInstaller.app"
     let base = [
         ZIPFixtureEntry.directory(root),
         .directory("\(root)/Contents"),
@@ -602,6 +966,7 @@ private func makeZIPArchive(
     for entry in entries {
         let localName = Data(entry.localName.utf8)
         let declaredUncompressedByteCount = entry.declaredUncompressedByteCount ?? UInt32(entry.bytes.count)
+        let declaredCRC32 = entry.declaredCRC32 ?? zipFixtureCRC32(entry.bytes)
         localOffsets.append(UInt32(archive.count))
         appendUInt32(0x0403_4b50, to: &archive)
         appendUInt16(20, to: &archive)
@@ -609,7 +974,7 @@ private func makeZIPArchive(
         appendUInt16(entry.compressionMethod, to: &archive)
         appendUInt16(0, to: &archive)
         appendUInt16(0, to: &archive)
-        appendUInt32(0, to: &archive)
+        appendUInt32(declaredCRC32, to: &archive)
         appendUInt32(UInt32(entry.bytes.count), to: &archive)
         appendUInt32(declaredUncompressedByteCount, to: &archive)
         appendUInt16(UInt16(localName.count), to: &archive)
@@ -622,6 +987,7 @@ private func makeZIPArchive(
     for (index, entry) in entries.enumerated() {
         let centralName = Data(entry.centralName.utf8)
         let declaredUncompressedByteCount = entry.declaredUncompressedByteCount ?? UInt32(entry.bytes.count)
+        let declaredCRC32 = entry.declaredCRC32 ?? zipFixtureCRC32(entry.bytes)
         appendUInt32(0x0201_4b50, to: &centralDirectory)
         appendUInt16(entry.versionMadeBy, to: &centralDirectory)
         appendUInt16(20, to: &centralDirectory)
@@ -629,7 +995,7 @@ private func makeZIPArchive(
         appendUInt16(entry.compressionMethod, to: &centralDirectory)
         appendUInt16(0, to: &centralDirectory)
         appendUInt16(0, to: &centralDirectory)
-        appendUInt32(0, to: &centralDirectory)
+        appendUInt32(declaredCRC32, to: &centralDirectory)
         appendUInt32(UInt32(entry.bytes.count), to: &centralDirectory)
         appendUInt32(declaredUncompressedByteCount, to: &centralDirectory)
         appendUInt16(UInt16(centralName.count), to: &centralDirectory)
@@ -666,4 +1032,18 @@ private func appendUInt16(_ value: UInt16, to data: inout Data) {
 private func appendUInt32(_ value: UInt32, to data: inout Data) {
     let littleEndian = value.littleEndian
     withUnsafeBytes(of: littleEndian) { data.append(contentsOf: $0) }
+}
+
+private func zipFixtureCRC32(_ data: Data) -> UInt32 {
+    var value: UInt32 = 0xffff_ffff
+    for byte in data {
+        var remainder = (value ^ UInt32(byte)) & 0xff
+        for _ in 0..<8 {
+            remainder = (remainder & 1) == 1
+                ? 0xedb8_8320 ^ (remainder >> 1)
+                : remainder >> 1
+        }
+        value = remainder ^ (value >> 8)
+    }
+    return value ^ 0xffff_ffff
 }
