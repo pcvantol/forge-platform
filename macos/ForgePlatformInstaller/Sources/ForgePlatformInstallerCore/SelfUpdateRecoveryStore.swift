@@ -8,10 +8,11 @@ public struct InstallerSelfUpdateOperationIdentity: Codable, Equatable, Sendable
     public let operationIdentifier: String
     public let installerVersion: String
     public let releaseSequence: UInt64
+    public let channel: InstallerReleaseChannel
     public let sourceRevision: String
     public let artifactSHA256: String
     public let expectedCodeDirectorySHA256: String
-    public let metadataSHA256: String
+    public let provenanceSHA256: String
     public let releaseTrustConfigurationSHA256: String
     public let bundleIdentifier: String
     public let teamIdentifier: String
@@ -20,10 +21,11 @@ public struct InstallerSelfUpdateOperationIdentity: Codable, Equatable, Sendable
         operationIdentifier: String,
         installerVersion: String,
         releaseSequence: UInt64,
+        channel: InstallerReleaseChannel,
         sourceRevision: String,
         artifactSHA256: String,
         expectedCodeDirectorySHA256: String,
-        metadataSHA256: String,
+        provenanceSHA256: String,
         releaseTrustConfigurationSHA256: String,
         bundleIdentifier: String,
         teamIdentifier: String
@@ -36,7 +38,7 @@ public struct InstallerSelfUpdateOperationIdentity: Codable, Equatable, Sendable
               InstallerSelfUpdateValidation.isGitRevision(sourceRevision),
               InstallerSelfUpdateValidation.isSHA256(artifactSHA256),
               InstallerSelfUpdateValidation.isSHA256(expectedCodeDirectorySHA256),
-              InstallerSelfUpdateValidation.isSHA256(metadataSHA256),
+              InstallerSelfUpdateValidation.isSHA256(provenanceSHA256),
               InstallerSelfUpdateValidation.isSHA256(releaseTrustConfigurationSHA256),
               InstallerSelfUpdateValidation.isBundleIdentifier(bundleIdentifier),
               InstallerSelfUpdateValidation.isTeamIdentifier(teamIdentifier) else {
@@ -46,10 +48,11 @@ public struct InstallerSelfUpdateOperationIdentity: Codable, Equatable, Sendable
         self.operationIdentifier = operationIdentifier
         self.installerVersion = installerVersion
         self.releaseSequence = releaseSequence
+        self.channel = channel
         self.sourceRevision = sourceRevision
         self.artifactSHA256 = artifactSHA256
         self.expectedCodeDirectorySHA256 = expectedCodeDirectorySHA256
-        self.metadataSHA256 = metadataSHA256
+        self.provenanceSHA256 = provenanceSHA256
         self.releaseTrustConfigurationSHA256 = releaseTrustConfigurationSHA256
         self.bundleIdentifier = bundleIdentifier
         self.teamIdentifier = teamIdentifier
@@ -60,10 +63,11 @@ public struct InstallerSelfUpdateOperationIdentity: Codable, Equatable, Sendable
             operationIdentifier: operationIdentifier,
             installerVersion: release.release.version.description,
             releaseSequence: release.sequence,
+            channel: release.channel,
             sourceRevision: release.sourceRevision,
             artifactSHA256: release.release.sha256,
             expectedCodeDirectorySHA256: release.expectedCodeDirectorySHA256,
-            metadataSHA256: release.metadataSHA256,
+            provenanceSHA256: release.provenanceSHA256,
             releaseTrustConfigurationSHA256: release.expectedReleaseTrustConfigurationSHA256,
             bundleIdentifier: release.expectedBundleIdentifier,
             teamIdentifier: release.expectedTeamIdentifier
@@ -73,10 +77,11 @@ public struct InstallerSelfUpdateOperationIdentity: Codable, Equatable, Sendable
     public func matches(_ release: VerifiedInstallerReleaseRecord) -> Bool {
         installerVersion == release.release.version.description
             && releaseSequence == release.sequence
+            && channel == release.channel
             && sourceRevision == release.sourceRevision
             && artifactSHA256 == release.release.sha256
             && expectedCodeDirectorySHA256 == release.expectedCodeDirectorySHA256
-            && metadataSHA256 == release.metadataSHA256
+            && provenanceSHA256 == release.provenanceSHA256
             && releaseTrustConfigurationSHA256 == release.expectedReleaseTrustConfigurationSHA256
             && bundleIdentifier == release.expectedBundleIdentifier
             && teamIdentifier == release.expectedTeamIdentifier
@@ -307,10 +312,11 @@ private extension InstallerSelfUpdateOperationIdentity {
             operationIdentifier: operationIdentifier,
             installerVersion: installerVersion,
             releaseSequence: releaseSequence,
+            channel: channel,
             sourceRevision: sourceRevision,
             artifactSHA256: artifactSHA256,
             expectedCodeDirectorySHA256: expectedCodeDirectorySHA256,
-            metadataSHA256: metadataSHA256,
+            provenanceSHA256: provenanceSHA256,
             releaseTrustConfigurationSHA256: releaseTrustConfigurationSHA256,
             bundleIdentifier: bundleIdentifier,
             teamIdentifier: teamIdentifier

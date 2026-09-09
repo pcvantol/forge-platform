@@ -23,7 +23,7 @@ startup update enforcement automatic once the app wires in trusted adapters: it
 accepts a signed GitHub Release record, checks the sealed identity of the
 running bundle, stages one exact release asset, verifies its SHA-256,
 code-signature and notarization independently, and only then delegates an
-atomic handoff/relaunch. A release sequence plus source, metadata and code
+atomic handoff/relaunch. A release sequence plus source, provenance and code
 directory digests rejects rollback, replay and same-version/different-bytes
 replacement. Required providers cannot be bypassed: every manifest-required
 provider must be selected and in the `verified` state before the wizard can
@@ -31,10 +31,11 @@ continue.
 
 The released app is wired through `ReleasedInstallerStartupBoundary`: it does
 not construct a wizard with `UnavailableInstallerWizardCoordinator`, and it
-does not offer a manual update bypass. The boundary first requires a sealed
-release-trust resource, builds a trusted runtime from it, and calls automatic
-startup enforcement. Only a `current` result creates the wizard; a relaunch or
-any missing/invalid trust configuration stays on a fail-closed status screen.
+does not offer a manual update bypass. The boundary first requires both sealed
+release-trust and release-provenance resources, binds their exact trust-policy
+digest, builds a trusted runtime from them, and calls automatic startup
+enforcement. Only a `current` result creates the wizard; a relaunch or any
+missing/invalid/mismatched resource stays on a fail-closed status screen.
 Interrupted installer-only work is recorded in a separate non-secret recovery
 journal with typed staged-file identity and handoff-receipt evidence. It is not
 a product database or a component installation journal.
@@ -67,6 +68,19 @@ and is bound separately into signed release/current/staged-bundle identity
 checks. Its checksum is not a substitute for code signing or the signed
 release-feed trust root; those remain required and absent configuration still
 fails closed.
+
+The separate public V1 resource
+`ForgePlatformInstallerReleaseProvenance.json` binds stable installer version,
+channel, positive release sequence, source and policy revisions, sorted
+capabilities, and the exact V2 release-trust configuration digest. Its own
+digest uses an explicit NUL-delimited canonical representation. The startup
+boundary rejects an absent, malformed, unsealed, installer-version-mismatched,
+or trust-configuration-mismatched provenance record before it builds a runtime
+or shows the wizard.
+The model exposes only a pure exact-identity comparison for a future signed
+descriptor verifier; it does not fetch a feed, authorize an update, stage
+bytes, or grant product authority. Source builds carry no provenance resource
+and remain fail-closed.
 
 The default coordinator fails closed. This package deliberately ships no real
 release URL, signing key, credential, shell invocation, privileged helper or

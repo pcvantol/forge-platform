@@ -7,6 +7,7 @@ public enum InstallerSelfUpdateFailureCode: String, Equatable, Sendable {
     case releaseFeedUnavailable
     case releaseMetadataRejected
     case sealedReleaseTrustConfigurationAbsent
+    case sealedReleaseProvenanceAbsent
     case trustedUpdaterUnavailable
     case selfUpdateOperationInProgress
     case selfUpdateOperationLockUnavailable
@@ -24,6 +25,7 @@ public enum InstallerSelfUpdateFailureCode: String, Equatable, Sendable {
     case sha256VerificationFailed
     case codeSignatureVerificationFailed
     case sealedReleaseTrustConfigurationMismatch
+    case sealedReleaseProvenanceMismatch
     case notarizationVerificationFailed
     case stagingCleanupFailed
     case recoveryLoadFailed
@@ -40,6 +42,8 @@ public enum InstallerSelfUpdateFailureCode: String, Equatable, Sendable {
             return "Het releasebewijs is niet geldig of niet vertrouwd."
         case .sealedReleaseTrustConfigurationAbsent:
             return "De verzegelde release-trustconfiguratie ontbreekt of is niet geldig."
+        case .sealedReleaseProvenanceAbsent:
+            return "De verzegelde installer-provenance ontbreekt of is niet geldig."
         case .trustedUpdaterUnavailable:
             return "Er is geen vertrouwde installer-updater beschikbaar voor deze release."
         case .selfUpdateOperationInProgress:
@@ -74,6 +78,8 @@ public enum InstallerSelfUpdateFailureCode: String, Equatable, Sendable {
             return "De codeondertekening van de installer-update is niet geldig."
         case .sealedReleaseTrustConfigurationMismatch:
             return "De verzegelde trustconfiguratie van de installer-update hoort niet bij de geverifieerde release."
+        case .sealedReleaseProvenanceMismatch:
+            return "De verzegelde provenance van de installer-update hoort niet bij de geverifieerde release."
         case .notarizationVerificationFailed:
             return "De notarization-controle van de installer-update is niet geldig."
         case .stagingCleanupFailed:
@@ -117,6 +123,14 @@ public enum InstallerSelfUpdateMetadataError: Error, Equatable, Sendable {
     case releaseAssetMismatch
 }
 
+/// The signed release channel is an immutable release-identity field.  It is
+/// deliberately distinct from an installer version or GitHub tag: candidate
+/// and stable releases must never be treated as interchangeable bytes.
+public enum InstallerReleaseChannel: String, Codable, Equatable, Sendable {
+    case stable
+    case candidate
+}
+
 /// A GitHub Release asset is named, rather than addressed through an arbitrary
 /// URL supplied by the UI.  The signed-feed verifier owns transport and any
 /// redirect policy; the coordinator only authorizes this exact release identity.
@@ -152,11 +166,15 @@ public struct GitHubInstallerReleaseAsset: Equatable, Sendable {
 public struct VerifiedInstallerReleaseRecord: Equatable, Sendable {
     public let release: VerifiedInstallerRelease
     public let sequence: UInt64
+    public let channel: InstallerReleaseChannel
     public let sourceRevision: String
     public let expectedBundleIdentifier: String
     public let expectedTeamIdentifier: String
     public let expectedCodeDirectorySHA256: String
-    public let metadataSHA256: String
+    /// Canonical digest of the code-signed bundled release provenance record.
+    /// It is signed feed evidence, rather than metadata supplied by an
+    /// unverified staged bundle.
+    public let provenanceSHA256: String
     /// Digest of the release package's canonical sealed-trust descriptor. It
     /// is signed release metadata, not an unchecked checksum supplied by the
     /// bundle currently being launched.
@@ -167,11 +185,12 @@ public struct VerifiedInstallerReleaseRecord: Equatable, Sendable {
     public init(
         release: VerifiedInstallerRelease,
         sequence: UInt64,
+        channel: InstallerReleaseChannel,
         sourceRevision: String,
         expectedBundleIdentifier: String,
         expectedTeamIdentifier: String,
         expectedCodeDirectorySHA256: String,
-        metadataSHA256: String,
+        provenanceSHA256: String,
         expectedReleaseTrustConfigurationSHA256: String,
         notarizationReference: String,
         githubAsset: GitHubInstallerReleaseAsset
@@ -190,7 +209,7 @@ public struct VerifiedInstallerReleaseRecord: Equatable, Sendable {
         }
         guard InstallerSelfUpdateValidation.isSHA256(release.sha256),
               InstallerSelfUpdateValidation.isSHA256(expectedCodeDirectorySHA256),
-              InstallerSelfUpdateValidation.isSHA256(metadataSHA256),
+              InstallerSelfUpdateValidation.isSHA256(provenanceSHA256),
               InstallerSelfUpdateValidation.isSHA256(expectedReleaseTrustConfigurationSHA256) else {
             throw InstallerSelfUpdateMetadataError.invalidDigest(release.sha256)
         }
@@ -207,11 +226,12 @@ public struct VerifiedInstallerReleaseRecord: Equatable, Sendable {
 
         self.release = release
         self.sequence = sequence
+        self.channel = channel
         self.sourceRevision = sourceRevision
         self.expectedBundleIdentifier = expectedBundleIdentifier
         self.expectedTeamIdentifier = expectedTeamIdentifier
         self.expectedCodeDirectorySHA256 = expectedCodeDirectorySHA256
-        self.metadataSHA256 = metadataSHA256
+        self.provenanceSHA256 = provenanceSHA256
         self.expectedReleaseTrustConfigurationSHA256 = expectedReleaseTrustConfigurationSHA256
         self.notarizationReference = notarizationReference
         self.githubAsset = githubAsset
@@ -225,11 +245,15 @@ public struct VerifiedInstallerReleaseRecord: Equatable, Sendable {
 public struct CurrentInstallerBundleIdentity: Equatable, Sendable {
     public let version: InstallerVersion
     public let acceptedReleaseSequence: UInt64
+    public let channel: InstallerReleaseChannel
     public let sourceRevision: String
     public let bundleIdentifier: String
     public let teamIdentifier: String
     public let codeDirectorySHA256: String
-    public let metadataSHA256: String
+    /// Canonical digest read from the current bundle's sealed provenance
+    /// record. It is compared to signed release evidence for an exact-current
+    /// decision.
+    public let provenanceSHA256: String
     /// Canonical digest read from the current bundle's sealed trust descriptor.
     /// It is compared to signed release evidence for an exact-current decision.
     public let releaseTrustConfigurationSHA256: String
@@ -237,11 +261,12 @@ public struct CurrentInstallerBundleIdentity: Equatable, Sendable {
     public init(
         version: InstallerVersion,
         acceptedReleaseSequence: UInt64,
+        channel: InstallerReleaseChannel,
         sourceRevision: String,
         bundleIdentifier: String,
         teamIdentifier: String,
         codeDirectorySHA256: String,
-        metadataSHA256: String,
+        provenanceSHA256: String,
         releaseTrustConfigurationSHA256: String
     ) throws {
         guard acceptedReleaseSequence > 0 else {
@@ -257,18 +282,19 @@ public struct CurrentInstallerBundleIdentity: Equatable, Sendable {
             throw InstallerSelfUpdateMetadataError.invalidTeamIdentifier(teamIdentifier)
         }
         guard InstallerSelfUpdateValidation.isSHA256(codeDirectorySHA256),
-              InstallerSelfUpdateValidation.isSHA256(metadataSHA256),
+              InstallerSelfUpdateValidation.isSHA256(provenanceSHA256),
               InstallerSelfUpdateValidation.isSHA256(releaseTrustConfigurationSHA256) else {
             throw InstallerSelfUpdateMetadataError.invalidDigest(codeDirectorySHA256)
         }
 
         self.version = version
         self.acceptedReleaseSequence = acceptedReleaseSequence
+        self.channel = channel
         self.sourceRevision = sourceRevision
         self.bundleIdentifier = bundleIdentifier
         self.teamIdentifier = teamIdentifier
         self.codeDirectorySHA256 = codeDirectorySHA256
-        self.metadataSHA256 = metadataSHA256
+        self.provenanceSHA256 = provenanceSHA256
         self.releaseTrustConfigurationSHA256 = releaseTrustConfigurationSHA256
     }
 }
@@ -806,9 +832,10 @@ public actor VerifiedInstallerSelfUpdateCoordinator: TrustedInstallerRuntime {
     ) -> Bool {
         hasExpectedApplicationIdentity(currentBundle, for: release)
             && currentBundle.acceptedReleaseSequence == release.sequence
+            && currentBundle.channel == release.channel
             && currentBundle.sourceRevision == release.sourceRevision
             && currentBundle.codeDirectorySHA256 == release.expectedCodeDirectorySHA256
-            && currentBundle.metadataSHA256 == release.metadataSHA256
+            && currentBundle.provenanceSHA256 == release.provenanceSHA256
             && currentBundle.releaseTrustConfigurationSHA256 == release.expectedReleaseTrustConfigurationSHA256
     }
 

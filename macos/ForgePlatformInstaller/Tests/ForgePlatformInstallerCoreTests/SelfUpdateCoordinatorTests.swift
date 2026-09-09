@@ -65,7 +65,7 @@ final class SelfUpdateCoordinatorTests: XCTestCase {
             sequence: 10,
             sourceRevision: release.sourceRevision,
             codeDirectorySHA256: release.expectedCodeDirectorySHA256,
-            metadataSHA256: release.metadataSHA256
+            provenanceSHA256: release.provenanceSHA256
         )
         let staging = StagingSpy(result: .success(try makeStagedAsset()))
         let coordinator = makeCoordinator(
@@ -93,7 +93,7 @@ final class SelfUpdateCoordinatorTests: XCTestCase {
             sequence: 10,
             sourceRevision: release.sourceRevision,
             codeDirectorySHA256: String(repeating: "e", count: 64),
-            metadataSHA256: release.metadataSHA256
+            provenanceSHA256: release.provenanceSHA256
         )
         let staging = StagingSpy(result: .success(try makeStagedAsset()))
         let coordinator = makeCoordinator(
@@ -218,8 +218,33 @@ final class SelfUpdateCoordinatorTests: XCTestCase {
             sequence: 10,
             sourceRevision: release.sourceRevision,
             codeDirectorySHA256: release.expectedCodeDirectorySHA256,
-            metadataSHA256: release.metadataSHA256,
+            provenanceSHA256: release.provenanceSHA256,
             releaseTrustConfigurationSHA256: String(repeating: "e", count: 64)
+        )
+        let coordinator = makeCoordinator(
+            feed: FeedSpy(result: .success(release)),
+            inspector: InspectorSpy(responses: [.success(current)]),
+            staging: StagingSpy(result: .success(try makeStagedAsset()))
+        )
+
+        let result = await coordinator.checkForUpdate(currentVersion: current.version)
+
+        XCTAssertEqual(
+            result,
+            .rejected(InstallerSelfUpdateFailureCode.releaseIdentityConflict.userFacingMessage)
+        )
+    }
+
+    func testExactCurrentVersionWithDifferentReleaseChannelFailsClosed() async throws {
+        let release = try makeReleaseRecord(version: "1.0.0", sequence: 10, channel: .candidate)
+        let current = try makeCurrentIdentity(
+            version: "1.0.0",
+            sequence: 10,
+            channel: .stable,
+            sourceRevision: release.sourceRevision,
+            codeDirectorySHA256: release.expectedCodeDirectorySHA256,
+            provenanceSHA256: release.provenanceSHA256,
+            releaseTrustConfigurationSHA256: release.expectedReleaseTrustConfigurationSHA256
         )
         let coordinator = makeCoordinator(
             feed: FeedSpy(result: .success(release)),
@@ -239,11 +264,12 @@ final class SelfUpdateCoordinatorTests: XCTestCase {
         let current = try CurrentInstallerBundleIdentity(
             version: try InstallerVersion("1.0.0"),
             acceptedReleaseSequence: 10,
+            channel: .stable,
             sourceRevision: String(repeating: "a", count: 40),
             bundleIdentifier: "com.example.forge-platform-installer",
             teamIdentifier: "ZZZZZZZZZZ",
             codeDirectorySHA256: String(repeating: "b", count: 64),
-            metadataSHA256: String(repeating: "c", count: 64),
+            provenanceSHA256: String(repeating: "c", count: 64),
             releaseTrustConfigurationSHA256: String(repeating: "d", count: 64)
         )
         let release = try makeReleaseRecord(version: "1.1.0", sequence: 11)
@@ -362,7 +388,7 @@ final class SelfUpdateCoordinatorTests: XCTestCase {
         let changed = try makeCurrentIdentity(
             version: "1.0.0",
             sequence: 10,
-            metadataSHA256: String(repeating: "d", count: 64)
+            provenanceSHA256: String(repeating: "d", count: 64)
         )
         let release = try makeReleaseRecord(version: "1.1.0", sequence: 11)
         let stagedAsset = try makeStagedAsset()
@@ -644,7 +670,11 @@ final class SelfUpdateCoordinatorTests: XCTestCase {
         )
     }
 
-    private func makeReleaseRecord(version: String, sequence: UInt64) throws -> VerifiedInstallerReleaseRecord {
+    private func makeReleaseRecord(
+        version: String,
+        sequence: UInt64,
+        channel: InstallerReleaseChannel = .stable
+    ) throws -> VerifiedInstallerReleaseRecord {
         let asset = try GitHubInstallerReleaseAsset(
             repository: "pcvantol/forge-platform",
             tag: "installer-v\(version)",
@@ -660,11 +690,12 @@ final class SelfUpdateCoordinatorTests: XCTestCase {
         return try VerifiedInstallerReleaseRecord(
             release: release,
             sequence: sequence,
+            channel: channel,
             sourceRevision: String(repeating: "a", count: 40),
             expectedBundleIdentifier: "com.example.forge-platform-installer",
             expectedTeamIdentifier: "ABCDE12345",
             expectedCodeDirectorySHA256: String(repeating: "b", count: 64),
-            metadataSHA256: String(repeating: "c", count: 64),
+            provenanceSHA256: String(repeating: "c", count: 64),
             expectedReleaseTrustConfigurationSHA256: String(repeating: "d", count: 64),
             notarizationReference: "notarization-ticket-v1",
             githubAsset: asset
@@ -674,19 +705,21 @@ final class SelfUpdateCoordinatorTests: XCTestCase {
     private func makeCurrentIdentity(
         version: String,
         sequence: UInt64,
+        channel: InstallerReleaseChannel = .stable,
         sourceRevision: String = String(repeating: "a", count: 40),
         codeDirectorySHA256: String = String(repeating: "b", count: 64),
-        metadataSHA256: String = String(repeating: "c", count: 64),
+        provenanceSHA256: String = String(repeating: "c", count: 64),
         releaseTrustConfigurationSHA256: String = String(repeating: "d", count: 64)
     ) throws -> CurrentInstallerBundleIdentity {
         try CurrentInstallerBundleIdentity(
             version: try InstallerVersion(version),
             acceptedReleaseSequence: sequence,
+            channel: channel,
             sourceRevision: sourceRevision,
             bundleIdentifier: "com.example.forge-platform-installer",
             teamIdentifier: "ABCDE12345",
             codeDirectorySHA256: codeDirectorySHA256,
-            metadataSHA256: metadataSHA256,
+            provenanceSHA256: provenanceSHA256,
             releaseTrustConfigurationSHA256: releaseTrustConfigurationSHA256
         )
     }
@@ -885,10 +918,11 @@ private actor AtomicHandoffSpy: InstallerAtomicHandoffPerforming {
                         operationIdentifier: "mismatched-operation",
                         installerVersion: operation.installerVersion,
                         releaseSequence: operation.releaseSequence,
+                        channel: operation.channel,
                         sourceRevision: operation.sourceRevision,
                         artifactSHA256: operation.artifactSHA256,
                         expectedCodeDirectorySHA256: operation.expectedCodeDirectorySHA256,
-                        metadataSHA256: operation.metadataSHA256,
+                        provenanceSHA256: operation.provenanceSHA256,
                         releaseTrustConfigurationSHA256: operation.releaseTrustConfigurationSHA256,
                         bundleIdentifier: operation.bundleIdentifier,
                         teamIdentifier: operation.teamIdentifier

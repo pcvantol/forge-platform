@@ -74,11 +74,12 @@ final class SelfUpdateRecoveryStoreTests: XCTestCase {
         let record = try VerifiedInstallerReleaseRecord(
             release: release,
             sequence: 11,
+            channel: .stable,
             sourceRevision: String(repeating: "b", count: 40),
             expectedBundleIdentifier: "com.example.installer",
             expectedTeamIdentifier: "ABCDE12345",
             expectedCodeDirectorySHA256: String(repeating: "c", count: 64),
-            metadataSHA256: String(repeating: "d", count: 64),
+            provenanceSHA256: String(repeating: "d", count: 64),
             expectedReleaseTrustConfigurationSHA256: String(repeating: "e", count: 64),
             notarizationReference: "ticket-1",
             githubAsset: asset

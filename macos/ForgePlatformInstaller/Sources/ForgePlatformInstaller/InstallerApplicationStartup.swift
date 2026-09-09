@@ -4,7 +4,8 @@ import ForgePlatformInstallerCore
 
 /// App-level bridge for the released startup boundary.  The root view does not
 /// construct a wizard until the core has loaded sealed trust configuration and
-/// automatically established that this exact installer release is current.
+/// release provenance, then automatically established that this exact installer
+/// release is current.
 @MainActor
 final class InstallerApplicationStartupModel: ObservableObject {
     enum State {
