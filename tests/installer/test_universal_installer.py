@@ -772,6 +772,42 @@ class UniversalInstallerTests(unittest.TestCase):
                 )
             with self.assertRaisesRegex(UniversalInstallerError, "already binds"):
                 journal.start(running)
+            tool_inventory = tool_readbacks()
+            tool_inventory["git"] = ManagedToolReadback("git", "ABSENT", None, None, None, "evidence:git-absent")
+            tool_plan = CompositionPlanner.plan(
+                selection(),
+                host_facts=host_facts(),
+                managed_tool_readbacks=tool_inventory,
+                provider_selections={"codex": ProviderSelection("codex", True), "github-cli": ProviderSelection("github-cli", True)},
+                provider_readbacks=provider_readbacks(),
+                selected_readbacks={"engineering-platform-server": absent_readback()},
+                update_assessments={},
+            )
+            tool_record = InstallerOperationRecord.create("install-tools", tool_plan)
+            journal.start(tool_record)
+            with self.assertRaisesRegex(UniversalInstallerError, "managed tools require"):
+                journal.advance(
+                    "install-tools",
+                    "PRODUCT_OPERATIONS",
+                    {"result": "PRODUCT_OPERATIONS_DISPATCHED", "product_receipt_references": ["receipt:product-tools"]},
+                )
+            journal.advance(
+                "install-tools",
+                "MANAGED_TOOLS",
+                {
+                    "result": "TOOLS_VERIFIED",
+                    "tool_receipt_references": ["receipt:tool-git"],
+                    "post_tool_plan_fingerprint": "a" * 64,
+                },
+            )
+            self.assertEqual(
+                journal.advance(
+                    "install-tools",
+                    "PRODUCT_OPERATIONS",
+                    {"result": "PRODUCT_OPERATIONS_DISPATCHED", "product_receipt_references": ["receipt:product-tools"]},
+                ).state,
+                "PRODUCT_OPERATIONS",
+            )
 
 
 if __name__ == "__main__":

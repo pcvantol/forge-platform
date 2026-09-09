@@ -81,7 +81,7 @@ The installer reads product-owned inventory and update assessments through the c
 | unselected installation with a published product-uninstall dispatcher | product-owned remove |
 | unknown/conflicting inventory, incompatible update, absent or not-yet-dispatchable removal contract, or identity mismatch | blocked |
 
-No product mutation is dispatched until self-update, installer capability, preflight, managed-tool, provider, manifest, and component-diff gates pass. The installer keeps an operation-specific non-secret journal outside product CENTRAL/data stores. It records operation ID, installer/composition/artifact identities, state transitions, receipt references, and cleanup/recovery state; it never records tokens, credentials, raw provider output, or arbitrary paths.
+No product mutation is dispatched until self-update, installer capability, preflight, managed-tool, provider, manifest, and component-diff gates pass. A managed Git/Python install or upgrade forces a completed managed-tool receipt and fresh post-tool plan fingerprint before the journal can enter product operations. The installer keeps an operation-specific non-secret journal outside product CENTRAL/data stores. It serializes one non-terminal host operation, records operation ID, installer/composition/artifact identities, state transitions, typed receipt references, and cleanup/recovery state; it never records tokens, credentials, raw provider output, or arbitrary paths.
 
 The composition-level saga is `composition lock → exact artifact staging → product readback/compatibility → product quiesce/backup/migrate/activate/verify/cleanup → authenticated discovery/pairing → cross-component readiness → receipt`.
 

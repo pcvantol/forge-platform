@@ -1625,6 +1625,12 @@ class CompositionPlan:
             action.action != "BLOCKED" for action in self.managed_tool_actions
         )
 
+    @property
+    def requires_managed_tool_reconciliation(self) -> bool:
+        """A fresh readback/plan is mandatory before product dispatch after tools."""
+
+        return any(action.action != "NO_CHANGE" for action in self.managed_tool_actions)
+
     def fingerprint(self) -> str:
         """Bind a durable future install operation to this exact read-only plan."""
 
@@ -1692,7 +1698,7 @@ def _validate_journal_evidence(state: str, evidence: Mapping[str, object]) -> No
         raise ValueError("installer journal evidence must be a mapping")
     expected: dict[str, tuple[frozenset[str], str]] = {
         "PLANNED": (frozenset({"result"}), "PLAN_ACCEPTED"),
-        "MANAGED_TOOLS": (frozenset({"result", "tool_receipt_references"}), "TOOLS_VERIFIED"),
+        "MANAGED_TOOLS": (frozenset({"result", "tool_receipt_references", "post_tool_plan_fingerprint"}), "TOOLS_VERIFIED"),
         "PRODUCT_OPERATIONS": (frozenset({"result", "product_receipt_references"}), "PRODUCT_OPERATIONS_DISPATCHED"),
         "READINESS": (frozenset({"result", "readiness_receipt_references"}), "READINESS_VERIFIED"),
         "CLEANUP_PENDING": (frozenset({"result", "cleanup_receipt_references", "failed_target_ids"}), "CLEANUP_PENDING"),
@@ -1705,7 +1711,7 @@ def _validate_journal_evidence(state: str, evidence: Mapping[str, object]) -> No
         raise ValueError("installer journal evidence has unsupported fields or result")
     required_keys: dict[str, frozenset[str]] = {
         "PLANNED": frozenset({"result"}),
-        "MANAGED_TOOLS": frozenset({"result", "tool_receipt_references"}),
+        "MANAGED_TOOLS": frozenset({"result", "tool_receipt_references", "post_tool_plan_fingerprint"}),
         "PRODUCT_OPERATIONS": frozenset({"result", "product_receipt_references"}),
         "READINESS": frozenset({"result", "readiness_receipt_references"}),
         "CLEANUP_PENDING": frozenset({"result", "cleanup_receipt_references", "failed_target_ids"}),
@@ -1736,6 +1742,10 @@ def _validate_journal_evidence(state: str, evidence: Mapping[str, object]) -> No
         value = evidence["failure_code"]
         if not isinstance(value, str) or not re.fullmatch(r"[A-Z][A-Z0-9_]{0,63}", value):
             raise ValueError("failure_code is invalid")
+    if "post_tool_plan_fingerprint" in evidence:
+        value = evidence["post_tool_plan_fingerprint"]
+        if not isinstance(value, str) or not re.fullmatch(r"[0-9a-f]{64}", value):
+            raise ValueError("post_tool_plan_fingerprint must be a SHA-256 hex value")
 
 
 @dataclass(frozen=True)
@@ -1758,6 +1768,7 @@ class InstallerOperationRecord:
 
     operation_id: str
     plan_fingerprint: str
+    requires_managed_tool_reconciliation: bool
     installer_version: str
     installer_source_revision: str
     installer_bundle_digest: str
@@ -1775,6 +1786,7 @@ class InstallerOperationRecord:
         return cls(
             operation_id,
             plan.fingerprint(),
+            plan.requires_managed_tool_reconciliation,
             str(plan.installer_context.self_update.installed.version),
             plan.installer_context.self_update.installed.source_revision,
             plan.installer_context.self_update.installed.bundle_digest,
@@ -1789,6 +1801,8 @@ class InstallerOperationRecord:
             raise ValueError("installer operation_id must be a safe relative identifier")
         if not re.fullmatch(r"[0-9a-f]{64}", self.plan_fingerprint):
             raise ValueError("installer operation plan_fingerprint must be a SHA-256 hex value")
+        if not isinstance(self.requires_managed_tool_reconciliation, bool):
+            raise ValueError("installer operation managed-tool reconciliation flag must be boolean")
         SemanticVersion.parse(self.installer_version, "installer journal installer_version")
         _required(self.installer_source_revision, "installer journal installer_source_revision")
         _digest(self.installer_bundle_digest, "installer journal installer_bundle_digest")
@@ -1809,10 +1823,19 @@ class InstallerOperationRecord:
     def transition(self, state: str, evidence: Mapping[str, object]) -> "InstallerOperationRecord":
         if state not in _INSTALLER_OPERATION_TRANSITIONS[self.state]:
             raise UniversalInstallerError(f"installer operation transition {self.state} -> {state} is not permitted")
+        if (
+            self.state == "PLANNED"
+            and state == "PRODUCT_OPERATIONS"
+            and self.requires_managed_tool_reconciliation
+        ):
+            raise UniversalInstallerError(
+                "managed tools require a verified reconciliation event before product operations"
+            )
         event = InstallerJournalEvent(state, evidence)
         return InstallerOperationRecord(
             self.operation_id,
             self.plan_fingerprint,
+            self.requires_managed_tool_reconciliation,
             self.installer_version,
             self.installer_source_revision,
             self.installer_bundle_digest,
@@ -1824,7 +1847,7 @@ class InstallerOperationRecord:
 
 
 _INSTALLER_RECORD_FIELDS = frozenset({
-    "operation_id", "plan_fingerprint", "installer_version", "installer_source_revision", "installer_bundle_digest",
+    "operation_id", "plan_fingerprint", "requires_managed_tool_reconciliation", "installer_version", "installer_source_revision", "installer_bundle_digest",
     "composition_id", "composition_manifest_digest", "state", "events",
 })
 _INSTALLER_EVENT_FIELDS = frozenset({"state", "evidence"})
@@ -1989,6 +2012,7 @@ class StandaloneInstallerJournal:
         return InstallerOperationRecord(
             _required(payload["operation_id"], "installer operation_id"),
             _required(payload["plan_fingerprint"], "installer plan_fingerprint"),
+            _boolean(payload["requires_managed_tool_reconciliation"], "installer managed-tool reconciliation flag"),
             _required(payload["installer_version"], "installer journal installer_version"),
             _required(payload["installer_source_revision"], "installer journal installer_source_revision"),
             _required(payload["installer_bundle_digest"], "installer journal installer_bundle_digest"),
