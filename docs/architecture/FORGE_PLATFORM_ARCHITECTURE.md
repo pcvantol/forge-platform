@@ -2,7 +2,7 @@
 
 ## Purpose and status
 
-This is the canonical high-level architecture entrypoint for the Forge Platform ecosystem composition. It records product and trust boundaries needed for later work; it does not implement an installer, service, protocol, scheduler, authentication flow, artifact publication, or Schema 41.
+This is the canonical high-level architecture entrypoint for the Forge Platform ecosystem composition. It records product and trust boundaries needed for later work; it does not implement an installer, service, protocol, scheduler, authentication flow, producer-artifact publication, or Schema 41. Its bounded composition-release evidence flow may retain a verified manifest and receipts, but it never publishes producer bytes or becomes a product runtime.
 
 Forge Platform is a first-class product repository, not a canonical project authority repository for a customer's product. A **Canonical Project Authority Repository** is a logical product's durable topology authority; `pcvantol/forge-platform` is the Forge-family distribution and deployment product.
 

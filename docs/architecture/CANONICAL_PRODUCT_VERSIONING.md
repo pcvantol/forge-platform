@@ -61,8 +61,8 @@ publication or universal-installer readiness.
 
 ## Candidate qualification and release boundary
 
-This repository has protected-main pull-request gates but no authorized release
-delivery API, GitHub App, or publication route. A delivery operator therefore
+This repository has protected-main pull-request gates but no unattended external
+release-delivery API, GitHub App, or producer-package publication route. A delivery operator therefore
 creates a dedicated version-preparation candidate from the recorded expected
 source revision, commits only `product-version.json` and its receipt, and opens
 that candidate for the ordinary protected route. The canonical-version workflow
@@ -78,6 +78,17 @@ validates each producer's immutable source revision, SHA-256 artifact digest,
 qualification reference and supported platform before it creates (or readbacks)
 the Forge Platform GitHub release receipt. It cannot build a producer artifact,
 infer one from a checkout, or turn an incomplete manifest into a release.
+
+The release operation is durable and stateful: `PREPARED → QUALIFIED →
+PUBLISHED → RELEASE_COMPLETE`, with `CLEANUP_PENDING` retaining a visibly
+incomplete post-publication operation when needed. `PUBLISHED` is retained only
+after GitHub-release asset readback proves the exact qualified composition
+bytes. A separate terminal receipt is retained only after the operation's
+download/readback directories are cleaned. The workflow serializes release
+operations, resumes an identical source/version/composition identity, and fails
+closed if a tag or asset already binds that release identity to different bytes
+or provenance. This is release-composition evidence only; it neither installs
+components nor grants a product runtime, migration, or rollback authority.
 
 Until all required producer artifacts and their qualification evidence exist,
 the workflow remains intentionally blocked by manifest qualification. Release
