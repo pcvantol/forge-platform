@@ -1,6 +1,7 @@
 import CryptoKit
 import Foundation
 import Security
+import Darwin
 
 /// One public Ed25519 descriptor-signing key embedded in the code-signed
 /// installer release.  It is intentionally a public 32-byte raw key, never a
@@ -393,12 +394,13 @@ public struct BundleSealedInstallerReleaseProvenanceLoader: SealedInstallerRelea
             guard let url = bundle.url(forResource: resourceName, withExtension: "json") else {
                 return .failure(InstallerSelfUpdateFailure(.sealedReleaseProvenanceAbsent))
             }
-            let resourceValues = try url.resourceValues(forKeys: [.fileSizeKey])
-            guard let fileSize = resourceValues.fileSize,
-                  fileSize <= InstallerReleaseProvenanceValidation.maximumResourceBytes else {
+            let data = try SealedInstallerResourceFileReader.read(
+                at: url,
+                maximumBytes: InstallerReleaseProvenanceValidation.maximumResourceBytes
+            )
+            guard case .success = bundleValidator.validateSealedInstallerBundle(at: bundle.bundleURL) else {
                 return .failure(InstallerSelfUpdateFailure(.sealedReleaseProvenanceAbsent))
             }
-            let data = try Data(contentsOf: url)
             return .success(try SealedInstallerReleaseProvenance.decodeJSONResource(data))
         } catch {
             return .failure(InstallerSelfUpdateFailure(.sealedReleaseProvenanceAbsent))
@@ -472,17 +474,110 @@ public struct BundleSealedInstallerReleaseTrustConfigurationLoader: SealedInstal
             guard let url = bundle.url(forResource: resourceName, withExtension: "json") else {
                 return .failure(InstallerSelfUpdateFailure(.sealedReleaseTrustConfigurationAbsent))
             }
-            let resourceValues = try url.resourceValues(forKeys: [.fileSizeKey])
-            guard let fileSize = resourceValues.fileSize,
-                  fileSize <= InstallerReleaseTrustValidation.maximumResourceBytes else {
+            let data = try SealedInstallerResourceFileReader.read(
+                at: url,
+                maximumBytes: InstallerReleaseTrustValidation.maximumResourceBytes
+            )
+            guard case .success = bundleValidator.validateSealedInstallerBundle(at: bundle.bundleURL) else {
                 return .failure(InstallerSelfUpdateFailure(.sealedReleaseTrustConfigurationAbsent))
             }
-            let data = try Data(contentsOf: url)
             return .success(try SealedInstallerReleaseTrustConfiguration.decodeJSONResource(data))
         } catch {
             return .failure(InstallerSelfUpdateFailure(.sealedReleaseTrustConfigurationAbsent))
         }
     }
+}
+
+/// Reads a bounded public resource through its descriptor rather than following
+/// a path after static code validation. The enclosing bundle is validated both
+/// before and after this reader is used; this helper additionally refuses a
+/// final symlink, writable resource or file replacement while bytes are read.
+enum SealedInstallerResourceFileReader {
+    static func read(at url: URL, maximumBytes: Int) throws -> Data {
+        guard maximumBytes > 0 else {
+            throw SealedInstallerResourceFileReaderError.invalid
+        }
+        let canonicalURL = canonicalURL(for: url)
+        let descriptor = canonicalURL.withUnsafeFileSystemRepresentation { path -> Int32 in
+            guard let path else { return -1 }
+            return Darwin.open(path, O_RDONLY | O_CLOEXEC | O_NOFOLLOW_ANY)
+        }
+        guard descriptor >= 0 else {
+            throw SealedInstallerResourceFileReaderError.invalid
+        }
+        defer { _ = Darwin.close(descriptor) }
+        let initialDetails = try secureResourceDetails(descriptor)
+        guard initialDetails.st_size > 0,
+              initialDetails.st_size <= off_t(maximumBytes) else {
+            throw SealedInstallerResourceFileReaderError.invalid
+        }
+        var data = Data()
+        var buffer = [UInt8](repeating: 0, count: 8192)
+        while true {
+            let count = buffer.withUnsafeMutableBytes { rawBuffer in
+                Darwin.read(descriptor, rawBuffer.baseAddress, rawBuffer.count)
+            }
+            if count == 0 {
+                break
+            }
+            if count < 0 {
+                if errno == EINTR {
+                    continue
+                }
+                throw SealedInstallerResourceFileReaderError.invalid
+            }
+            data.append(contentsOf: buffer.prefix(Int(count)))
+            guard data.count <= maximumBytes else {
+                throw SealedInstallerResourceFileReaderError.invalid
+            }
+        }
+        var finalDetails = stat()
+        guard Darwin.fstat(descriptor, &finalDetails) == 0,
+              finalDetails.st_dev == initialDetails.st_dev,
+              finalDetails.st_ino == initialDetails.st_ino,
+              finalDetails.st_size == initialDetails.st_size,
+              finalDetails.st_mtimespec.tv_sec == initialDetails.st_mtimespec.tv_sec,
+              finalDetails.st_mtimespec.tv_nsec == initialDetails.st_mtimespec.tv_nsec else {
+            throw SealedInstallerResourceFileReaderError.invalid
+        }
+        return data
+    }
+
+    private static func secureResourceDetails(_ descriptor: Int32) throws -> stat {
+        var details = stat()
+        guard Darwin.fstat(descriptor, &details) == 0,
+              (details.st_mode & mode_t(S_IFMT)) == mode_t(S_IFREG),
+              details.st_nlink == 1,
+              (details.st_mode & mode_t(S_IWGRP | S_IWOTH)) == 0 else {
+            throw SealedInstallerResourceFileReaderError.invalid
+        }
+        return details
+    }
+
+    /// Normalize existing ancestor aliases such as `/tmp` and `/var` without
+    /// ever resolving the final resource component. `O_NOFOLLOW_ANY` can then
+    /// reject a resource symlink rather than treating a normal macOS alias as
+    /// an unsafe leaf.
+    private static func canonicalURL(for input: URL) -> URL {
+        let standardized = input.standardizedFileURL
+        let parent = standardized.deletingLastPathComponent()
+        let resolvedParentPath: String? = parent.withUnsafeFileSystemRepresentation { parentPath in
+            guard let parentPath, let resolvedPath = Darwin.realpath(parentPath, nil) else {
+                return nil
+            }
+            defer { Darwin.free(resolvedPath) }
+            return String(cString: resolvedPath)
+        }
+        guard let resolvedParentPath else {
+            return standardized
+        }
+        return URL(fileURLWithPath: resolvedParentPath, isDirectory: true)
+            .appendingPathComponent(standardized.lastPathComponent, isDirectory: false)
+    }
+}
+
+private enum SealedInstallerResourceFileReaderError: Error {
+    case invalid
 }
 
 private enum InstallerReleaseTrustValidation {

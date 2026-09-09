@@ -293,6 +293,39 @@ final class ReleasedInstallerStartupTests: XCTestCase {
         XCTAssertEqual(validator.callCount(), 1)
     }
 
+    func testSealedResourceReaderRejectsSymlinkedWritableAndOversizedResources() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("forge-platform-installer-sealed-resource-\(UUID().uuidString)", isDirectory: true)
+        let resource = root.appendingPathComponent("resource.json", isDirectory: false)
+        let symlink = root.appendingPathComponent("symlink.json", isDirectory: false)
+        defer { try? FileManager.default.removeItem(at: root) }
+        try FileManager.default.createDirectory(
+            at: root,
+            withIntermediateDirectories: true,
+            attributes: [.posixPermissions: 0o700]
+        )
+        let expected = Data("{\"public\":true}".utf8)
+        try expected.write(to: resource)
+        try FileManager.default.setAttributes([.posixPermissions: 0o644], ofItemAtPath: resource.path)
+
+        XCTAssertEqual(
+            try SealedInstallerResourceFileReader.read(at: resource, maximumBytes: 1024),
+            expected
+        )
+        try FileManager.default.createSymbolicLink(at: symlink, withDestinationURL: resource)
+        XCTAssertThrowsError(
+            try SealedInstallerResourceFileReader.read(at: symlink, maximumBytes: 1024)
+        )
+        try FileManager.default.setAttributes([.posixPermissions: 0o664], ofItemAtPath: resource.path)
+        XCTAssertThrowsError(
+            try SealedInstallerResourceFileReader.read(at: resource, maximumBytes: 1024)
+        )
+        try FileManager.default.setAttributes([.posixPermissions: 0o644], ofItemAtPath: resource.path)
+        XCTAssertThrowsError(
+            try SealedInstallerResourceFileReader.read(at: resource, maximumBytes: 4)
+        )
+    }
+
     func testStartupRetriesOnlyTheTypedConcurrentHandoffWindowBeforeOpeningWizard() async throws {
         let currentVersion = try InstallerVersion("1.0.0")
         let release = try makeRelease("1.0.0")
