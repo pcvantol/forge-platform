@@ -72,7 +72,14 @@ projection digest, target, or changed paths differ. Thus the new candidate gets
 its own qualification evidence; an older review/check cannot be repurposed.
 
 `release-X.Y.Z` is parsed only as an explicit exact target by the helper; it is
-not a branch authorization. No release workflow is configured here. Until an
-authorized route can bind an approved exact candidate, compatibility decision,
-artifact bytes/digest and publication identity, release preparation and
-publication remain unsupported and fail closed by absence rather than a bypass.
+not a branch authorization. The manual production-composition workflow accepts
+only an exact current protected-main SHA and a committed component manifest. It
+validates each producer's immutable source revision, SHA-256 artifact digest,
+qualification reference and supported platform before it creates (or readbacks)
+the Forge Platform GitHub release receipt. It cannot build a producer artifact,
+infer one from a checkout, or turn an incomplete manifest into a release.
+
+Until all required producer artifacts and their qualification evidence exist,
+the workflow remains intentionally blocked by manifest qualification. Release
+preparation is therefore not publication authority, and a source merge remains
+insufficient evidence for a platform composition.
