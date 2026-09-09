@@ -34,7 +34,7 @@ jobs:
           test -z "$(git status --porcelain)"
           sh scripts/validate.sh
           VERSION="$(python3 -c 'import json; print(json.load(open("product-version.json"))["version"])')"
-          python3 scripts/qualify_release_composition.py --manifest "$MANIFEST" --version "$VERSION" --source-sha "$SOURCE_SHA"
+          python3 scripts/qualify_release_composition.py --manifest "$MANIFEST" --version "$VERSION" --source-sha "$SOURCE_SHA" --verify-artifacts
           cp "$MANIFEST" "forge-platform-composition-$VERSION-$SOURCE_SHA.json"
           echo "SOURCE_SHA=$SOURCE_SHA" >> "$GITHUB_ENV"
           echo "version=$VERSION" >> "$GITHUB_ENV"

@@ -8,6 +8,8 @@ import json
 from pathlib import Path
 import re
 import sys
+from urllib.parse import urlparse
+from urllib.request import urlopen
 
 SHA256 = re.compile(r"^sha256:[0-9a-f]{64}$")
 REVISION = re.compile(r"^[0-9a-f]{40,64}$")
@@ -77,14 +79,38 @@ def qualify(path: Path, version: str, source_sha: str) -> str:
     return "sha256:" + hashlib.sha256(path.read_bytes()).hexdigest()
 
 
+def verify_artifacts(path: Path, version: str, source_sha: str, *, fetch: object | None = None) -> str:
+    """Read producer bytes back from immutable HTTPS sources and rehash them."""
+    digest = qualify(path, version, source_sha)
+    payload = json.loads(path.read_text(encoding="utf-8"), object_pairs_hook=pairs)
+    downloader = fetch
+    if downloader is None:
+        def downloader(source: str) -> bytes:
+            with urlopen(source, timeout=30) as response:  # nosec B310 - source passed only after manifest qualification
+                return response.read()
+    for component in payload["components"]:
+        artifact = component["artifact"]
+        source = artifact["source"]
+        if urlparse(source).scheme != "https":
+            fail("artifact readback source must use HTTPS")
+        try:
+            content = downloader(source)  # type: ignore[operator]
+        except Exception as error:
+            raise ValueError("artifact readback is unavailable") from error
+        if not isinstance(content, bytes) or "sha256:" + hashlib.sha256(content).hexdigest() != artifact["digest"]:
+            fail("artifact readback digest does not match the qualified manifest")
+    return digest
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--manifest", required=True)
     parser.add_argument("--version", required=True)
     parser.add_argument("--source-sha", required=True)
+    parser.add_argument("--verify-artifacts", action="store_true")
     args = parser.parse_args()
     try:
-        digest = qualify(Path(args.manifest), args.version, args.source_sha)
+        digest = verify_artifacts(Path(args.manifest), args.version, args.source_sha) if args.verify_artifacts else qualify(Path(args.manifest), args.version, args.source_sha)
     except ValueError as error:
         print(f"COMPOSITION_QUALIFICATION=FAIL {error}", file=sys.stderr)
         raise SystemExit(1)
