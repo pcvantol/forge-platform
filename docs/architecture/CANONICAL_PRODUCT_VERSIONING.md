@@ -75,20 +75,32 @@ its own qualification evidence; an older review/check cannot be repurposed.
 not a branch authorization. The manual production-composition workflow accepts
 only an exact current protected-main SHA and a committed component manifest. It
 validates each producer's immutable source revision, SHA-256 artifact digest,
-qualification reference and supported platform before it creates (or readbacks)
-the Forge Platform GitHub release receipt. It cannot build a producer artifact,
-infer one from a checkout, or turn an incomplete manifest into a release.
+qualification reference and supported platform before it records the Forge
+Platform composition operation. It cannot build a producer artifact, infer one
+from a checkout, or turn an incomplete manifest into a release.
 
-The release operation is durable and stateful: `PREPARED → QUALIFIED →
-PUBLISHED → RELEASE_COMPLETE`, with `CLEANUP_PENDING` retaining a visibly
-incomplete post-publication operation when needed. `PUBLISHED` is retained only
-after GitHub-release asset readback proves the exact qualified composition
-bytes. A separate terminal receipt is retained only after the operation's
-download/readback directories are cleaned. The workflow serializes release
-operations, resumes an identical source/version/composition identity, and fails
-closed if a tag or asset already binds that release identity to different bytes
-or provenance. This is release-composition evidence only; it neither installs
-components nor grants a product runtime, migration, or rollback authority.
+The operation ID is `forge-platform-<version>-<full-main-sha>` and binds the
+product/component, policy revision, source revision and exact composition
+digest. Its ordered evidence is:
+
+```text
+main source/artifact qualification
+  -> draft GitHub Release containing byte-equal QUALIFIED receipt
+  -> exact composition asset upload and readback
+  -> byte-equal PUBLISHED receipt, then public GitHub Release readback
+  -> operation-local cleanup
+  -> RELEASE_COMPLETE receipt
+```
+
+`PREPARED → QUALIFIED → PUBLISHED → RELEASE_COMPLETE` is therefore durable and
+resumable; `CLEANUP_PENDING` records a failed exact cleanup target list before a
+later controlled retry. An existing tag without the original byte-equal
+`QUALIFIED` provenance is rejected, as is a different source, policy, digest or
+receipt under an existing identity. The workflow serializes all composition
+releases and never adopts an externally created public release that lacks its
+durable `PUBLISHED` receipt. This is release-composition evidence only; it
+neither installs components nor grants a product runtime, migration, rollback,
+or EP installation authority.
 
 Until all required producer artifacts and their qualification evidence exist,
 the workflow remains intentionally blocked by manifest qualification. Release
