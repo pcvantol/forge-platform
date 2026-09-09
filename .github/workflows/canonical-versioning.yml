@@ -20,3 +20,6 @@ jobs:
           fetch-depth: 2
       - run: python3 scripts/advance_product_version.py --check
       - run: python3 scripts/advance_product_version.py --verify-operation --candidate-head "${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}"
+      - run: python3 scripts/validate_installer_version.py
+      - run: python3 scripts/advance_installer_version.py --check
+      - run: python3 scripts/advance_installer_version.py --verify-operation --candidate-head "${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}"

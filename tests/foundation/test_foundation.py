@@ -82,6 +82,14 @@ def main() -> None:
     installer_version = json.loads((ROOT / "installer-version.json").read_text())
     if installer_version.get("product") != "forge-platform-installer":
         raise SystemExit("installer version authority is invalid")
+    canonical_versioning = (ROOT / ".github/workflows/canonical-versioning.yml").read_text()
+    for required_command in (
+        "scripts/validate_installer_version.py",
+        "scripts/advance_installer_version.py --check",
+        "scripts/advance_installer_version.py --verify-operation",
+    ):
+        if required_command not in canonical_versioning:
+            raise SystemExit(f"canonical versioning omits installer authority validation: {required_command}")
 
     extension = (ROOT / "docs/development/FORGE_PLATFORM_DEVELOPMENT_EXTENSION.md").read_text()
     if "generic branch" not in extension:
