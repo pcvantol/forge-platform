@@ -15,6 +15,32 @@ Forge Platform defines two separately versioned immutable artifact types; their 
 
 There is deliberately **not** one installer package per Forge/EP/Workspace combination. One installer can consume many immutable compositions. Each composition declares a minimum installer version and named capabilities. A new component, such as a separate Execution Agent, needs a new installer release only when it needs a new component type, provisioner-adapter protocol, UI semantic, or other new capability. Its composition requires that capability; an older installer updates first or rejects the composition.
 
+## Native Apple Silicon and macOS 26 platform contract
+
+The native Universal Installer supports exactly one host platform: Apple
+Silicon running macOS 26 or newer. Its process and distributable executable are
+both arm64-only. Intel Macs, an `x86_64` process translated by Rosetta, and
+macOS 25 or older fail closed before the self-update runtime, provider flow, or
+any product/platform mutation can begin. Rosetta is not a compatibility path.
+
+The release descriptor contains exactly one macOS asset, its architecture is
+exactly `arm64`, and its declared `minimum_macos_version` is exactly `26.0.0`.
+There is no Intel asset, architecture negotiation, or fallback. The protected
+verifier binds that declaration to `LSMinimumSystemVersion=26.0` inside the
+actual archive. A fat/universal executable is also rejected: both unsigned packaging
+and protected release-evidence verification inspect the actual Mach-O header
+and require a thin arm64 executable. The staged/current native bundle inspector
+repeats that check around static code-signature validation before handoff.
+Digest and signing evidence therefore cannot relabel an `x86_64` or universal
+binary as the arm64 installer.
+
+Every composition repeats the same floor: `minimum_macos_version` is 26.0.0 or
+newer and `supported_architectures` is exactly `["arm64"]`. Native startup
+observes the process architecture, Apple Silicon hardware capability, Rosetta
+translation state, and macOS major version. This read-only platform preflight
+runs before the installer-owned state root is adopted and before network,
+staging, catalog, managed-tool, provider, service, or component work.
+
 Product version, installer version, composition identity, protocol/schema versions, source revision, and artifact digest remain separate values. `installer-version.json` is the sole source for the native installer version/channel/capability projection; it is deliberately independent of Forge Platform's `product-version.json` composition-release version.
 
 An installer release reserves the distinct GitHub tag configured by its
@@ -351,7 +377,7 @@ The old process never starts component work while a newer verified installer is 
 
 The release-side counterpart is equally restartable: the unsigned candidate
 first becomes a durable, immutable `PREPARED` record under one operation ID,
-including its candidate manifest and per-architecture digests. A later
+including its candidate manifest and sole arm64 archive digest. A later
 qualification record must bind that exact prepared input as well as the signed
 descriptor, release archives, CodeDirectory digests, typed notarization
 receipts, sequence, trust configuration and provenance. Retrying with changed
@@ -444,6 +470,17 @@ Every gate fails closed. A future privileged helper communicates only with the c
 
 Git and Python are inventoried and, where a qualified composition requires them, bootstrapped from installer-owned digest-pinned artifacts. The installer uses explicit managed-tool identities. It does not replace `/usr/bin/git`, a Homebrew installation, an arbitrary user Python, or a PATH-selected executable. A tool upgrade is explicit and must not mutate unrelated global toolchains. Product component venvs remain separate from managed tools and from every other component.
 
+The next separately reviewed managed-Python increment will replace the current
+generic Python tool requirement with one exact, platform-approved runtime
+identity. Its signed catalog/composition fields must bind the exact Python
+version, macOS/arm64 artifact and SHA-256, source/build provenance, ABI/tag,
+minimum macOS version, and policy revision. EP, Forge, and Workspace producer
+evidence must each name that same runtime identity; compatibility cannot be
+inferred from a minimum version or a `PATH` result. An accepted installation
+operation freezes the identity and gives each product its own venv. This
+platform-contract increment does not select a current Python release or add a
+bootstrap executor.
+
 The dynamic provider screen can show Codex CLI and GitHub CLI independently as selected, optional, or required. For every enabled provider the state is `ABSENT → INSTALLED → AUTHENTICATION_REQUIRED → VERIFIED`. The wizard advances only when every enabled provider is `VERIFIED`; a selected optional provider therefore cannot be silently bypassed. If a profile requires both Codex and GitHub CLI, both are selected and both must finish installation, interactive authentication, and non-secret validation. Either failure blocks the next screen. Optional providers may be deselected only when the selected composition permits it. Vendor actions are fixed audited commands or UI handoffs; the UI never accepts command text. Credentials stay in provider user-scoped secure storage and never enter a system service, composition, receipt, diagnostic, or installer log.
 
 A server-only profile can omit user-scoped provider requirements only when its qualified composition explicitly says so. This is not a bypass for a profile that needs a local Project Agent or interactive provider execution.
@@ -487,7 +524,7 @@ Discovery produces a candidate only. Product APIs verify product, instance, fing
 
 ## Current source and remaining work
 
-Forge Platform now contains strict schemas and a tested policy kernel for signed-release selection, canonical GitHub Release identity, structured public signature envelopes and key-ID/threshold gating, sealed V2 trust-configuration and V1 provenance identities, fresh/trusted-clock feed gates, catalog signature/sequence/digest anti-replay, context-bound composition selection, installer capability checks, preflight, Git/Python planning, provider gating, system-service declaration checks, and read-only composition diffs. The native core now also has a tested C-1 outer-catalog admission kernel, shared strict canonical-JSON/Ed25519 verification primitives, canonical HTTPS validation, bounded JSON parsing, a source-level sealed catalog-trust resource loader, a credential-free exact-locator transport seam, a durable per-scope catalog-anchor store, and C-3a: a read-only coordinator that binds those seams only when an independently injected clock attests the exact transport bytes. Its native component-combination parser then accepts only the exact index bytes pinned by that verified outer catalog, preserves separate outer/index identities, applies the same 512 KiB/depth/node limits as the Python qualifier, rechecks both outer/index publication and expiry, and returns only exact-set, explicit-upgrade-route decisions. When a matching accepted index anchor is supplied, it rejects replay and same-sequence/different-bytes; it also rejects supersets and silent fallback from a newer entry whose capability requires a newer installer. The unsigned packager can carry a separately validated V1 catalog policy only beside the matched V2/V1 release resources, and the structural archive verifier conditionally binds that policy to the reviewed V2 scope. The source still has no resource or production key, no independently reviewed clock attester, and no runtime/session/UI/product wiring; an absent resource or time attester fails closed, and a catalog-host HTTP `Date` cannot establish trusted time. The stores have no product receipt validator or production caller, and C-3a and the selector have read-only capability, so neither can create an accepted catalog. No native index transport, manifest verifier or session-plan producer exists yet. It also contains a tested native SwiftUI wizard shell, a separate installer release-operation journal with an immutable `PREPARED` candidate precursor and durable sequence reservation, and a source-only release workflow framework. That framework verifies an exact merged `main` candidate, requires its exact version-preparation receipt, requires a reviewed release-identity policy, records required public sequence/provenance inputs, packages an **unsigned** `.app` candidate without manufacturing sealed resources, records the digest of the exact staged archive, and binds the later operation/descriptor handoff to the configured GitHub repository, tag, descriptor asset name, archive asset names, bundle identifier, Team identifier, CodeDirectory digest and typed notarization receipt. Its signing/notarization and public-GitHub-Release environments deliberately fail closed until a real protected Apple signer, notarization adapter, native trust/provenance loader, descriptor verifier and publisher are configured. The structural handoff verifier enforces the public envelope shape and reviewed identity binding, conditionally validates a bundled catalog policy, but intentionally reports that cryptographic signature verification was not performed; it is never a publication authorization.
+Forge Platform now contains strict schemas and a tested policy kernel for signed-release selection, canonical GitHub Release identity, structured public signature envelopes and key-ID/threshold gating, sealed V2 trust-configuration and V1 provenance identities, fresh/trusted-clock feed gates, catalog signature/sequence/digest anti-replay, context-bound composition selection, installer capability checks, native Apple Silicon/macOS 26 preflight, Git/Python planning, provider gating, system-service declaration checks, and read-only composition diffs. The release descriptor, release-operation journal, candidate preparation, packaging, structural evidence verifier, Swift package, and hosted workflow all admit only one thin arm64 installer artifact for macOS 26 or newer; Intel, Rosetta, `x86_64`, fat/universal, and macOS 25 inputs fail closed before platform mutation. The native core now also has a tested C-1 outer-catalog admission kernel, shared strict canonical-JSON/Ed25519 verification primitives, canonical HTTPS validation, bounded JSON parsing, a source-level sealed catalog-trust resource loader, a credential-free exact-locator transport seam, a durable per-scope catalog-anchor store, and C-3a: a read-only coordinator that binds those seams only when an independently injected clock attests the exact transport bytes. Its native component-combination parser then accepts only the exact index bytes pinned by that verified outer catalog, preserves separate outer/index identities, applies the same 512 KiB/depth/node limits as the Python qualifier, rechecks both outer/index publication and expiry, and returns only exact-set, explicit-upgrade-route decisions. When a matching accepted index anchor is supplied, it rejects replay and same-sequence/different-bytes; it also rejects supersets and silent fallback from a newer entry whose capability requires a newer installer. The unsigned packager can carry a separately validated V1 catalog policy only beside the matched V2/V1 release resources, and the structural archive verifier conditionally binds that policy to the reviewed V2 scope. The source still has no resource or production key, no independently reviewed clock attester, and no runtime/session/UI/product wiring; an absent resource or time attester fails closed, and a catalog-host HTTP `Date` cannot establish trusted time. The stores have no product receipt validator or production caller, and C-3a and the selector have read-only capability, so neither can create an accepted catalog. No native index transport, manifest verifier or session-plan producer exists yet. It also contains a tested native SwiftUI wizard shell, a separate installer release-operation journal with an immutable `PREPARED` candidate precursor and durable sequence reservation, and a source-only release workflow framework. That framework verifies an exact merged `main` candidate, requires its exact version-preparation receipt, requires a reviewed release-identity policy, records required public sequence/provenance inputs, packages an **unsigned** `.app` candidate without manufacturing sealed resources, records the digest of the exact staged archive, and binds the later operation/descriptor handoff to the configured GitHub repository, tag, descriptor asset name, arm64 archive asset name, bundle identifier, Team identifier, CodeDirectory digest and typed notarization receipt. Its signing/notarization and public-GitHub-Release environments deliberately fail closed until a real protected Apple signer, notarization adapter, native trust/provenance loader, descriptor verifier and publisher are configured. The structural handoff verifier enforces the public envelope shape and reviewed identity binding, conditionally validates a bundled catalog policy, but intentionally reports that cryptographic signature verification was not performed; it is never a publication authorization.
 
 The structural verifier reads V2 trust and V1 provenance resources directly
 from every supplied archive and binds their semantic identities to the durable

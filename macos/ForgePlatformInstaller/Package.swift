@@ -3,7 +3,7 @@ import PackageDescription
 
 let package = Package(
     name: "ForgePlatformInstaller",
-    platforms: [.macOS(.v14)],
+    platforms: [.macOS("26.0")],
     products: [
         .library(name: "ForgePlatformInstallerCore", targets: ["ForgePlatformInstallerCore"]),
         .executable(name: "ForgePlatformInstaller", targets: ["ForgePlatformInstaller"]),

@@ -33,6 +33,7 @@
         "assets": {
           "type": "array",
           "minItems": 1,
+          "maxItems": 1,
           "items": {"$ref": "#/$defs/installer_asset"}
         }
       }
@@ -87,10 +88,11 @@
     "installer_asset": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["operating_system", "architecture", "asset_name", "digest", "bundle_identifier", "team_identifier", "code_directory_sha256", "notarization_receipt_reference"],
+      "required": ["operating_system", "architecture", "minimum_macos_version", "asset_name", "digest", "bundle_identifier", "team_identifier", "code_directory_sha256", "notarization_receipt_reference"],
       "properties": {
         "operating_system": {"const": "macos"},
-        "architecture": {"enum": ["arm64", "x86_64"]},
+        "architecture": {"const": "arm64"},
+        "minimum_macos_version": {"const": "26.0.0"},
         "asset_name": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,123}\\.zip$"},
         "digest": {"$ref": "#/$defs/sha256"},
         "bundle_identifier": {"type": "string", "pattern": "^[A-Za-z0-9-]+(?:\\.[A-Za-z0-9-]+)+$"},

@@ -7,7 +7,7 @@ final class MacOSTrustedInstallerRuntimeBuilderTests: XCTestCase {
     func testAssemblesOnlyExistingSelfUpdateAdaptersFromOnePrivateRoot() async throws {
         let root = try makeSecureTemporaryDirectory()
         defer { try? FileManager.default.removeItem(at: root) }
-        let builder = try MacOSTrustedInstallerRuntimeBuilder(stateRoot: root)
+        let builder = try supportedBuilder(stateRoot: root)
         let configuration = try makeConfiguration()
         let provenance = try makeProvenance(configuration: configuration)
 
@@ -26,7 +26,7 @@ final class MacOSTrustedInstallerRuntimeBuilderTests: XCTestCase {
     func testMismatchedSealedResourcesNeverAssembleARuntime() async throws {
         let root = try makeSecureTemporaryDirectory()
         defer { try? FileManager.default.removeItem(at: root) }
-        let builder = try MacOSTrustedInstallerRuntimeBuilder(stateRoot: root)
+        let builder = try supportedBuilder(stateRoot: root)
         let configuration = try makeConfiguration()
         let mismatchedProvenance = try makeProvenance(
             releaseTrustConfigurationSHA256: String(repeating: "f", count: 64)
@@ -79,7 +79,7 @@ final class MacOSTrustedInstallerRuntimeBuilderTests: XCTestCase {
         try FileManager.default.createSymbolicLink(at: aliasParent, withDestinationURL: physicalParent)
 
         XCTAssertNoThrow(
-            try MacOSTrustedInstallerRuntimeBuilder(
+            try supportedBuilder(
                 stateRoot: aliasParent.appendingPathComponent("installer-state", isDirectory: true)
             )
         )
@@ -87,7 +87,7 @@ final class MacOSTrustedInstallerRuntimeBuilderTests: XCTestCase {
 
     func testRejectsNonFileStateRoot() {
         XCTAssertThrowsError(
-            try MacOSTrustedInstallerRuntimeBuilder(
+            try supportedBuilder(
                 stateRoot: URL(string: "https://example.invalid/installer-state")!
             )
         ) { error in
@@ -110,15 +110,93 @@ final class MacOSTrustedInstallerRuntimeBuilderTests: XCTestCase {
         assertInvalidStateRoot(relativeRoot)
     }
 
+    func testPlatformContractRejectsIntelRosettaAndMacOS25BeforeInspectingState() {
+        let absentRoot = URL(fileURLWithPath: "/path/that/platform-preflight-must-not-inspect")
+        let cases: [(MacOSInstallerPlatformFacts, MacOSTrustedInstallerRuntimeBuilderConfigurationError)] = [
+            (
+                MacOSInstallerPlatformFacts(
+                    processArchitecture: "x86_64",
+                    appleSiliconHardware: false,
+                    rosettaTranslated: false,
+                    macOSMajorVersion: 26
+                ),
+                .unsupportedAppleSiliconHardware
+            ),
+            (
+                MacOSInstallerPlatformFacts(
+                    processArchitecture: "x86_64",
+                    appleSiliconHardware: true,
+                    rosettaTranslated: true,
+                    macOSMajorVersion: 26
+                ),
+                .rosettaTranslationDenied
+            ),
+            (
+                MacOSInstallerPlatformFacts(
+                    processArchitecture: "arm64",
+                    appleSiliconHardware: true,
+                    rosettaTranslated: false,
+                    macOSMajorVersion: 25
+                ),
+                .unsupportedMacOSVersion
+            ),
+        ]
+
+        for (facts, expected) in cases {
+            XCTAssertThrowsError(
+                try MacOSTrustedInstallerRuntimeBuilder(
+                    stateRoot: absentRoot,
+                    platformFacts: facts
+                )
+            ) { error in
+                XCTAssertEqual(
+                    error as? MacOSTrustedInstallerRuntimeBuilderConfigurationError,
+                    expected
+                )
+            }
+        }
+    }
+
+    func testPlatformContractAcceptsNativeAppleSiliconOnMacOS26AndNewer() throws {
+        for majorVersion in [26, 27] {
+            let root = try makeSecureTemporaryDirectory()
+            defer { try? FileManager.default.removeItem(at: root) }
+            XCTAssertNoThrow(
+                try MacOSTrustedInstallerRuntimeBuilder(
+                    stateRoot: root,
+                    platformFacts: supportedPlatformFacts(macOSMajorVersion: majorVersion)
+                )
+            )
+        }
+    }
+
     private func assertInvalidStateRoot(_ root: URL) {
         XCTAssertThrowsError(
-            try MacOSTrustedInstallerRuntimeBuilder(stateRoot: root)
+            try supportedBuilder(stateRoot: root)
         ) { error in
             XCTAssertEqual(
                 error as? MacOSTrustedInstallerRuntimeBuilderConfigurationError,
                 .invalidInstallerStateRoot
             )
         }
+    }
+
+    private func supportedBuilder(stateRoot: URL) throws -> MacOSTrustedInstallerRuntimeBuilder {
+        try MacOSTrustedInstallerRuntimeBuilder(
+            stateRoot: stateRoot,
+            platformFacts: supportedPlatformFacts()
+        )
+    }
+
+    private func supportedPlatformFacts(
+        macOSMajorVersion: Int = 26
+    ) -> MacOSInstallerPlatformFacts {
+        MacOSInstallerPlatformFacts(
+            processArchitecture: "arm64",
+            appleSiliconHardware: true,
+            rosettaTranslated: false,
+            macOSMajorVersion: macOSMajorVersion
+        )
     }
 
     private func makeSecureTemporaryDirectory() throws -> URL {

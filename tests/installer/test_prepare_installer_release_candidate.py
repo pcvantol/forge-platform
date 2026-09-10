@@ -86,6 +86,17 @@ class PrepareInstallerReleaseCandidateTests(unittest.TestCase):
             self.assertIn("bundle_identifier", mismatch.stderr)
             self.assertFalse(inputs["output"].exists())
 
+    def test_rejects_an_x86_64_candidate_asset_before_preparation(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            workspace = Path(temporary)
+            inputs = self._write_inputs(workspace)
+
+            result = self._run(inputs, architecture="x86_64")
+
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("supported architecture", result.stderr)
+            self.assertFalse(inputs["output"].exists())
+
     def test_requires_a_ready_reviewed_release_identity(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             workspace = Path(temporary)
@@ -205,6 +216,7 @@ class PrepareInstallerReleaseCandidateTests(unittest.TestCase):
         inputs: dict[str, object],
         *,
         archive: Path | None = None,
+        architecture: str = "arm64",
     ) -> subprocess.CompletedProcess[str]:
         candidate_archive = archive or inputs["archive"]
         assert isinstance(candidate_archive, Path)
@@ -221,7 +233,7 @@ class PrepareInstallerReleaseCandidateTests(unittest.TestCase):
                 sys.executable,
                 str(SCRIPT),
                 "--candidate-manifest", str(manifest),
-                "--archive", f"arm64={candidate_archive}",
+                "--archive", f"{architecture}={candidate_archive}",
                 "--source-sha", SOURCE_SHA,
                 "--operation-id", OPERATION_ID,
                 "--installer-version", VERSION,

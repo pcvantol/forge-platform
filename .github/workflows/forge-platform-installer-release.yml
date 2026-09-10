@@ -117,7 +117,7 @@ jobs:
 
   build-unsigned-app-candidate:
     needs: release-context
-    runs-on: macos-15
+    runs-on: macos-26
     outputs:
       architecture: ${{ steps.candidate.outputs.architecture }}
       archive: ${{ steps.candidate.outputs.archive }}
@@ -145,10 +145,9 @@ jobs:
           git fetch --no-tags origin +refs/heads/main:refs/remotes/origin/main
           test "$SOURCE_SHA" = "$(git rev-parse origin/main)"
           sh scripts/validate.sh
-          case "$(uname -m)" in
-            arm64|x86_64) ARCHITECTURE="$(uname -m)" ;;
-            *) echo 'unsupported macOS runner architecture' >&2; exit 1 ;;
-          esac
+          test "$(uname -m)" = "arm64"
+          test "$(sw_vers -productVersion | cut -d. -f1)" -ge 26
+          ARCHITECTURE="arm64"
           cd macos/ForgePlatformInstaller
           swift test
           BINARY_DIRECTORY="$(swift build -c release --show-bin-path)"
@@ -226,7 +225,7 @@ jobs:
     # signed-release evidence. This protected gate currently fails closed.
     if: ${{ inputs.request_publication }}
     needs: [release-context, build-unsigned-app-candidate]
-    runs-on: macos-15
+    runs-on: macos-26
     environment:
       name: forge-platform-installer-signing
     permissions:
@@ -258,7 +257,7 @@ jobs:
     # that signer, then still refuses public GitHub publication in source.
     if: ${{ inputs.request_publication && needs.sign-notarize-and-qualify.result == 'success' }}
     needs: [release-context, build-unsigned-app-candidate, sign-notarize-and-qualify]
-    runs-on: macos-15
+    runs-on: macos-26
     environment:
       name: forge-platform-installer-publication
     permissions:

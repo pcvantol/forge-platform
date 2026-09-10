@@ -63,12 +63,15 @@ REQUIRED = (
     "tests/installer/test_installer_version_preparation.py",
     "scripts/package_macos_installer_app.py",
     "scripts/verify_installer_release_evidence.py",
+    "forge_platform/macos_platform_contract.py",
     "forge_platform/installer_release_operation.py",
     "tests/installer/test_installer_release_operation.py",
     "tests/installer/test_installer_release_identity.py",
     "tests/installer/test_package_macos_installer_app.py",
     "tests/installer/test_verify_installer_release_evidence.py",
     "tests/installer/test_installer_release_workflow.py",
+    "macos/ForgePlatformInstaller/Sources/ForgePlatformInstallerCore/MacOSInstallerExecutableArchitecture.swift",
+    "macos/ForgePlatformInstaller/Tests/ForgePlatformInstallerCoreTests/MacOSInstallerExecutableArchitectureTests.swift",
 )
 
 
@@ -98,6 +101,13 @@ def main() -> None:
     for field in ("asset_name", "code_directory_sha256", "notarization_receipt_reference"):
         if field not in installer_asset["required"]:
             raise SystemExit("universal installer release asset must bind GitHub name and signed archive identity")
+    release_assets = installer_release["properties"]["installer"]["properties"]["assets"]
+    if release_assets.get("minItems") != 1 or release_assets.get("maxItems") != 1:
+        raise SystemExit("universal installer release must contain exactly one platform asset")
+    if installer_asset["properties"]["architecture"] != {"const": "arm64"}:
+        raise SystemExit("universal installer release architecture must be arm64 only")
+    if installer_asset["properties"]["minimum_macos_version"] != {"const": "26.0.0"}:
+        raise SystemExit("universal installer release asset must declare the exact macOS 26 floor")
     release_signature = installer_release["$defs"]["public_signature_envelope"]
     if release_signature["required"] != ["algorithm", "key_id", "signature"]:
         raise SystemExit("universal installer release descriptor must use a strict public signature envelope")
@@ -126,6 +136,14 @@ def main() -> None:
     installer_composition = json.loads((ROOT / "schemas/universal-installer-composition.schema.json").read_text())
     if installer_composition["title"] != "Forge Platform universal installer composition":
         raise SystemExit("universal installer composition schema identity is invalid")
+    host_requirement = installer_composition["$defs"]["host_requirement"]["properties"]
+    if host_requirement["supported_architectures"] != {"const": ["arm64"]}:
+        raise SystemExit("universal installer composition architecture must be arm64 only")
+    if "2[6-9]" not in host_requirement["minimum_macos_version"].get("pattern", ""):
+        raise SystemExit("universal installer composition must require macOS 26 or newer")
+    package_manifest = (ROOT / "macos/ForgePlatformInstaller/Package.swift").read_text()
+    if 'platforms: [.macOS("26.0")]' not in package_manifest:
+        raise SystemExit("native installer package must target macOS 26")
     installer_version = json.loads((ROOT / "installer-version.json").read_text())
     if installer_version.get("product") != "forge-platform-installer":
         raise SystemExit("installer version authority is invalid")

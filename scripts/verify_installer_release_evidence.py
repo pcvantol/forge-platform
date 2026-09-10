@@ -21,6 +21,7 @@ from hashlib import sha256
 import json
 import os
 from pathlib import Path
+import plistlib
 import re
 import stat
 import sys
@@ -59,6 +60,13 @@ from forge_platform.universal_installer import (  # noqa: E402
     canonical_https_url,
     parse_public_signature_envelopes,
 )
+from forge_platform.macos_platform_contract import (  # noqa: E402
+    INSTALLER_ARCHITECTURE,
+    INSTALLER_ARCHITECTURES,
+    MINIMUM_MACOS_SEMANTIC_VERSION,
+    MINIMUM_MACOS_VERSION,
+    require_thin_arm64_macho_header,
+)
 
 
 _REVISION = re.compile(r"^[0-9a-f]{40,64}$")
@@ -66,7 +74,7 @@ _SEMVER = re.compile(r"^(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)$
 _DIGEST = re.compile(r"^sha256:[0-9a-f]{64}$")
 _RAW_SHA256 = re.compile(r"^[0-9a-f]{64}$")
 _CAPABILITY = re.compile(r"^[a-z0-9][a-z0-9./_-]{0,127}$")
-_ARCHITECTURES = frozenset({"arm64", "x86_64"})
+_ARCHITECTURES = INSTALLER_ARCHITECTURES
 _CHANNELS = frozenset({"stable", "candidate"})
 _GITHUB_REPOSITORY = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,99}/[A-Za-z0-9][A-Za-z0-9._-]{0,99}$")
 _GITHUB_TAG = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
@@ -231,8 +239,8 @@ def _archive_arguments(values: list[str]) -> dict[str, Path]:
         if not candidate.is_file():
             raise ValueError("archive path must resolve to a regular file")
         result[architecture] = candidate
-    if not result:
-        raise ValueError("at least one archive is required")
+    if set(result) != set(_ARCHITECTURES):
+        raise ValueError("exactly one arm64 archive is required")
     return dict(sorted(result.items()))
 
 
@@ -242,6 +250,62 @@ def _file_digest(path: Path) -> str:
         for block in iter(lambda: stream.read(1024 * 1024), b""):
             digest.update(block)
     return "sha256:" + digest.hexdigest()
+
+
+def _archive_platform_contract(path: Path) -> None:
+    """Require one macOS-26 app containing one thin arm64 executable."""
+
+    try:
+        with zipfile.ZipFile(path) as archive:
+            executable_entries = [
+                entry
+                for entry in archive.infolist()
+                if entry.filename.endswith("/Contents/MacOS/ForgePlatformInstaller")
+            ]
+            if len(executable_entries) != 1:
+                raise ValueError("installer archive must contain exactly one installer executable")
+            executable = executable_entries[0]
+            executable_parts = executable.filename.split("/")
+            if (
+                len(executable_parts) != 4
+                or _ARCHIVE_APP_BUNDLE_NAME.fullmatch(executable_parts[0]) is None
+                or executable_parts[1:] != ["Contents", "MacOS", "ForgePlatformInstaller"]
+            ):
+                raise ValueError("installer archive executable path is invalid")
+            executable_mode = executable.external_attr >> 16
+            if (
+                executable.is_dir()
+                or stat.S_IFMT(executable_mode) != stat.S_IFREG
+                or not executable_mode & stat.S_IXUSR
+            ):
+                raise ValueError("installer archive executable must be a regular executable file")
+            with archive.open(executable, "r") as stream:
+                require_thin_arm64_macho_header(
+                    stream.read(32),
+                    "installer archive executable",
+                )
+
+            plist_path = f"{executable_parts[0]}/Contents/Info.plist"
+            plist_entries = [entry for entry in archive.infolist() if entry.filename == plist_path]
+            if len(plist_entries) != 1 or plist_entries[0].file_size > 1024 * 1024:
+                raise ValueError("installer archive must contain one bounded Info.plist")
+            plist_entry = plist_entries[0]
+            plist_mode = plist_entry.external_attr >> 16
+            if plist_entry.is_dir() or stat.S_IFMT(plist_mode) != stat.S_IFREG:
+                raise ValueError("installer archive Info.plist must be a regular file")
+            with archive.open(plist_entry, "r") as stream:
+                plist_bytes = stream.read((1024 * 1024) + 1)
+            if len(plist_bytes) > 1024 * 1024:
+                raise ValueError("installer archive Info.plist exceeds its maximum size")
+            metadata = plistlib.loads(plist_bytes)
+            if (
+                not isinstance(metadata, dict)
+                or metadata.get("CFBundleExecutable") != "ForgePlatformInstaller"
+                or metadata.get("LSMinimumSystemVersion") != MINIMUM_MACOS_VERSION
+            ):
+                raise ValueError("installer archive does not declare the macOS 26 executable contract")
+    except (OSError, RuntimeError, plistlib.InvalidFileException, zipfile.BadZipFile) as error:
+        raise ValueError("installer archive platform contract cannot be inspected safely") from error
 
 
 def _bundled_resource_bytes(
@@ -478,13 +542,16 @@ def _descriptor_assets(
         value = _mapping(
             asset,
             frozenset({
-                "operating_system", "architecture", "asset_name", "digest", "bundle_identifier", "team_identifier",
+                "operating_system", "architecture", "minimum_macos_version", "asset_name", "digest",
+                "bundle_identifier", "team_identifier",
                 "code_directory_sha256", "notarization_receipt_reference",
             }),
             "descriptor asset",
         )
         if value["operating_system"] != "macos":
             raise ValueError("descriptor asset operating system is invalid")
+        if value["minimum_macos_version"] != MINIMUM_MACOS_SEMANTIC_VERSION:
+            raise ValueError("descriptor asset minimum macOS version must be 26.0.0")
         architecture = _string(value["architecture"], "descriptor asset architecture")
         if architecture not in _ARCHITECTURES or architecture in observed:
             raise ValueError("descriptor asset architecture is invalid or duplicated")
@@ -636,6 +703,9 @@ def verify(
     for architecture, path in archive_paths.items():
         if _file_digest(path) != operation.archives[architecture]:
             raise ValueError("archive digest does not bind the durable operation")
+        if architecture != INSTALLER_ARCHITECTURE:
+            raise ValueError("installer archive architecture must be arm64")
+        _archive_platform_contract(path)
         release_trust = _archive_trust_binds_operation(path, operation)
         _archive_provenance_binds_operation(path, operation)
         catalog_trust_configurations.add(

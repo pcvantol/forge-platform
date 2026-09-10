@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
+import plistlib
 import stat
 import subprocess
 import sys
@@ -16,8 +17,10 @@ import zipfile
 
 ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = ROOT / "scripts" / "package_macos_installer_archive.py"
+sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "scripts"))
 import package_macos_installer_archive as archive_producer  # noqa: E402
+from forge_platform.macos_platform_contract import thin_arm64_macho_test_bytes  # noqa: E402
 
 
 class PackageMacOSInstallerArchiveTests(unittest.TestCase):
@@ -194,6 +197,25 @@ class PackageMacOSInstallerArchiveTests(unittest.TestCase):
             self.assertFalse(output.exists())
             self.assertEqual(self._snapshot(app_bundle), before)
 
+    def test_rejects_a_non_arm64_or_universal_executable(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            workspace = Path(temporary)
+            app_bundle = self._app_bundle(workspace)
+            binary = app_bundle / "Contents" / "MacOS" / "ForgePlatformInstaller"
+            for name, header in (
+                ("x86_64", bytes.fromhex("cffaedfe070000010300000002000000") + bytes(16)),
+                ("universal", bytes.fromhex("cafebabe00000002") + bytes(24)),
+            ):
+                binary.write_bytes(header)
+                binary.chmod(0o755)
+                output = workspace / f"{name}.zip"
+
+                result = self._run(app_bundle, output)
+
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("thin arm64 Mach-O executable", result.stderr)
+                self.assertFalse(output.exists())
+
     def test_refuses_to_remove_a_replacement_output_after_a_write_failure(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             workspace = Path(temporary)
@@ -228,10 +250,13 @@ class PackageMacOSInstallerArchiveTests(unittest.TestCase):
         resources.mkdir()
         for directory in (app_bundle, app_bundle / "Contents", macos, resources):
             directory.chmod(0o755)
-        (app_bundle / "Contents" / "Info.plist").write_bytes(b"<plist><dict/></plist>\n")
+        (app_bundle / "Contents" / "Info.plist").write_bytes(plistlib.dumps({
+            "CFBundleExecutable": "ForgePlatformInstaller",
+            "LSMinimumSystemVersion": "26.0",
+        }))
         (app_bundle / "Contents" / "Info.plist").chmod(0o644)
         binary = macos / "ForgePlatformInstaller"
-        binary.write_bytes(b"native installer candidate bytes\n")
+        binary.write_bytes(thin_arm64_macho_test_bytes(b"native installer candidate bytes\n"))
         binary.chmod(0o755)
         readme = resources / "Read Me.txt"
         readme.write_bytes(b"strict archive input\n")

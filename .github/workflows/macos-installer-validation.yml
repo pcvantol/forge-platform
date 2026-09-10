@@ -17,11 +17,15 @@ permissions:
 jobs:
   swift-package-tests:
     name: Swift installer-domain tests
-    # Swift tools 6.0 requires Xcode 16+, which is the default toolchain on
-    # the macos-15 hosted image.  macos-14 currently provides Swift 5.10.
-    runs-on: macos-15
+    # The product contract and package deployment target are macOS 26 on
+    # native Apple Silicon. The hosted label resolves to the arm64 image.
+    runs-on: macos-26
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v5
+      - name: Verify native Apple Silicon macOS 26 runner
+        run: |
+          test "$(uname -m)" = "arm64"
+          test "$(sw_vers -productVersion | cut -d. -f1)" -ge 26
       - name: Run native installer tests
         working-directory: macos/ForgePlatformInstaller
         run: swift test

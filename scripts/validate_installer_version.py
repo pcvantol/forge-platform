@@ -29,6 +29,11 @@ from typing import Any
 
 
 ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+from forge_platform.macos_platform_contract import thin_arm64_macho_test_bytes  # noqa: E402
+
 MANIFEST_RELATIVE_PATH = Path("installer-version.json")
 PACKAGER_RELATIVE_PATH = Path("scripts/package_macos_installer_app.py")
 INFO_PLIST_RELATIVE_PATH = Path("Contents") / "Info.plist"
@@ -45,6 +50,7 @@ MAXIMUM_NATIVE_SIGNED_INTEGER = (1 << 63) - 1
 PROJECTION_BUNDLE_IDENTIFIER = "com.forge-platform.installer.version-projection"
 PROJECTION_EXECUTABLE_NAME = "ForgePlatformInstaller"
 PROJECTION_SCHEMA = "forge-platform-installer-info-plist-version-projection/v1"
+PROJECTION_EXECUTABLE_BYTES = thin_arm64_macho_test_bytes()
 
 
 def _pairs(pairs: list[tuple[object, object]]) -> dict[str, object]:
@@ -142,7 +148,10 @@ def packaged_info_plist_projection(
         workspace = Path(temporary)
         executable = workspace / PROJECTION_EXECUTABLE_NAME
         output = workspace / f"{PROJECTION_EXECUTABLE_NAME}.app"
-        executable.write_bytes(b"forge-platform-installer-version-projection\n")
+        # The real packager admits only the platform's thin arm64 Mach-O
+        # executable shape.  This is a non-runnable header fixture: validation
+        # still performs no executable or installer operation.
+        executable.write_bytes(PROJECTION_EXECUTABLE_BYTES)
         executable.chmod(0o700)
         environment = dict(os.environ)
         # The probe must be observational with respect to the candidate

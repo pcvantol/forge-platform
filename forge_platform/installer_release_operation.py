@@ -9,8 +9,8 @@ small, non-secret, fail-closed record around an already-qualified installer
 release so a lost publication response can be reconciled safely.
 
 The installer artifact is identified by its stable version/channel, protected
-source revision, declared capability set, exact per-architecture archive
-digests, and exact signed descriptor digest.  A retry must retain every one of
+source revision, declared capability set, exact arm64 archive digest, and exact
+signed descriptor digest.  A retry must retain every one of
 those facts.  ``PUBLISHED`` and ``RELEASE_COMPLETE`` remain deliberately
 different states: a public GitHub Release is not proof that operation-scoped
 cleanup completed.
@@ -26,6 +26,8 @@ from pathlib import Path
 import re
 import stat
 from typing import Mapping
+
+from .macos_platform_contract import INSTALLER_ARCHITECTURE, INSTALLER_ARCHITECTURES
 
 
 _OPERATION_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{7,127}$")
@@ -46,7 +48,7 @@ _DESCRIPTOR_ASSET_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,122}\.json$")
 _ARCHIVE_ASSET_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,123}\.zip$")
 _SIGNING_KEY_ID = re.compile(r"^[a-z0-9][a-z0-9._-]{0,127}$")
 _POLICY_REVISION = re.compile(r"^[a-z0-9][a-z0-9._/-]{0,127}$")
-_ARCHITECTURES = frozenset({"arm64", "x86_64"})
+_ARCHITECTURES = INSTALLER_ARCHITECTURES
 _CHANNELS = frozenset({"stable", "candidate"})
 _SEQUENCE_RESERVATION_FILENAME = re.compile(r"^([1-9][0-9]*)\.json$")
 _MAXIMUM_NATIVE_SIGNED_INTEGER = (1 << 63) - 1
@@ -163,8 +165,8 @@ def _capabilities(value: object) -> tuple[str, ...]:
 
 
 def _archives(value: object) -> dict[str, str]:
-    if not isinstance(value, Mapping) or not value:
-        raise InstallerReleaseOperationError("installer release architecture archives are required")
+    if not isinstance(value, Mapping) or set(value) != {INSTALLER_ARCHITECTURE}:
+        raise InstallerReleaseOperationError("installer release requires exactly one arm64 archive")
     result: dict[str, str] = {}
     for architecture, digest in value.items():
         if not isinstance(architecture, str) or architecture not in _ARCHITECTURES:

@@ -4,6 +4,13 @@ This Swift Package contains the native SwiftUI wizard shell for the Forge
 Platform Universal Installer. It is intentionally an orchestration UI, not a
 second product installer engine.
 
+The package targets macOS 26 and admits only a native arm64 process on Apple
+Silicon hardware. Startup rejects Intel, Rosetta translation, and older macOS
+before it adopts installer state or reaches update transport. Release metadata
+must name exactly one arm64/macOS-26 asset, and current/staged bundle inspection requires
+the actual executable to be a thin arm64 Mach-O file; fat/universal installers
+and `x86_64` fallback assets are not supported.
+
 The shell provides these gated screens:
 
 - a mandatory self-update gate that accepts only a verified GitHub Release
@@ -119,7 +126,12 @@ descriptor verifier; it does not fetch a feed, authorize an update, stage
 bytes, or grant product authority. Source builds carry no provenance resource
 and remain fail-closed.
 
-The default coordinator fails closed. This package deliberately ships no real
+The default coordinator fails closed. The current generic Python planning seam
+does not yet establish the next increment's exact platform-approved Python
+runtime identity. That future signed identity must bind version, macOS/arm64
+artifact digest, source/build provenance, ABI/tag, minimum macOS and policy
+revision, and all product release evidence must refer to that same identity;
+each product remains in its own venv. This package deliberately ships no real
 release URL, signing key, credential, shell invocation, privileged helper or
 product adapter. A production composition must inject implementations for the
 signed-feed verifier, current-bundle inspector, operation-owned downloader,

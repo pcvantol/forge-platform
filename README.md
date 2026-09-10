@@ -2,6 +2,11 @@
 
 Forge Platform is the canonical, first-class repository for cross-product distribution, deployment, compatible-composition and product-provisioner coordination for installation, update, repair and uninstall, component compatibility, and installation-topology orchestration across the Forge product family. It is a peer of [Forge](https://github.com/pcvantol/forge), [Workspace](https://github.com/pcvantol/workspace), [Engineering Platform](https://github.com/pcvantol/engineering-platform), and [Technical Debt Engine](https://github.com/pcvantol/technical-debt-engine); it is not a subdirectory of Forge or an Engineering Platform installer folder.
 
+The native Universal Installer platform contract is Apple Silicon only: one
+thin arm64 executable on macOS 26 or newer, with no Intel, Rosetta, `x86_64`,
+or fat/universal fallback. This is source-level qualification, not a published,
+signed, notarized, or operational installer claim.
+
 ## Status
 
 Repository foundation with bounded source-level component-operation and

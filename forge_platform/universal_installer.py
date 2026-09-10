@@ -37,13 +37,22 @@ from .component_operations import (
     QualifiedArtifact,
 )
 from .composition_identity import require_composition_identity
+from .macos_platform_contract import (
+    INSTALLER_ARCHITECTURE,
+    INSTALLER_ARCHITECTURES,
+    MINIMUM_MACOS_MAJOR,
+    MINIMUM_MACOS_SEMANTIC_VERSION,
+)
 
 
 INSTALLER_RELEASE_SCHEMA = "forge-platform.installer-release/v1"
 COMPOSITION_CATALOG_SCHEMA = "forge-platform.composition-catalog/v1"
 COMPOSITION_SCHEMA = "forge-platform.composition/v1"
 INSTALLER_CHANNELS = frozenset({"stable", "candidate"})
-SUPPORTED_MACOS_ARCHITECTURES = frozenset({"arm64", "x86_64"})
+SUPPORTED_MACOS_ARCHITECTURES = INSTALLER_ARCHITECTURES
+# Host observations retain Intel as an explicit negative input so preflight can
+# produce bounded denial evidence rather than failing before the gate runs.
+OBSERVABLE_MACOS_ARCHITECTURES = frozenset({"arm64", "x86_64"})
 MANAGED_TOOL_IDENTITIES = frozenset({"git", "python"})
 PROVIDER_IDENTITIES = frozenset({"codex", "github-cli"})
 PROVIDER_STATES = frozenset({"ABSENT", "INSTALLED", "AUTHENTICATION_REQUIRED", "VERIFIED", "FAILED"})
@@ -519,6 +528,7 @@ class InstallerAsset:
 
     operating_system: str
     architecture: str
+    minimum_macos_version: str
     asset_name: str
     archive_digest: str
     bundle_identifier: str
@@ -531,6 +541,8 @@ class InstallerAsset:
             raise ValueError("installer asset operating_system must be macos")
         if self.architecture not in SUPPORTED_MACOS_ARCHITECTURES:
             raise ValueError("installer asset architecture is unsupported")
+        if self.minimum_macos_version != MINIMUM_MACOS_SEMANTIC_VERSION:
+            raise ValueError("installer asset minimum_macos_version must be 26.0.0")
         if not isinstance(self.asset_name, str) or _GITHUB_ARCHIVE_ASSET_NAME.fullmatch(self.asset_name) is None:
             raise ValueError("installer asset name is invalid")
         _digest(self.archive_digest, "installer asset archive digest")
@@ -550,7 +562,8 @@ class InstallerAsset:
         payload = _mapping(
             value,
             frozenset({
-                "operating_system", "architecture", "asset_name", "digest", "bundle_identifier", "team_identifier",
+                "operating_system", "architecture", "minimum_macos_version", "asset_name", "digest",
+                "bundle_identifier", "team_identifier",
                 "code_directory_sha256", "notarization_receipt_reference",
             }),
             "installer asset",
@@ -558,6 +571,9 @@ class InstallerAsset:
         return cls(
             operating_system=_required(payload["operating_system"], "installer asset operating_system"),
             architecture=_required(payload["architecture"], "installer asset architecture"),
+            minimum_macos_version=_required(
+                payload["minimum_macos_version"], "installer asset minimum_macos_version"
+            ),
             asset_name=_required(payload["asset_name"], "installer asset name"),
             archive_digest=_digest(payload["digest"], "installer asset digest"),
             bundle_identifier=_required(payload["bundle_identifier"], "installer asset bundle_identifier"),
@@ -747,8 +763,14 @@ class InstallerRelease:
         for capability in self.capabilities:
             if not isinstance(capability, str) or not _CAPABILITY.fullmatch(capability):
                 raise ValueError("installer release capability identity is invalid")
-        if not self.assets:
-            raise ValueError("installer release must include at least one asset")
+        if (
+            not isinstance(self.assets, tuple)
+            or len(self.assets) != 1
+            or not isinstance(self.assets[0], InstallerAsset)
+            or self.assets[0].operating_system != "macos"
+            or self.assets[0].architecture != INSTALLER_ARCHITECTURE
+        ):
+            raise ValueError("installer release must include exactly one arm64 macOS asset")
         seen_assets: set[tuple[str, str]] = set()
         seen_asset_names: set[str] = set()
         for asset in self.assets:
@@ -1014,8 +1036,8 @@ def select_self_update(
 
     if channel not in INSTALLER_CHANNELS:
         raise ValueError("self-update channel is unsupported")
-    if architecture not in SUPPORTED_MACOS_ARCHITECTURES:
-        raise ValueError("self-update architecture is unsupported")
+    if architecture != INSTALLER_ARCHITECTURE:
+        raise ValueError("self-update requires a native arm64 process")
     if not isinstance(release_feed, ReleaseFeedReadback):
         raise ValueError("fresh installer release feed readback is required")
     if not isinstance(sealed_release_trust, SealedInstallerReleaseTrustExpectation):
@@ -1548,8 +1570,10 @@ class HostRequirement:
     def __post_init__(self) -> None:
         if not isinstance(self.minimum_macos_version, SemanticVersion):
             raise ValueError("minimum macOS version must be semantic")
-        if not self.supported_architectures or not self.supported_architectures <= SUPPORTED_MACOS_ARCHITECTURES:
-            raise ValueError("host supported architectures are invalid")
+        if self.minimum_macos_version.major < MINIMUM_MACOS_MAJOR:
+            raise ValueError("host minimum macOS version must be 26 or newer")
+        if self.supported_architectures != INSTALLER_ARCHITECTURES:
+            raise ValueError("host supported architectures must be exactly arm64")
         for label in ("minimum_available_disk_bytes", "backup_reserve_bytes", "minimum_memory_bytes"):
             value = getattr(self, label)
             if isinstance(value, bool) or not isinstance(value, int) or value < 0:
@@ -1571,14 +1595,18 @@ class HostFacts:
     administrator_authorized: bool
     network_available: bool
     trusted_clock: bool
+    hardware_architecture: str
+    is_rosetta_translated: bool
 
     def __post_init__(self) -> None:
         if self.operating_system != "macos":
             raise ValueError("universal installer currently supports only macos")
         if not isinstance(self.macos_version, SemanticVersion):
             raise ValueError("macOS version must be semantic")
-        if self.architecture not in SUPPORTED_MACOS_ARCHITECTURES:
-            raise ValueError("host architecture is unsupported")
+        if self.architecture not in OBSERVABLE_MACOS_ARCHITECTURES:
+            raise ValueError("host process architecture is unsupported")
+        if self.hardware_architecture not in OBSERVABLE_MACOS_ARCHITECTURES:
+            raise ValueError("host hardware architecture is unsupported")
         for label in ("available_disk_bytes", "memory_bytes"):
             value = getattr(self, label)
             if isinstance(value, bool) or not isinstance(value, int) or value < 0:
@@ -1586,6 +1614,8 @@ class HostFacts:
         for label in ("administrator_authorized", "network_available", "trusted_clock"):
             if not isinstance(getattr(self, label), bool):
                 raise ValueError(f"{label} must be boolean")
+        if not isinstance(self.is_rosetta_translated, bool):
+            raise ValueError("is_rosetta_translated must be boolean")
 
 
 @dataclass(frozen=True)
@@ -1615,6 +1645,14 @@ def preflight_host(requirement: HostRequirement, facts: HostFacts) -> HostPrefli
     if not isinstance(requirement, HostRequirement) or not isinstance(facts, HostFacts):
         raise ValueError("host requirement and facts are required")
     failures: list[str] = []
+    if facts.macos_version.major < MINIMUM_MACOS_MAJOR:
+        failures.append("macOS 26 or newer is required by the installer platform")
+    if facts.architecture != INSTALLER_ARCHITECTURE:
+        failures.append("the installer process must run natively as arm64")
+    if facts.hardware_architecture != INSTALLER_ARCHITECTURE:
+        failures.append("Apple Silicon hardware is required")
+    if facts.is_rosetta_translated:
+        failures.append("running the installer under Rosetta is not supported")
     if facts.macos_version < requirement.minimum_macos_version:
         failures.append(f"macOS {requirement.minimum_macos_version} or newer is required")
     if facts.architecture not in requirement.supported_architectures:

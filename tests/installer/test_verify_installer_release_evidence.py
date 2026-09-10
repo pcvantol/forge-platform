@@ -8,6 +8,8 @@ from dataclasses import asdict
 from hashlib import sha256
 import json
 from pathlib import Path
+import plistlib
+import stat
 import subprocess
 import sys
 import tempfile
@@ -34,6 +36,7 @@ from forge_platform.installer_release_provenance import (  # noqa: E402
 from forge_platform.installer_release_trust import (  # noqa: E402
     canonical_release_trust_configuration_sha256,
 )
+from forge_platform.macos_platform_contract import thin_arm64_macho_test_bytes  # noqa: E402
 
 
 SCRIPT = ROOT / "scripts" / "verify_installer_release_evidence.py"
@@ -156,6 +159,37 @@ class VerifyInstallerReleaseEvidenceTests(unittest.TestCase):
 
             self.assertNotEqual(result.returncode, 0)
             self.assertIn("archive digest", result.stderr)
+
+    def test_rejects_a_digest_bound_archive_with_the_wrong_macho_architecture(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            workspace = Path(temporary)
+            operation_path, descriptor_path, archive = self._write_release_inputs(workspace)
+            x86_64_header = bytes.fromhex("cffaedfe070000010300000002000000") + bytes(16)
+            self._replace_archive_provenance_and_rebind_archive_digest(
+                operation_path,
+                descriptor_path,
+                archive,
+                self._provenance_payload(),
+                executable_bytes=x86_64_header,
+            )
+
+            result = self._run(operation_path, descriptor_path, archive)
+
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("thin arm64 Mach-O executable", result.stderr)
+
+    def test_rejects_descriptor_without_the_exact_macos_26_asset_identity(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            workspace = Path(temporary)
+            operation_path, descriptor_path, archive = self._write_release_inputs(workspace)
+            descriptor = json.loads(descriptor_path.read_text(encoding="utf-8"))
+            descriptor["installer"]["assets"][0]["minimum_macos_version"] = "27.0.0"
+            descriptor_path.write_text(json.dumps(descriptor), encoding="utf-8")
+
+            result = self._run(operation_path, descriptor_path, archive)
+
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("minimum macOS version", result.stderr)
 
     def test_rejects_descriptor_source_or_version_mismatch(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -532,6 +566,7 @@ class VerifyInstallerReleaseEvidenceTests(unittest.TestCase):
         trust: dict[str, object] | None = None,
         catalog_trust: dict[str, object] | None = None,
         symlinked_app_root: bool = False,
+        executable_bytes: bytes | None = None,
     ) -> None:
         archive.parent.mkdir(parents=True, exist_ok=True)
         with zipfile.ZipFile(archive, "w", compression=zipfile.ZIP_DEFLATED) as bundle:
@@ -540,6 +575,22 @@ class VerifyInstallerReleaseEvidenceTests(unittest.TestCase):
                 app_root.create_system = 3
                 app_root.external_attr = (0o120777 << 16)
                 bundle.writestr(app_root, b"outside-app-root")
+            info = zipfile.ZipInfo("ForgePlatformInstaller.app/Contents/Info.plist")
+            info.create_system = 3
+            info.external_attr = (stat.S_IFREG | 0o644) << 16
+            bundle.writestr(info, plistlib.dumps({
+                "CFBundleExecutable": "ForgePlatformInstaller",
+                "LSMinimumSystemVersion": "26.0",
+            }))
+            executable = zipfile.ZipInfo(
+                "ForgePlatformInstaller.app/Contents/MacOS/ForgePlatformInstaller"
+            )
+            executable.create_system = 3
+            executable.external_attr = (stat.S_IFREG | 0o755) << 16
+            bundle.writestr(
+                executable,
+                executable_bytes or thin_arm64_macho_test_bytes(b"signed fixture"),
+            )
             bundle.writestr(
                 "ForgePlatformInstaller.app/Contents/Resources/ForgePlatformInstallerReleaseTrust.json",
                 json.dumps(
@@ -577,6 +628,7 @@ class VerifyInstallerReleaseEvidenceTests(unittest.TestCase):
         trust: dict[str, object] | None = None,
         catalog_trust: dict[str, object] | None = None,
         symlinked_app_root: bool = False,
+        executable_bytes: bytes | None = None,
     ) -> None:
         """Keep archive bytes/evidence self-consistent except for V1 binding."""
 
@@ -586,6 +638,7 @@ class VerifyInstallerReleaseEvidenceTests(unittest.TestCase):
             trust=trust,
             catalog_trust=catalog_trust,
             symlinked_app_root=symlinked_app_root,
+            executable_bytes=executable_bytes,
         )
         archive_digest = "sha256:" + sha256(archive.read_bytes()).hexdigest()
         descriptor = json.loads(descriptor_path.read_text(encoding="utf-8"))
@@ -640,6 +693,7 @@ class VerifyInstallerReleaseEvidenceTests(unittest.TestCase):
                     {
                         "operating_system": "macos",
                         "architecture": "arm64",
+                        "minimum_macos_version": "26.0.0",
                         "asset_name": "ForgePlatformInstaller-macos-arm64.zip",
                         "digest": archive_digest,
                         "bundle_identifier": IDENTITY.bundle_identifier,
