@@ -1,5 +1,15 @@
 # Forge Platform bootstrap
 
+## Current pickup checkpoint — consolidation and parking, 10 September 2026
+
+Read the [local consolidation record](docs/roadmap/CONSOLIDATION_PARKING_2026_09_10.md)
+and [documentary DAG](docs/roadmap/CONSOLIDATION_PARKING_2026_09_10_DAG.json).
+The installer remains PARKED under the already-merged
+[EP Server clean-install v1 roadmap](docs/roadmap/EP_SERVER_CLEAN_INSTALL_V1.md).
+No next installer increment, host cleanup or qualification run is selected.
+The owner reports 52 clean local worktrees, but 16 featurebranches lack direct
+PR linkage and require actual comparison before deletion. Preserve them.
+
 Start every Forge Platform development session from this repository-local
 entrypoint. Read, in order:
 
