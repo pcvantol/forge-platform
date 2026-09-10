@@ -22,6 +22,7 @@ sys.path.insert(0, str(ROOT / "scripts"))
 from forge_platform.composition_catalog_trust import (  # noqa: E402
     canonical_composition_catalog_trust_configuration_sha256,
 )
+from forge_platform.macos_platform_contract import thin_arm64_macho_test_bytes  # noqa: E402
 from package_macos_installer_app import (  # noqa: E402
     SealedCompositionCatalogTrustResource,
     SealedReleaseProvenanceResource,
@@ -61,6 +62,7 @@ class PackageMacOSInstallerAppTests(unittest.TestCase):
             self.assertEqual(info["CFBundleShortVersionString"], "0.1.0")
             self.assertEqual(info["CFBundleVersion"], "0.1.0")
             self.assertEqual(info["CFBundlePackageType"], "APPL")
+            self.assertEqual(info["LSMinimumSystemVersion"], "26.0")
             self.assertFalse(
                 (app_bundle / "Contents" / "Resources" / "ForgePlatformInstallerReleaseTrust.json").exists()
             )
@@ -642,6 +644,25 @@ class PackageMacOSInstallerAppTests(unittest.TestCase):
                 (second / "Contents" / "MacOS" / "ForgePlatformInstaller").read_bytes(),
             )
 
+    def test_rejects_x86_64_and_universal_executables_before_writing_output(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            workspace = Path(temporary)
+            fixtures = (
+                ("x86_64", bytes.fromhex("cffaedfe070000010300000002000000") + bytes(16)),
+                ("universal", bytes.fromhex("cafebabe00000002") + bytes(24)),
+            )
+            for name, header in fixtures:
+                executable = workspace / name
+                executable.write_bytes(header)
+                executable.chmod(0o755)
+                output = workspace / f"{name}.app"
+
+                result = self._run(executable, output)
+
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("thin arm64 Mach-O executable", result.stderr)
+                self.assertFalse(output.exists())
+
     def test_rejects_a_non_bundle_identifier_before_writing(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             workspace = Path(temporary)
@@ -672,7 +693,7 @@ class PackageMacOSInstallerAppTests(unittest.TestCase):
     @staticmethod
     def _executable(workspace: Path) -> Path:
         executable = workspace / "ForgePlatformInstaller"
-        executable.write_bytes(b"native installer candidate bytes\n")
+        executable.write_bytes(thin_arm64_macho_test_bytes(b"native installer candidate bytes\n"))
         executable.chmod(0o755)
         return executable
 

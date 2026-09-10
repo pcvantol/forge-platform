@@ -60,6 +60,7 @@ public struct MacOSInstallerBundleCodeSigningInspector: MacOSInstallerBundleCode
     ) async -> Result<MacOSInstallerBundleCodeSigningEvidence, InstallerSelfUpdateFailure> {
         do {
             let staticCode = try createAndValidateStaticCode(at: bundleURL)
+            try MacOSInstallerExecutableArchitecture.requireThinARM64Executable(in: bundleURL)
             let signingInformation = try copySigningInformation(from: staticCode)
             let codeDirectorySHA256 = try fullCodeDirectorySHA256(for: bundleURL)
             _ = try createAndValidateStaticCode(at: bundleURL)

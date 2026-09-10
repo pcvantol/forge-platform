@@ -14,6 +14,59 @@ public enum MacOSTrustedInstallerRuntimeBuilderConfigurationError: Error, Equata
     /// The running native process did not report an architecture supported by
     /// the already sealed installer-release descriptor contract.
     case unsupportedHostArchitecture
+    /// The hardware cannot execute Apple Silicon code natively.
+    case unsupportedAppleSiliconHardware
+    /// The process is translated and therefore cannot establish native arm64
+    /// startup identity even when the underlying Mac is Apple Silicon.
+    case rosettaTranslationDenied
+    /// The host is older than the minimum macOS 26 platform contract.
+    case unsupportedMacOSVersion
+}
+
+/// Read-only facts used before any self-update store, transport, staging,
+/// handoff, provider, or product component can be reached.
+struct MacOSInstallerPlatformFacts: Equatable, Sendable {
+    let processArchitecture: String
+    let appleSiliconHardware: Bool
+    let rosettaTranslated: Bool
+    let macOSMajorVersion: Int
+
+    static var current: MacOSInstallerPlatformFacts? {
+        guard let processArchitecture = MacOSInstallerHostArchitecture.current,
+              let appleSilicon = MacOSInstallerSystemFacts.integer(named: "hw.optional.arm64") else {
+            return nil
+        }
+        let translated = MacOSInstallerSystemFacts.integer(named: "sysctl.proc_translated") ?? 0
+        guard translated == 0 || translated == 1 else {
+            return nil
+        }
+        return MacOSInstallerPlatformFacts(
+            processArchitecture: processArchitecture,
+            appleSiliconHardware: appleSilicon == 1,
+            rosettaTranslated: translated == 1,
+            macOSMajorVersion: ProcessInfo.processInfo.operatingSystemVersion.majorVersion
+        )
+    }
+}
+
+enum MacOSInstallerPlatformContract {
+    static let architecture = "arm64"
+    static let minimumMacOSMajorVersion = 26
+
+    static func requireSupported(_ facts: MacOSInstallerPlatformFacts) throws {
+        guard facts.macOSMajorVersion >= minimumMacOSMajorVersion else {
+            throw MacOSTrustedInstallerRuntimeBuilderConfigurationError.unsupportedMacOSVersion
+        }
+        guard facts.appleSiliconHardware else {
+            throw MacOSTrustedInstallerRuntimeBuilderConfigurationError.unsupportedAppleSiliconHardware
+        }
+        guard !facts.rosettaTranslated else {
+            throw MacOSTrustedInstallerRuntimeBuilderConfigurationError.rosettaTranslationDenied
+        }
+        guard facts.processArchitecture == architecture else {
+            throw MacOSTrustedInstallerRuntimeBuilderConfigurationError.unsupportedHostArchitecture
+        }
+    }
 }
 
 /// Concrete assembly of the native, installer-only self-update runtime.
@@ -46,12 +99,19 @@ public struct MacOSTrustedInstallerRuntimeBuilder: TrustedInstallerRuntimeBuildi
     /// symlink, so `/tmp`-style compatibility aliases and their canonical
     /// locations cannot create distinct installer state islands.
     public init(stateRoot: URL) throws {
-        self.stateRoot = try MacOSInstallerOwnedStateRoot.validatedCanonicalURL(from: stateRoot)
-        guard let architecture = MacOSInstallerHostArchitecture.current,
-              GitHubInstallerReleaseDescriptor.isSupportedArchitecture(architecture) else {
+        guard let platformFacts = MacOSInstallerPlatformFacts.current else {
             throw MacOSTrustedInstallerRuntimeBuilderConfigurationError.unsupportedHostArchitecture
         }
-        self.architecture = architecture
+        try self.init(stateRoot: stateRoot, platformFacts: platformFacts)
+    }
+
+    /// Injectable read-only platform boundary for deterministic positive and
+    /// negative qualification.  Platform admission intentionally happens
+    /// before even the installer state root is inspected.
+    init(stateRoot: URL, platformFacts: MacOSInstallerPlatformFacts) throws {
+        try MacOSInstallerPlatformContract.requireSupported(platformFacts)
+        self.stateRoot = try MacOSInstallerOwnedStateRoot.validatedCanonicalURL(from: stateRoot)
+        self.architecture = MacOSInstallerPlatformContract.architecture
     }
 
     /// Assembles only the existing sealed-trust adapters.  The startup
@@ -137,6 +197,20 @@ private enum MacOSInstallerHostArchitecture {
                 String(validatingCString: $0)
             }
         }
+    }
+}
+
+private enum MacOSInstallerSystemFacts {
+    static func integer(named name: String) -> Int32? {
+        var value: Int32 = 0
+        var size = MemoryLayout<Int32>.size
+        let status = name.withCString { pointer in
+            Darwin.sysctlbyname(pointer, &value, &size, nil, 0)
+        }
+        guard status == 0, size == MemoryLayout<Int32>.size else {
+            return nil
+        }
+        return value
     }
 }
 

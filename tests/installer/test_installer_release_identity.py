@@ -152,7 +152,9 @@ class InstallerReleaseIdentityTests(unittest.TestCase):
         ready = identity_policy.load_identity(require_ready=True)
         assert ready is not None
         self.assertEqual(len(ready.release_tag("1.2.3")), 74)
-        self.assertEqual(len(ready.asset_name("x86_64")), 128)
+        self.assertEqual(len(ready.asset_name("arm64")), 127)
+        with self.assertRaisesRegex(ValueError, "architecture"):
+            ready.asset_name("x86_64")
 
         identity["release_tag_prefix"] = "r" * 70
         self.write(

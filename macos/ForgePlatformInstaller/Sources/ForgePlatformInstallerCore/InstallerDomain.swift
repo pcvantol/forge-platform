@@ -610,7 +610,7 @@ public struct HostPreflight: Equatable, Sendable {
     }
 
     public static let defaultChecks: [PreflightCheck] = [
-        PreflightCheck(id: "macos", title: "macOS-versie en architectuur", detail: "Ondersteunde macOS- en CPU-combinatie."),
+        PreflightCheck(id: "macos", title: "macOS 26+ op Apple Silicon", detail: "Native arm64 zonder Rosetta; Intel en fat/universal installer-artifacts worden geweigerd."),
         PreflightCheck(id: "managed-git", title: "Beheerde Git-toolchain", detail: "Beschikbaarheid en versie via de installer-owned toolchain; geen impliciete mutatie van een globale Git-installatie."),
         PreflightCheck(id: "managed-python", title: "Beheerde Python-toolchain", detail: "Beschikbaarheid en versie voor geïsoleerde componentvenvs; geen selectie via PATH."),
         PreflightCheck(id: "storage", title: "Schijfruimte", detail: "Inclusief reserve voor product-owned backup en rollback."),

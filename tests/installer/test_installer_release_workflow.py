@@ -17,8 +17,10 @@ class InstallerReleaseWorkflowTests(unittest.TestCase):
         self.workflow = WORKFLOW_PATH.read_text(encoding="utf-8")
         self.native_validation_workflow = NATIVE_VALIDATION_WORKFLOW_PATH.read_text(encoding="utf-8")
 
-    def test_native_validation_uses_a_swift_6_capable_hosted_image(self) -> None:
-        self.assertIn("runs-on: macos-15", self.native_validation_workflow)
+    def test_native_validation_uses_an_arm64_macos_26_hosted_image(self) -> None:
+        self.assertIn("runs-on: macos-26", self.native_validation_workflow)
+        self.assertIn('test "$(uname -m)" = "arm64"', self.native_validation_workflow)
+        self.assertIn('sw_vers -productVersion', self.native_validation_workflow)
         self.assertIn("working-directory: macos/ForgePlatformInstaller", self.native_validation_workflow)
         self.assertIn("run: swift test", self.native_validation_workflow)
 
@@ -48,7 +50,10 @@ class InstallerReleaseWorkflowTests(unittest.TestCase):
         self.assertIn("INSTALLER_RELEASE_POLICY_REVISION", self.workflow)
         self.assertIn("git fetch --no-tags origin +refs/heads/main:refs/remotes/origin/main", self.workflow)
         self.assertIn('test "$GITHUB_REPOSITORY" = "$IDENTITY_REPOSITORY"', self.workflow)
-        self.assertIn("runs-on: macos-15", self.workflow)
+        self.assertIn("runs-on: macos-26", self.workflow)
+        self.assertIn('test "$(uname -m)" = "arm64"', self.workflow)
+        self.assertIn('ARCHITECTURE="arm64"', self.workflow)
+        self.assertNotIn("arm64|x86_64", self.workflow)
         self.assertIn("swift test", self.workflow)
         self.assertIn("swift build -c release --show-bin-path", self.workflow)
         self.assertIn("scripts/package_macos_installer_app.py", self.workflow)

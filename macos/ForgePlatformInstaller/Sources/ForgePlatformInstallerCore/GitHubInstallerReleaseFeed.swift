@@ -534,6 +534,7 @@ struct GitHubInstallerReleaseDescriptor: Sendable {
 
     struct Asset: Sendable {
         let architecture: String
+        let minimumMacOSVersion: String
         let assetName: String
         let archiveSHA256: String
         let bundleIdentifier: String
@@ -629,7 +630,8 @@ struct GitHubInstallerReleaseDescriptor: Sendable {
         }
 
         let parsedAssets = try assets.map(parseAsset)
-        guard !parsedAssets.isEmpty,
+        guard parsedAssets.count == 1,
+              parsedAssets[0].architecture == "arm64",
               Set(parsedAssets.map { $0.architecture }).count == parsedAssets.count,
               Set(parsedAssets.map { $0.assetName }).count == parsedAssets.count else {
             throw GitHubInstallerReleaseDescriptorError.invalid
@@ -712,18 +714,20 @@ struct GitHubInstallerReleaseDescriptor: Sendable {
     }
 
     static func isSupportedArchitecture(_ value: String) -> Bool {
-        value == "arm64" || value == "x86_64"
+        value == "arm64"
     }
 
     private static func parseAsset(_ value: StrictJSONResourceValue) throws -> Asset {
         guard let fields = value.objectValue,
               Set(fields.keys) == Set([
-                  "operating_system", "architecture", "asset_name", "digest", "bundle_identifier",
+                  "operating_system", "architecture", "minimum_macos_version", "asset_name", "digest", "bundle_identifier",
                   "team_identifier", "code_directory_sha256", "notarization_receipt_reference",
               ]),
               fields["operating_system"]?.stringValue == "macos",
               let architecture = fields["architecture"]?.stringValue,
               isSupportedArchitecture(architecture),
+              let minimumMacOSVersion = fields["minimum_macos_version"]?.stringValue,
+              minimumMacOSVersion == "26.0.0",
               let assetName = fields["asset_name"]?.stringValue,
               InstallerSelfUpdateValidation.isInstallerArchiveName(assetName),
               let digest = fields["digest"]?.stringValue,
@@ -740,6 +744,7 @@ struct GitHubInstallerReleaseDescriptor: Sendable {
         }
         return Asset(
             architecture: architecture,
+            minimumMacOSVersion: minimumMacOSVersion,
             assetName: assetName,
             archiveSHA256: archiveSHA256,
             bundleIdentifier: bundleIdentifier,

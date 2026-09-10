@@ -10,6 +10,14 @@ Detailed decisions are recorded in the [ADRs](adr/README.md). The [ownership mat
 
 The [Governed Engineering Knowledge Learning Loop](KNOWLEDGE_LEARNING_LOOP.md) records the independently owned Knowledge Base lifecycle and its additive cross-product integration boundary.
 
+The Universal Installer's supported host contract is deliberately narrower
+than the future component topology: it is a thin native arm64 application for
+Apple Silicon Macs running macOS 26 or newer. Intel, Rosetta translation,
+`x86_64` release assets, fat/universal installer executables, and macOS 25 or
+older are rejected before any platform mutation. Product artifacts and future
+platform expansion require their own reviewed increments; there is no fallback
+architecture in the current installer release or composition schemas.
+
 ## Installed-server deployment and topology bootstrap
 
 The accepted target deployment is defined by [ADR-0006](adr/ADR-0006-server-deployment-and-discovery.md) and the shared [instance discovery and pairing contract](INSTANCE_DISCOVERY_AND_PAIRING_CONTRACT.md). Forge Server, EP Server and Workspace Server are headless, independently installed services with separate central runtime roots, product-owned SQL/files and versioned HTTP APIs above their application services. They may share a host but not a database or direct SQL path.

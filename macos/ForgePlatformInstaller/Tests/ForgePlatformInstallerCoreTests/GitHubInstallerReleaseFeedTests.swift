@@ -185,6 +185,44 @@ final class GitHubInstallerReleaseFeedTests: XCTestCase {
         )
     }
 
+    func testDescriptorRequiresExactlyOneArm64Asset() throws {
+        let fixture = try makeFixture()
+        for architectures in [["x86_64"], ["arm64", "x86_64"]] {
+            let bytes = try fixture.signedDescriptorBytes(
+                version: "0.2.0",
+                sequence: 2,
+                architectures: architectures
+            )
+            XCTAssertThrowsError(
+                try GitHubInstallerReleaseDescriptor.decode(
+                    bytes: bytes,
+                    trustConfiguration: fixture.configuration,
+                    expectedChannel: .stable,
+                    expectedTag: fixture.tag,
+                    observedAt: fixture.observedAt
+                )
+            )
+        }
+    }
+
+    func testDescriptorRequiresExactMacOS26AssetIdentity() throws {
+        let fixture = try makeFixture()
+        let bytes = try fixture.signedDescriptorBytes(
+            version: "0.2.0",
+            sequence: 2,
+            minimumMacOSVersion: "27.0.0"
+        )
+        XCTAssertThrowsError(
+            try GitHubInstallerReleaseDescriptor.decode(
+                bytes: bytes,
+                trustConfiguration: fixture.configuration,
+                expectedChannel: .stable,
+                expectedTag: fixture.tag,
+                observedAt: fixture.observedAt
+            )
+        )
+    }
+
     func testCanonicalPayloadEscapesUnicodeExactlyLikePythonEnsureASCII() throws {
         let raw = Data("{\"signatures\":[],\"schema\":\"forge-platform.installer-release/v1\",\"note\":\"\\u00e9\\ud83d\\ude80\"}".utf8)
         var reader = try StrictJSONResourceReader(data: raw)
@@ -500,11 +538,17 @@ private struct DescriptorFixture {
         capabilities: [String] = ["composition/v1", "provider-gate/v1"],
         targetTrustConfigurationSHA256: String? = nil,
         notarizationReceiptReference: String = "receipt:installer-arm64-v2",
+        architectures: [String] = ["arm64"],
+        minimumMacOSVersion: String = "26.0.0",
         signingKeyIndexes: [Int] = [0, 1]
     ) throws -> Data {
         let capabilitiesJSON = capabilities.map { "\"\($0)\"" }.joined(separator: ",")
+        let archiveDigest = String(repeating: "f", count: 64)
+        let assetsJSON = architectures.map { architecture in
+            "{\"architecture\":\"\(architecture)\",\"asset_name\":\"forge-platform-installer-\(architecture).zip\",\"bundle_identifier\":\"\(configuration.expectedBundleIdentifier)\",\"code_directory_sha256\":\"\(codeDirectorySHA256)\",\"digest\":\"sha256:\(archiveDigest)\",\"minimum_macos_version\":\"\(minimumMacOSVersion)\",\"notarization_receipt_reference\":\"\(notarizationReceiptReference)\",\"operating_system\":\"macos\",\"team_identifier\":\"\(configuration.expectedTeamIdentifier)\"}"
+        }.joined(separator: ",")
         let unsigned = """
-        {"channel":"stable","composition_catalog":{"url":"https://catalog.example.test/feed.json"},"expires_at":"\(expiresAt)","github_release":{"descriptor_asset_name":"\(configuration.releaseDescriptorAssetName)","repository":"\(configuration.repository)","tag":"\(tag)"},"installer":{"assets":[{"architecture":"arm64","asset_name":"forge-platform-installer-arm64.zip","bundle_identifier":"\(configuration.expectedBundleIdentifier)","code_directory_sha256":"\(codeDirectorySHA256)","digest":"sha256:\(String(repeating: "f", count: 64))","notarization_receipt_reference":"\(notarizationReceiptReference)","operating_system":"macos","team_identifier":"\(configuration.expectedTeamIdentifier)"}],"capabilities":[\(capabilitiesJSON)],"policy_revision":"release/v2","provenance_sha256":"\(descriptorProvenanceSHA256)","release_trust_configuration_sha256":"\(targetTrustConfigurationSHA256 ?? configuration.configurationSHA256)","source_revision":"\(sourceRevision)","version":"\(version)"},"published_at":"2026-09-09T18:00:00Z","schema":"forge-platform.installer-release/v1","sequence":\(sequence)}
+        {"channel":"stable","composition_catalog":{"url":"https://catalog.example.test/feed.json"},"expires_at":"\(expiresAt)","github_release":{"descriptor_asset_name":"\(configuration.releaseDescriptorAssetName)","repository":"\(configuration.repository)","tag":"\(tag)"},"installer":{"assets":[\(assetsJSON)],"capabilities":[\(capabilitiesJSON)],"policy_revision":"release/v2","provenance_sha256":"\(descriptorProvenanceSHA256)","release_trust_configuration_sha256":"\(targetTrustConfigurationSHA256 ?? configuration.configurationSHA256)","source_revision":"\(sourceRevision)","version":"\(version)"},"published_at":"2026-09-09T18:00:00Z","schema":"forge-platform.installer-release/v1","sequence":\(sequence)}
         """
         let canonicalUnsigned = unsigned.trimmingCharacters(in: .newlines)
         let signatures = try signingKeyIndexes.map { index -> String in

@@ -33,10 +33,11 @@ from forge_platform.installer_release_operation import (  # noqa: E402
     InstallerReleaseOperationStore,
     InstallerReleasePreparation,
 )
+from forge_platform.macos_platform_contract import INSTALLER_ARCHITECTURES  # noqa: E402
 from validate_installer_release_identity import load_identity  # noqa: E402
 
 
-_ARCHITECTURES = frozenset({"arm64", "x86_64"})
+_ARCHITECTURES = INSTALLER_ARCHITECTURES
 _CANDIDATE_SCHEMA = "forge-platform.installer-candidate/v1"
 _CANDIDATE_PRODUCT = "forge-platform-installer"
 _CANDIDATE_PACKAGING = "UNSIGNED_APP_CANDIDATE"
@@ -180,8 +181,8 @@ def _archive_arguments(values: list[str]) -> dict[str, tuple[Path, str]]:
         if architecture in result:
             raise ValueError("archive architecture was supplied more than once")
         result[architecture] = _archive_digest(raw_path, architecture=architecture)
-    if not result:
-        raise ValueError("at least one candidate archive is required")
+    if set(result) != set(_ARCHITECTURES):
+        raise ValueError("exactly one arm64 candidate archive is required")
     return dict(sorted(result.items()))
 
 

@@ -25,6 +25,13 @@ from typing import BinaryIO, Iterable
 import zipfile
 
 
+ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+from forge_platform.macos_platform_contract import require_thin_arm64_macho_header  # noqa: E402
+
+
 # These limits intentionally fit inside the native layout inspector defaults.
 # Stored entries make the archive-size bound meaningful before any future
 # extractor considers uncompressed bytes.
@@ -302,12 +309,9 @@ def _validate_minimum_app_layout(entries: Iterable[BundleEntry]) -> None:
     info_plist = by_path.get(f"{root}/Contents/Info.plist")
     if info_plist is None or info_plist.kind != "file":
         raise ValueError("installer app bundle has no regular Contents/Info.plist")
-    macos_directory = f"{root}/Contents/MacOS"
-    if not any(
-        entry.kind == "file" and entry.archive_path.rpartition("/")[0] == macos_directory
-        for entry in entries
-    ):
-        raise ValueError("installer app bundle has no regular executable candidate in Contents/MacOS")
+    executable = by_path.get(f"{root}/Contents/MacOS/ForgePlatformInstaller")
+    if executable is None or executable.kind != "file" or not executable.permissions & stat.S_IXUSR:
+        raise ValueError("installer app bundle has no regular executable ForgePlatformInstaller")
 
 
 def _zip_info(entry: BundleEntry) -> zipfile.ZipInfo:
@@ -356,6 +360,12 @@ def _write_regular_file(archive: zipfile.ZipFile, entry: BundleEntry) -> None:
         with os.fdopen(descriptor, "rb", closefd=False) as source, archive.open(
             _zip_info(entry), "w", force_zip64=False
         ) as destination:
+            if entry.archive_path.endswith("/Contents/MacOS/ForgePlatformInstaller"):
+                require_thin_arm64_macho_header(
+                    source.read(32),
+                    "installer archive executable",
+                )
+                source.seek(0)
             while remaining:
                 block = source.read(min(STREAM_CHUNK_BYTES, remaining))
                 if not block:

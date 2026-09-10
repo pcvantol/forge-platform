@@ -30,15 +30,12 @@ from forge_platform.installer_release_operation import (  # noqa: E402
 SOURCE_REVISION = "a" * 40
 DESCRIPTOR_DIGEST = "sha256:" + "b" * 64
 ARM64_ARCHIVE_DIGEST = "sha256:" + "c" * 64
-X86_64_ARCHIVE_DIGEST = "sha256:" + "d" * 64
 CANDIDATE_MANIFEST_DIGEST = "sha256:" + "e" * 64
 ARM64_CANDIDATE_DIGEST = "sha256:" + "f" * 64
-X86_64_CANDIDATE_DIGEST = "sha256:" + "1" * 64
 RELEASE_SEQUENCE = 7
 PROVENANCE_SHA256 = "2" * 64
 RELEASE_TRUST_CONFIGURATION_SHA256 = "3" * 64
 ARM64_CODE_DIRECTORY_SHA256 = "4" * 64
-X86_64_CODE_DIRECTORY_SHA256 = "5" * 64
 CAPABILITIES = ("composition/v1", "provider-gate/v1", "system-launchdaemon/v1")
 POLICY_REVISION = "forge-platform-installer-release-v1"
 RELEASE_IDENTITY = InstallerReleaseIdentity(
@@ -68,22 +65,19 @@ ALTERNATE_RELEASE_IDENTITY = InstallerReleaseIdentity(
 
 
 def archives(*, arm64_digest: str = ARM64_ARCHIVE_DIGEST) -> dict[str, str]:
-    return {"arm64": arm64_digest, "x86_64": X86_64_ARCHIVE_DIGEST}
+    return {"arm64": arm64_digest}
 
 
 def candidate_archives(*, arm64_digest: str = ARM64_CANDIDATE_DIGEST) -> dict[str, str]:
-    return {"arm64": arm64_digest, "x86_64": X86_64_CANDIDATE_DIGEST}
+    return {"arm64": arm64_digest}
 
 
 def code_directories() -> dict[str, str]:
-    return {"arm64": ARM64_CODE_DIRECTORY_SHA256, "x86_64": X86_64_CODE_DIRECTORY_SHA256}
+    return {"arm64": ARM64_CODE_DIRECTORY_SHA256}
 
 
 def notarization_receipts() -> dict[str, str]:
-    return {
-        "arm64": "receipt:installer-notarization-arm64-001",
-        "x86_64": "receipt:installer-notarization-x86-64-001",
-    }
+    return {"arm64": "receipt:installer-notarization-arm64-001"}
 
 
 def preparation(
@@ -710,6 +704,12 @@ class InstallerReleaseOperationTests(unittest.TestCase):
         expected = operation()
         with self.assertRaisesRegex(InstallerReleaseOperationError, "UInt64"):
             operation(release_sequence=(1 << 64))
+        with self.assertRaisesRegex(InstallerReleaseOperationError, "exactly one arm64"):
+            InstallerPreparationEvidence(
+                candidate_manifest_digest=CANDIDATE_MANIFEST_DIGEST,
+                candidate_archives={"x86_64": ARM64_CANDIDATE_DIGEST},
+                preparation_receipt_reference="receipt:installer-preparation-001",
+            )
         record = asdict(expected)
         record["qualification"]["access_token"] = "never-persisted"
         with self.assertRaisesRegex(InstallerReleaseOperationError, "unknown or missing fields"):

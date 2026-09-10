@@ -41,10 +41,14 @@ from forge_platform.installer_release_trust import (
     INSTALLER_RELEASE_TRUST_RESOURCE_NAME,
     parse_installer_release_trust_bytes,
 )
+from forge_platform.macos_platform_contract import (
+    MINIMUM_MACOS_VERSION,
+    require_thin_arm64_macho_header,
+)
 
 
 _BUNDLE_IDENTIFIER = re.compile(r"^[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)+$")
-_MINIMUM_MACOS = "14.0"
+_MINIMUM_MACOS = MINIMUM_MACOS_VERSION
 
 
 @dataclass(frozen=True)
@@ -181,7 +185,38 @@ def _source_executable(value: str) -> Path:
         raise ValueError("installer executable must be a regular non-symlink file")
     if not os.access(candidate, os.X_OK):
         raise ValueError("installer executable must be executable")
+    _require_arm64_macho_file(candidate, label="installer executable")
     return candidate
+
+
+def _require_arm64_macho_file(path: Path, *, label: str) -> None:
+    """Read one stable header without following a selected executable symlink."""
+
+    nofollow = getattr(os, "O_NOFOLLOW", None)
+    if nofollow is None:
+        raise ValueError(f"{label} cannot be opened safely on this platform")
+    descriptor = -1
+    try:
+        descriptor = os.open(path, os.O_RDONLY | nofollow | getattr(os, "O_CLOEXEC", 0))
+        before = os.fstat(descriptor)
+        if not stat.S_ISREG(before.st_mode):
+            raise ValueError(f"{label} must be a regular non-symlink file")
+        with os.fdopen(descriptor, "rb", closefd=False) as stream:
+            header = stream.read(32)
+        after = os.fstat(descriptor)
+        if (
+            before.st_dev != after.st_dev
+            or before.st_ino != after.st_ino
+            or before.st_size != after.st_size
+            or before.st_mtime_ns != after.st_mtime_ns
+        ):
+            raise ValueError(f"{label} changed while it was being read")
+        require_thin_arm64_macho_header(header, label)
+    except OSError as error:
+        raise ValueError(f"{label} cannot be opened safely") from error
+    finally:
+        if descriptor >= 0:
+            os.close(descriptor)
 
 
 def _sealed_release_trust_resource(value: str) -> SealedReleaseTrustResource:
@@ -440,6 +475,7 @@ def package(
         shutil.copyfile(executable, destination, follow_symlinks=False)
         source_mode = stat.S_IMODE(executable.stat().st_mode)
         destination.chmod(source_mode | stat.S_IXUSR)
+        _require_arm64_macho_file(destination, label="packaged installer executable")
         metadata = {
             "CFBundleDevelopmentRegion": "en",
             "CFBundleExecutable": "ForgePlatformInstaller",

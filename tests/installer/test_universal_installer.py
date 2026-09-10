@@ -159,6 +159,8 @@ def release_metadata(
     release_tag: str | None = None,
     descriptor_asset_name: str = "ForgePlatformInstallerReleaseDescriptor.json",
     asset_name: str = "ForgePlatformInstaller-macos-arm64.zip",
+    architecture: str = "arm64",
+    minimum_macos_version: str = "26.0.0",
     notarization_receipt_reference: str = NOTARIZATION_RECEIPT_REFERENCE,
     expires_at: datetime | None = None,
 ) -> dict[str, object]:
@@ -182,7 +184,8 @@ def release_metadata(
             "capabilities": list(capabilities),
             "assets": [{
                 "operating_system": "macos",
-                "architecture": "arm64",
+                "architecture": architecture,
+                "minimum_macos_version": minimum_macos_version,
                 "asset_name": asset_name,
                 "digest": digest,
                 "bundle_identifier": "com.example.ForgePlatformInstaller",
@@ -326,7 +329,7 @@ def manifest_payload(
         "channel": "stable",
         "requires_installer": {"minimum_version": "1.0.0", "capabilities": list(capabilities)},
         "host_requirements": {
-            "minimum_macos_version": "14.0.0",
+            "minimum_macos_version": "26.0.0",
             "supported_architectures": ["arm64"],
             "minimum_available_disk_bytes": 100,
             "backup_reserve_bytes": 25,
@@ -377,8 +380,27 @@ def manifest() -> CompositionManifest:
     return CompositionManifest.from_catalog_bytes(entry, raw)
 
 
-def host_facts(*, administrator: bool = True, disk: int = 1000) -> HostFacts:
-    return HostFacts("macos", SemanticVersion.parse("15.0.0"), "arm64", disk, 1000, administrator, True, True)
+def host_facts(
+    *,
+    administrator: bool = True,
+    disk: int = 1000,
+    macos_version: str = "26.0.0",
+    architecture: str = "arm64",
+    hardware_architecture: str = "arm64",
+    is_rosetta_translated: bool = False,
+) -> HostFacts:
+    return HostFacts(
+        "macos",
+        SemanticVersion.parse(macos_version),
+        architecture,
+        disk,
+        1000,
+        administrator,
+        True,
+        True,
+        hardware_architecture=hardware_architecture,
+        is_rosetta_translated=is_rosetta_translated,
+    )
 
 
 def tool_readbacks() -> dict[str, ManagedToolReadback]:
@@ -800,6 +822,31 @@ class UniversalInstallerTests(unittest.TestCase):
         self.assertEqual(decision.state, "SELF_UPDATE_BLOCKED")
         self.assertIn("different immutable provenance", decision.reason)
 
+    def test_release_descriptor_requires_exactly_one_arm64_asset(self) -> None:
+        with self.assertRaisesRegex(ValueError, "architecture"):
+            trusted_release(
+                architecture="x86_64",
+                asset_name="ForgePlatformInstaller-macos-x86_64.zip",
+            )
+
+        payload = release_metadata()
+        installer = payload["installer"]
+        assert isinstance(installer, dict)
+        assets = installer["assets"]
+        assert isinstance(assets, list)
+        assets.append(dict(assets[0]))
+        with self.assertRaisesRegex(ValueError, "exactly one arm64"):
+            InstallerRelease.from_signed_metadata(
+                payload,
+                FixtureVerifier(),
+                signature_policy=FIXTURE_SIGNATURE_POLICY,
+                sealed_release_trust=SEALED_RELEASE_TRUST,
+            )
+
+    def test_release_descriptor_requires_exact_macos_26_asset_identity(self) -> None:
+        with self.assertRaisesRegex(ValueError, "minimum_macos_version"):
+            trusted_release(minimum_macos_version="27.0.0")
+
     def test_signed_release_bytes_reject_duplicate_json_keys_before_verification(self) -> None:
         raw = json.dumps(release_metadata(), separators=(",", ":"))
         duplicate = raw[:-1] + ',"sequence":2}'
@@ -935,7 +982,7 @@ class UniversalInstallerTests(unittest.TestCase):
             "SELF_UPDATE_BLOCKED",
         )
 
-    def test_expired_or_architecture_missing_release_blocks_platform_mutation(self) -> None:
+    def test_expired_release_blocks_platform_mutation(self) -> None:
         expired = trusted_release(expires_at=NOW - timedelta(seconds=1))
         decision = select_self_update(
             installed(),
@@ -1066,16 +1113,16 @@ class UniversalInstallerTests(unittest.TestCase):
             parsed.catalog_digest,
         )
         arm_only = trusted_release()
-        decision = select_self_update(
-            installed(),
-            [arm_only],
-            channel="stable",
-            architecture="x86_64",
-            now=NOW,
-            release_feed=fresh_release_feed(),
-            sealed_release_trust=SEALED_RELEASE_TRUST,
-        )
-        self.assertEqual(decision.state, "SELF_UPDATE_BLOCKED")
+        with self.assertRaisesRegex(ValueError, "native arm64"):
+            select_self_update(
+                installed(),
+                [arm_only],
+                channel="stable",
+                architecture="x86_64",
+                now=NOW,
+                release_feed=fresh_release_feed(),
+                sealed_release_trust=SEALED_RELEASE_TRUST,
+            )
 
     def test_catalog_without_the_new_index_locator_stays_parseable_but_cannot_bind_one(self) -> None:
         catalog = {
@@ -1243,6 +1290,27 @@ class UniversalInstallerTests(unittest.TestCase):
         self.assertIn("administrator", " ".join(blocked.failures))
         self.assertEqual(preflight_host(requirement, host_facts()).state, "PASS")
 
+    def test_platform_preflight_rejects_intel_rosetta_and_macos_25_before_mutation(self) -> None:
+        requirement = manifest().host_requirement
+        intel = preflight_host(
+            requirement,
+            host_facts(architecture="x86_64", hardware_architecture="x86_64"),
+        )
+        self.assertFalse(intel.permits_platform_mutation)
+        self.assertIn("Apple Silicon hardware", " ".join(intel.failures))
+
+        rosetta = preflight_host(
+            requirement,
+            host_facts(architecture="x86_64", is_rosetta_translated=True),
+        )
+        self.assertFalse(rosetta.permits_platform_mutation)
+        self.assertIn("Rosetta", " ".join(rosetta.failures))
+
+        old_macos = preflight_host(requirement, host_facts(macos_version="25.9.9"))
+        self.assertFalse(old_macos.permits_platform_mutation)
+        self.assertIn("macOS 26", " ".join(old_macos.failures))
+        self.assertTrue(preflight_host(requirement, host_facts(macos_version="27.0.0")).permits_platform_mutation)
+
     def test_managed_tool_plan_never_uses_path_and_unknown_inventory_blocks(self) -> None:
         actions = plan_managed_tools(manifest().managed_tools, tool_readbacks())
         self.assertEqual([action.action for action in actions], ["NO_CHANGE", "NO_CHANGE"])
@@ -1350,7 +1418,7 @@ class UniversalInstallerTests(unittest.TestCase):
             "channel": "stable",
             "requires_installer": {"minimum_version": "1.0.0", "capabilities": ["composition/v1"]},
             "host_requirements": {
-                "minimum_macos_version": "14.0.0",
+                "minimum_macos_version": "26.0.0",
                 "supported_architectures": ["arm64"],
                 "minimum_available_disk_bytes": 1,
                 "backup_reserve_bytes": 1,
