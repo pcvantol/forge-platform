@@ -2,10 +2,10 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://github.com/pcvantol/forge-platform/schemas/universal-installer-composition.schema.json",
   "title": "Forge Platform universal installer composition",
-  "description": "The immutable, digest-pinned component and host policy consumed after catalog verification.",
+  "description": "The immutable, digest-pinned component, exact managed-Python runtime and host policy consumed after catalog verification.",
   "type": "object",
   "additionalProperties": false,
-  "required": ["schema", "composition_id", "channel", "requires_installer", "host_requirements", "managed_tools", "providers", "components", "upgrade_from"],
+  "required": ["schema", "composition_id", "channel", "requires_installer", "host_requirements", "managed_tools", "python_runtime", "product_venvs", "providers", "components", "upgrade_from"],
   "properties": {
     "schema": {"const": "forge-platform.composition/v1"},
     "composition_id": {"$ref": "#/$defs/composition_identity"},
@@ -16,6 +16,12 @@
       "type": "array",
       "minItems": 1,
       "items": {"$ref": "#/$defs/managed_tool"}
+    },
+    "python_runtime": {"$ref": "#/$defs/managed_python_runtime"},
+    "product_venvs": {
+      "type": "array",
+      "minItems": 1,
+      "items": {"$ref": "#/$defs/product_venv"}
     },
     "providers": {
       "type": "array",
@@ -85,10 +91,68 @@
       "additionalProperties": false,
       "required": ["identity", "version", "url", "digest"],
       "properties": {
-        "identity": {"enum": ["git", "python"]},
+        "identity": {"const": "git"},
         "version": {"$ref": "#/$defs/version"},
         "url": {"$ref": "#/$defs/https_url"},
         "digest": {"$ref": "#/$defs/sha256"}
+      }
+    },
+    "immutable_download": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["url", "digest"],
+      "properties": {
+        "url": {"$ref": "#/$defs/https_url"},
+        "digest": {"$ref": "#/$defs/sha256"}
+      }
+    },
+    "managed_python_runtime": {
+      "description": "One exact platform-approved arm64 CPython identity. identity_digest is recomputed over every other field by the runtime parser.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schema", "implementation", "version", "operating_system", "architecture", "minimum_macos_version", "build_variant", "python_tag", "abi_tag", "platform_tag", "artifact_kind", "managed_root_identity", "artifact", "source", "source_provenance", "build_provenance", "policy_revision", "identity_digest"],
+      "properties": {
+        "schema": {"const": "forge-platform.managed-python-runtime/v1"},
+        "implementation": {"const": "cpython"},
+        "version": {"$ref": "#/$defs/version"},
+        "operating_system": {"const": "macos"},
+        "architecture": {"const": "arm64"},
+        "minimum_macos_version": {
+          "type": "string",
+          "pattern": "^(?:2[6-9]|[3-9][0-9]|[1-9][0-9]{2,})\\.(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)$"
+        },
+        "build_variant": {"const": "standard-gil"},
+        "python_tag": {"type": "string", "pattern": "^cp[0-9]{2,3}$"},
+        "abi_tag": {"type": "string", "pattern": "^cp[0-9]{2,3}$"},
+        "platform_tag": {"const": "macosx_26_0_arm64"},
+        "artifact_kind": {"const": "forge-platform-managed-python-runtime-archive-v1"},
+        "managed_root_identity": {"const": "forge-platform-managed-python-v1"},
+        "artifact": {"$ref": "#/$defs/immutable_download"},
+        "source": {"$ref": "#/$defs/immutable_download"},
+        "source_provenance": {"$ref": "#/$defs/immutable_download"},
+        "build_provenance": {"$ref": "#/$defs/immutable_download"},
+        "policy_revision": {"type": "string", "pattern": "^[a-z0-9][a-z0-9._/-]{0,127}$"},
+        "identity_digest": {"$ref": "#/$defs/sha256"}
+      }
+    },
+    "product_venv": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["component_identity", "venv_identity", "python_runtime_identity"],
+      "properties": {
+        "component_identity": {"enum": ["forge-runtime", "workspace-server", "workspace-client", "engineering-platform-server", "engineering-platform-project-agent"]},
+        "venv_identity": {"type": "string", "pattern": "^[a-z0-9][a-z0-9._-]{0,127}$"},
+        "python_runtime_identity": {"$ref": "#/$defs/sha256"}
+      }
+    },
+    "python_runtime_qualification": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["runtime_identity_digest", "build_evidence", "test_evidence"],
+      "properties": {
+        "runtime_identity_digest": {"$ref": "#/$defs/sha256"},
+        "build_evidence": {"$ref": "#/$defs/immutable_download"},
+        "test_evidence": {"$ref": "#/$defs/immutable_download"}
       }
     },
     "provider": {
@@ -128,11 +192,12 @@
     "component": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["identity", "role", "artifact", "service"],
+      "required": ["identity", "role", "artifact", "python_runtime_qualification", "service"],
       "properties": {
         "identity": {"enum": ["forge-runtime", "workspace-server", "workspace-client", "engineering-platform-server", "engineering-platform-project-agent"]},
         "role": {"type": "string", "minLength": 1},
         "artifact": {"$ref": "#/$defs/artifact"},
+        "python_runtime_qualification": {"$ref": "#/$defs/python_runtime_qualification"},
         "service": {"anyOf": [{"$ref": "#/$defs/system_service"}, {"type": "null"}]}
       },
       "allOf": [

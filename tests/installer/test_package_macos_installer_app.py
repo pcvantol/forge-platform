@@ -30,7 +30,7 @@ from package_macos_installer_app import (  # noqa: E402
     package,
 )
 _PUBLIC_V2_DIGEST = "5988f1dd473caef0a2963f3a6cec06099007e740eced84e3a03fc0e04f343b19"
-_PUBLIC_PROVENANCE_DIGEST = "63f31be5ec852a399f1df8ae785dbf1bb6e06cbdba86abc1ac54e7a7f87b4a44"
+_PUBLIC_PROVENANCE_DIGEST = "d36b26ac88066121531841dab8bf0c2b8f0ab005d099e6c74b836540d555d935"
 
 
 class PackageMacOSInstallerAppTests(unittest.TestCase):
@@ -825,7 +825,12 @@ class PackageMacOSInstallerAppTests(unittest.TestCase):
         release_trust_configuration_sha256: str = "b" * 64,
     ) -> dict[str, object]:
         selected_capabilities = (
-            ["composition/v1", "provider-gate/v1", "system-launchdaemon/v1"]
+            [
+                "composition/v1",
+                "managed-python-runtime/v1",
+                "provider-gate/v1",
+                "system-launchdaemon/v1",
+            ]
             if capabilities is None
             else capabilities
         )

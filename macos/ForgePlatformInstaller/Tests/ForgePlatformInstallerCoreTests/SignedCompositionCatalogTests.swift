@@ -20,6 +20,7 @@ final class SignedCompositionCatalogTests: XCTestCase {
         XCTAssertEqual(catalog.channel, .stable)
         XCTAssertEqual(catalog.identity.sequence, 2)
         XCTAssertEqual(catalog.entries.map(\.compositionID), ["forge-ep-workspace-v1"])
+        XCTAssertEqual(catalog.approvedPythonRuntimeIdentity, "sha256:" + String(repeating: "c", count: 64))
         XCTAssertEqual(catalog.entries.first?.manifest.sha256, "sha256:" + String(repeating: "a", count: 64))
         XCTAssertEqual(catalog.componentCombinationCatalog?.sha256, "sha256:" + String(repeating: "b", count: 64))
         XCTAssertEqual(catalog.candidateAcceptance.scope.channel, .stable)
@@ -65,6 +66,12 @@ final class SignedCompositionCatalogTests: XCTestCase {
         let whitespaceCompositionID = fixture.unsignedCatalog(compositionID: "forge ep workspace v1")
         let unicodeWhitespaceCompositionID = fixture.unsignedCatalog(compositionID: "forge\u{0085}ep-workspace-v1")
         let overlongCompositionID = fixture.unsignedCatalog(compositionID: String(repeating: "x", count: 257))
+        let validPythonField = "\"approved_python_runtime_identity\":\"sha256:\(String(repeating: "c", count: 64))\","
+        let missingPythonIdentity = fixture.unsignedCatalog().replacingOccurrences(of: validPythonField, with: "")
+        let malformedPythonIdentity = fixture.unsignedCatalog().replacingOccurrences(
+            of: validPythonField,
+            with: "\"approved_python_runtime_identity\":\"sha256:\(String(repeating: "C", count: 64))\","
+        )
         let duplicateRoot = Data(
             "{\"schema\":\"forge-platform.composition-catalog/v1\",\"schema\":\"forge-platform.composition-catalog/v1\"}".utf8
         )
@@ -74,6 +81,8 @@ final class SignedCompositionCatalogTests: XCTestCase {
             try fixture.signedCatalogBytes(unsigned: whitespaceCompositionID),
             try fixture.signedCatalogBytes(unsigned: unicodeWhitespaceCompositionID),
             try fixture.signedCatalogBytes(unsigned: overlongCompositionID),
+            try fixture.signedCatalogBytes(unsigned: missingPythonIdentity),
+            try fixture.signedCatalogBytes(unsigned: malformedPythonIdentity),
             duplicateRoot,
         ]
 
@@ -476,12 +485,13 @@ struct CatalogFixture {
         let capabilityJSON = capabilities.map { "\"\($0)\"" }.joined(separator: ",")
         let manifestDigest = "sha256:" + String(repeating: String(manifestDigestCharacter), count: 64)
         let indexDigest = "sha256:" + String(repeating: "b", count: 64)
+        let pythonRuntimeIdentity = "sha256:" + String(repeating: "c", count: 64)
         func composition(_ identity: String) -> String {
             "{\"channel\":\"\(channel)\",\"composition_id\":\"\(identity)\",\"digest\":\"\(manifestDigest)\",\"requires_installer\":{\"capabilities\":[\(capabilityJSON)],\"minimum_version\":\"1.0.0\"},\"url\":\"https://catalog.example.test/manifests/forge-ep-workspace-v1.json\"}"
         }
         let compositions = [composition(compositionID)]
             + (additionalCompositionID.map { [composition($0)] } ?? [])
-        return "{\"channel\":\"\(channel)\",\"component_combination_catalog\":{\"digest\":\"\(indexDigest)\",\"url\":\"https://catalog.example.test/component-index.json\"},\"compositions\":[\(compositions.joined(separator: ","))],\"expires_at\":\"\(expiresAt)\",\(extraTopLevelField)\"published_at\":\"\(publishedAt)\",\"schema\":\"forge-platform.composition-catalog/v1\",\"sequence\":\(sequence)}"
+        return "{\"approved_python_runtime_identity\":\"\(pythonRuntimeIdentity)\",\"channel\":\"\(channel)\",\"component_combination_catalog\":{\"digest\":\"\(indexDigest)\",\"url\":\"https://catalog.example.test/component-index.json\"},\"compositions\":[\(compositions.joined(separator: ","))],\"expires_at\":\"\(expiresAt)\",\(extraTopLevelField)\"published_at\":\"\(publishedAt)\",\"schema\":\"forge-platform.composition-catalog/v1\",\"sequence\":\(sequence)}"
     }
 
     func signedCatalogBytes(
