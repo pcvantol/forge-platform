@@ -7,8 +7,12 @@ and [documentary DAG](docs/roadmap/CONSOLIDATION_PARKING_2026_09_10_DAG.json).
 The installer remains PARKED under the already-merged
 [EP Server clean-install v1 roadmap](docs/roadmap/EP_SERVER_CLEAN_INSTALL_V1.md).
 No next installer increment, host cleanup or qualification run is selected.
-The owner reports 52 clean local worktrees, but 16 featurebranches lack direct
-PR linkage and require actual comparison before deletion. Preserve them.
+The consolidation record now reflects the completed physical cleanup: the
+pre-documentation baseline had one local `main` worktree, no local feature
+branches, no unpreserved WIP, and `main` equal to `origin/main`. The 37
+delivered branches were removed; all 16 formerly unmatched branches were
+classified with no genuine residual and no unresolved item. This checkpoint
+does not activate the retained installer DAG or make it a Forge-E2E gate.
 
 Start every Forge Platform development session from this repository-local
 entrypoint. Read, in order:

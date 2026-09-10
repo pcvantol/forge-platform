@@ -4,18 +4,29 @@
   "documentary_only": true,
   "execution_authorized": false,
   "observed_date": "2026-09-10",
-  "base_main": "0bb24eb1094d7912de4e624b3ecd97fe73159ce9",
-  "local_inventory": "USER_REPORTED_54_BRANCHES_52_CLEAN_WORKTREES_16_UNMATCHED_BRANCH_NAMES_MISSING",
+  "base_main": "99a8db443f411c66255891d20abe89522d7b6e95",
+  "local_inventory": "USER_REPORTED_AND_LOCAL_READBACK_CLEANUP_COMPLETE",
+  "cleanup_evidence": {
+    "baseline_worktrees": 1,
+    "local_feature_branches": 0,
+    "unpreserved_wip": 0,
+    "delivered_branches_removed": 37,
+    "unmatched_examined": 16,
+    "present_on_main": 11,
+    "superseded_by_stronger_main_implementation": 5,
+    "genuine_residual": 0,
+    "unresolved": 0
+  },
   "existing_installer_dag": "EP_SERVER_CLEAN_INSTALL_V1.md",
-  "existing_installer_parking_merge": "0bb24eb1094d7912de4e624b3ecd97fe73159ce9",
+  "installer_is_forge_e2e_predecessor": false,
   "external_nodes": [],
   "nodes": [
-    {"id":"FP-LOCAL","disposition":"OPEN_EVIDENCE_GAP","depends_on":[],"acceptance":"Full 53 featurebranch identities and mapping to 51 auxiliary trees, paths/tips/ignored/stash/ownership"},
-    {"id":"FP-MAIN","disposition":"FAST_FORWARD_CANDIDATE_NOT_EXECUTED","depends_on":["FP-LOCAL"],"acceptance":"Reported main41 behind with no unique commits; current clean/ancestry/ownership proof"},
-    {"id":"FP-37","disposition":"CONDITIONAL_NO_DELETE_AUTHORITY","depends_on":["FP-LOCAL"],"acceptance":"37 merged-linked branches checked against actual PR heads and post-merge commits/content/retention"},
-    {"id":"FP-16","disposition":"PARKED_PENDING_COMPARISON","depends_on":["FP-LOCAL"],"acceptance":"Classify actual 16 unmatched patches; retain genuine residual and unresolved content"},
-    {"id":"FP-CLEANUP","disposition":"DEFERRED_NOT_EXECUTED","depends_on":["FP-LOCAL"],"acceptance":"Each selected target must pass its own FP-37 or FP-16 review plus preservation/ownership/expected-ref gate; unrelated targets need not all finish"},
-    {"id":"FP-INSTALLER","disposition":"PARKED_EXISTING_DAG_RETAINED","depends_on":[],"acceptance":"Use unchanged detailed FP-EP-CI/EP-CI graph in EP_SERVER_CLEAN_INSTALL_V1.md; no implicit execution or Forge-E2E prerequisite"},
-    {"id":"FP-LATER","disposition":"PARKED","depends_on":[],"acceptance":"Preserve wider lifecycle/provider/composition/discovery, policy, hygiene and knowledge roadmaps; no implementation now"}
+    {"id":"FP-LOCAL","disposition":"RESOLVED","depends_on":[],"acceptance":"One baseline worktree, zero local feature branches and zero unpreserved WIP"},
+    {"id":"FP-MAIN","disposition":"COMPLETE","depends_on":["FP-LOCAL"],"acceptance":"Local main equals origin/main before and after protected documentation delivery"},
+    {"id":"FP-37","disposition":"COMPLETE","depends_on":["FP-LOCAL"],"count":37,"acceptance":"All 37 delivered branches removed after reconciliation"},
+    {"id":"FP-16","disposition":"RESOLVED","depends_on":["FP-LOCAL"],"count":16,"classification":{"PRESENT_ON_MAIN":11,"SUPERSEDED_BY_STRONGER_MAIN_IMPLEMENTATION":5,"GENUINE_RESIDUAL":0,"UNRESOLVED":0},"acceptance":"Every unmatched branch classified with no genuine or unresolved residual"},
+    {"id":"FP-CLEANUP","disposition":"COMPLETE","depends_on":["FP-37","FP-16"],"acceptance":"Authorized auxiliary cleanup complete; no active local feature lane"},
+    {"id":"FP-INSTALLER","disposition":"PARKED_EXISTING_DAG_RETAINED","depends_on":[],"acceptance":"Use the unchanged detailed DAG in EP_SERVER_CLEAN_INSTALL_V1.md; it is not a Forge-E2E predecessor"},
+    {"id":"FP-LATER","disposition":"PARKED","depends_on":[],"acceptance":"Preserve wider lifecycle, provider, composition, discovery, policy, hygiene and knowledge roadmaps"}
   ]
 }
