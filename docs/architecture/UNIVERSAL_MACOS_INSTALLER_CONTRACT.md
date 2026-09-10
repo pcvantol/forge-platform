@@ -1,6 +1,6 @@
 # Universal macOS Installer contract
 
-**Status:** Canonical implementation contract. Forge Platform has a source-level installer foundation, a native wizard shell, a read-only native outer-catalog admission kernel, and unassembled catalog-trust/transport/acceptance-storage seams. It does not yet certify a published installer, a privileged helper, a product provisioner adapter, or production deployment.
+**Status:** Canonical implementation contract. Forge Platform has a source-level installer foundation, a native wizard shell, and an internal read-only C-3a catalog-admission coordinator that composes sealed trust, exact transport, independently injected time evidence and a read-only anti-replay anchor. No independently reviewed production time-evidence adapter, composition-session producer, privileged helper, product provisioner adapter, published installer, or production deployment is certified.
 
 This contract implements [ADR-0004](adr/ADR-0004-universal-installer-artifact-composition.md) and [ADR-0006](adr/ADR-0006-server-deployment-and-discovery.md). It is not a second EP, Forge, or Workspace installation engine.
 
@@ -181,12 +181,35 @@ sequence and different bytes under the same sequence fail closed; an identical
 catalog commitment is idempotent and does not overwrite its original terminal
 binding.
 
-C-2b is still unassembled. It neither verifies a product receipt nor invokes
-a product operation, and no startup, runtime builder, catalog transport,
-session preparer or wizard calls it. The packager can carry its separate public
-policy but does not call the store. A future product-owned
+C-2b neither verifies a product receipt nor invokes a product operation. C-3a
+may obtain only its read capability in order to reject replay; it has no write
+capability and cannot persist an acceptance. No startup, runtime builder,
+session preparer or wizard calls either facility. The packager can carry its
+separate public policy but does not call the store. A future product-owned
 operation coordinator must create the terminal commitment only after it has
 verified its own terminal receipts, readiness and cleanup.
+
+### C-3a read-only catalog admission
+
+The internal C-3a coordinator is the first composition boundary that combines
+the separately sealed catalog-policy loader, C-2a exact-locator transport, an
+independently injected trusted-clock attester and the C-2b **read-only** anchor
+capability. It fetches only the locator sealed into the current verified
+installer context, requires the attester's locator and bytes to match that one
+transport result byte-for-byte, requires a finite independently attested
+`observed_at <= verified_at < fresh_until` interval, and then runs the C-1
+signature/channel/expiry/anti-replay verifier using `verified_at`. Any missing,
+untrusted, substituted, future, stale, malformed or replayed input yields one
+generic unavailable result.
+
+There is deliberately no production clock attester in this source increment:
+the local wall clock and a catalog host's HTTP `Date` header are not sufficient
+evidence. The default attester is unavailable. C-3a does not write a candidate
+anchor, select a catalog entry, download an index or manifest, produce a
+composition session, drive the wizard, authenticate a provider, or invoke a
+product operation. Its verified outer-catalog result is ephemeral; every future
+mutating coordinator must reload and reverify its own catalog and anchor under
+its own operation lock rather than reusing C-3a output as terminal authority.
 
 ## Sealed installer release provenance V1
 
@@ -451,7 +474,7 @@ Discovery produces a candidate only. Product APIs verify product, instance, fing
 
 ## Current source and remaining work
 
-Forge Platform now contains strict schemas and a tested policy kernel for signed-release selection, canonical GitHub Release identity, structured public signature envelopes and key-ID/threshold gating, sealed V2 trust-configuration and V1 provenance identities, fresh/trusted-clock feed gates, catalog signature/sequence/digest anti-replay, context-bound composition selection, installer capability checks, preflight, Git/Python planning, provider gating, system-service declaration checks, and read-only composition diffs. The native core now also has a tested C-1 outer-catalog admission kernel, shared strict canonical-JSON/Ed25519 verification primitives, canonical HTTPS validation, bounded JSON parsing, a source-level sealed catalog-trust resource loader, a credential-free exact-locator transport seam, and a durable per-scope catalog-anchor store. The unsigned packager can carry a separately validated V1 catalog policy only beside the matched V2/V1 release resources, and the structural archive verifier conditionally binds that policy to the reviewed V2 scope. These remain deliberately unassembled: no source resource or production key exists, an absent resource fails closed, a catalog-host HTTP `Date` cannot establish trusted time, and no runtime/session/UI/product path consumes the trust/transport/store seams. The store has no product receipt validator or production caller, so it cannot by itself create an accepted catalog. No component-index/manifest selector or session-plan producer exists yet. It also contains a tested native SwiftUI wizard shell, a separate installer release-operation journal with an immutable `PREPARED` candidate precursor and durable sequence reservation, and a source-only release workflow framework. That framework verifies an exact merged `main` candidate, requires its exact version-preparation receipt, requires a reviewed release-identity policy, records required public sequence/provenance inputs, packages an **unsigned** `.app` candidate without manufacturing sealed resources, records the digest of the exact staged archive, and binds the later operation/descriptor handoff to the configured GitHub repository, tag, descriptor asset name, archive asset names, bundle identifier, Team identifier, CodeDirectory digest and typed notarization receipt. Its signing/notarization and public-GitHub-Release environments deliberately fail closed until a real protected Apple signer, notarization adapter, native trust/provenance loader, descriptor verifier and publisher are configured. The structural handoff verifier enforces the public envelope shape and reviewed identity binding, conditionally validates a bundled catalog policy, but intentionally reports that cryptographic signature verification was not performed; it is never a publication authorization.
+Forge Platform now contains strict schemas and a tested policy kernel for signed-release selection, canonical GitHub Release identity, structured public signature envelopes and key-ID/threshold gating, sealed V2 trust-configuration and V1 provenance identities, fresh/trusted-clock feed gates, catalog signature/sequence/digest anti-replay, context-bound composition selection, installer capability checks, preflight, Git/Python planning, provider gating, system-service declaration checks, and read-only composition diffs. The native core now also has a tested C-1 outer-catalog admission kernel, shared strict canonical-JSON/Ed25519 verification primitives, canonical HTTPS validation, bounded JSON parsing, a source-level sealed catalog-trust resource loader, a credential-free exact-locator transport seam, a durable per-scope catalog-anchor store, and C-3a: a read-only coordinator that binds those seams only when an independently injected clock attests the exact transport bytes. The unsigned packager can carry a separately validated V1 catalog policy only beside the matched V2/V1 release resources, and the structural archive verifier conditionally binds that policy to the reviewed V2 scope. The source still has no resource or production key, no independently reviewed clock attester, and no runtime/session/UI/product wiring; an absent resource or time attester fails closed, and a catalog-host HTTP `Date` cannot establish trusted time. The store has no product receipt validator or production caller, and C-3a has only reader capability, so neither can create an accepted catalog. No component-index/manifest selector or session-plan producer exists yet. It also contains a tested native SwiftUI wizard shell, a separate installer release-operation journal with an immutable `PREPARED` candidate precursor and durable sequence reservation, and a source-only release workflow framework. That framework verifies an exact merged `main` candidate, requires its exact version-preparation receipt, requires a reviewed release-identity policy, records required public sequence/provenance inputs, packages an **unsigned** `.app` candidate without manufacturing sealed resources, records the digest of the exact staged archive, and binds the later operation/descriptor handoff to the configured GitHub repository, tag, descriptor asset name, archive asset names, bundle identifier, Team identifier, CodeDirectory digest and typed notarization receipt. Its signing/notarization and public-GitHub-Release environments deliberately fail closed until a real protected Apple signer, notarization adapter, native trust/provenance loader, descriptor verifier and publisher are configured. The structural handoff verifier enforces the public envelope shape and reviewed identity binding, conditionally validates a bundled catalog policy, but intentionally reports that cryptographic signature verification was not performed; it is never a publication authorization.
 
 The structural verifier reads V2 trust and V1 provenance resources directly
 from every supplied archive and binds their semantic identities to the durable
@@ -460,6 +483,6 @@ it also validates the exact archived bytes and binds its scope to that same V2
 identity; its absence remains explicit and fail-closed. It still does not
 authorize signing or publication.
 
-Next owning increments are: compose the existing catalog-trust/transport/storage seams only with independent trusted-clock evidence and a product-owned terminal-operation receipt validator, then add component-index/manifest selection only after an explicit preset/component-set and product-owned installed-composition readback exist; connect the protected signer/notarization/publisher to the installer release framework and qualify an actual GitHub Release; native trusted bootstrap/handoff; EP then Forge/Workspace execute/resume/uninstall adapters; managed-tool/provider coordinators that retain no secrets; and installed-artifact clean-Mac, add/update/remove, migration/rollback, reboot-recovery, pairing, readiness, and summary qualification.
+Next owning increments are: qualify one independently reviewed clock-evidence adapter for C-3a (without treating a local clock or HTTP `Date` as trusted), design a product-owned terminal-operation receipt validator and a separately locked mutating re-verification boundary, then add component-index/manifest selection only after an explicit preset/component-set and product-owned installed-composition readback exist; connect the protected signer/notarization/publisher to the installer release framework and qualify an actual GitHub Release; native trusted bootstrap/handoff; EP then Forge/Workspace execute/resume/uninstall adapters; managed-tool/provider coordinators that retain no secrets; and installed-artifact clean-Mac, add/update/remove, migration/rollback, reboot-recovery, pairing, readiness, and summary qualification.
 
 Until those increments have their own evidence, this is `SOURCE_FIXED` for the installer foundation only, not `INSTALLATION_VERIFIED`, `SINGLE_OPERATIONAL_INSTALLATION_VERIFIED`, or release/publication authority.
