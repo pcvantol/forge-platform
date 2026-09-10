@@ -186,6 +186,8 @@ struct VerifiedCompositionCatalog: Equatable, Sendable {
     let channel: InstallerReleaseChannel
     let publishedAt: Date
     let expiresAt: Date
+    /// The one exact managed-Python identity approved by these signed bytes.
+    let approvedPythonRuntimeIdentity: String
     let entries: [VerifiedCompositionCatalogEntry]
     let componentCombinationCatalog: VerifiedCompositionCatalogDocumentLocator?
     /// Candidate durable anchor for a later product-operation coordinator. It
@@ -198,6 +200,7 @@ struct VerifiedCompositionCatalog: Equatable, Sendable {
         channel: InstallerReleaseChannel,
         publishedAt: Date,
         expiresAt: Date,
+        approvedPythonRuntimeIdentity: String,
         entries: [VerifiedCompositionCatalogEntry],
         componentCombinationCatalog: VerifiedCompositionCatalogDocumentLocator?,
         candidateAcceptance: CompositionCatalogAcceptance
@@ -206,6 +209,7 @@ struct VerifiedCompositionCatalog: Equatable, Sendable {
         self.channel = channel
         self.publishedAt = publishedAt
         self.expiresAt = expiresAt
+        self.approvedPythonRuntimeIdentity = approvedPythonRuntimeIdentity
         self.entries = entries
         self.componentCombinationCatalog = componentCombinationCatalog
         self.candidateAcceptance = candidateAcceptance
@@ -285,6 +289,7 @@ struct SignedCompositionCatalogFeedVerifier {
             channel: parsedCatalog.channel,
             publishedAt: parsedCatalog.publishedAt,
             expiresAt: parsedCatalog.expiresAt,
+            approvedPythonRuntimeIdentity: parsedCatalog.approvedPythonRuntimeIdentity,
             entries: parsedCatalog.entries,
             componentCombinationCatalog: parsedCatalog.componentCombinationCatalog,
             candidateAcceptance: CompositionCatalogAcceptance(scope: scope, identity: parsedCatalog.identity)
@@ -308,11 +313,12 @@ struct SignedCompositionCatalogFeedVerifier {
             throw CompositionCatalogVerificationFailure.catalogRejected
         }
 
-        let legacyFields: Set<String> = [
-            "schema", "sequence", "channel", "published_at", "expires_at", "compositions", "signatures",
+        let requiredFields: Set<String> = [
+            "schema", "sequence", "channel", "published_at", "expires_at",
+            "approved_python_runtime_identity", "compositions", "signatures",
         ]
-        let selectionIndexFields = legacyFields.union(["component_combination_catalog"])
-        guard Set(fields.keys) == legacyFields || Set(fields.keys) == selectionIndexFields,
+        let selectionIndexFields = requiredFields.union(["component_combination_catalog"])
+        guard Set(fields.keys) == requiredFields || Set(fields.keys) == selectionIndexFields,
               fields["schema"]?.stringValue == schema,
               let sequence = fields["sequence"]?.positiveUInt64Value,
               let channelRaw = fields["channel"]?.stringValue,
@@ -322,6 +328,8 @@ struct SignedCompositionCatalogFeedVerifier {
               let expiresAtRaw = fields["expires_at"]?.stringValue,
               let publishedAt = CanonicalRFC3339UTC.parse(publishedAtRaw),
               let expiresAt = CanonicalRFC3339UTC.parse(expiresAtRaw),
+              let approvedPythonRuntimeIdentity = fields["approved_python_runtime_identity"]?.stringValue,
+              CompositionCatalogValidation.isTaggedSHA256(approvedPythonRuntimeIdentity),
               publishedAt <= observedAt,
               expiresAt > publishedAt,
               expiresAt > now,
@@ -361,6 +369,7 @@ struct SignedCompositionCatalogFeedVerifier {
             channel: channel,
             publishedAt: publishedAt,
             expiresAt: expiresAt,
+            approvedPythonRuntimeIdentity: approvedPythonRuntimeIdentity,
             entries: entries,
             componentCombinationCatalog: componentCombinationCatalog
         )
@@ -460,6 +469,7 @@ struct SignedCompositionCatalogFeedVerifier {
         let channel: InstallerReleaseChannel
         let publishedAt: Date
         let expiresAt: Date
+        let approvedPythonRuntimeIdentity: String
         let entries: [VerifiedCompositionCatalogEntry]
         let componentCombinationCatalog: VerifiedCompositionCatalogDocumentLocator?
     }

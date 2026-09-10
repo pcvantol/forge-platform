@@ -53,7 +53,14 @@ SUPPORTED_MACOS_ARCHITECTURES = INSTALLER_ARCHITECTURES
 # Host observations retain Intel as an explicit negative input so preflight can
 # produce bounded denial evidence rather than failing before the gate runs.
 OBSERVABLE_MACOS_ARCHITECTURES = frozenset({"arm64", "x86_64"})
-MANAGED_TOOL_IDENTITIES = frozenset({"git", "python"})
+MANAGED_TOOL_IDENTITIES = frozenset({"git"})
+MANAGED_PYTHON_RUNTIME_SCHEMA = "forge-platform.managed-python-runtime/v1"
+MANAGED_PYTHON_IMPLEMENTATION = "cpython"
+MANAGED_PYTHON_OPERATING_SYSTEM = "macos"
+MANAGED_PYTHON_ARCHITECTURE = "arm64"
+MANAGED_PYTHON_BUILD_VARIANT = "standard-gil"
+MANAGED_PYTHON_ARTIFACT_KIND = "forge-platform-managed-python-runtime-archive-v1"
+MANAGED_PYTHON_ROOT_IDENTITY = "forge-platform-managed-python-v1"
 PROVIDER_IDENTITIES = frozenset({"codex", "github-cli"})
 PROVIDER_STATES = frozenset({"ABSENT", "INSTALLED", "AUTHENTICATION_REQUIRED", "VERIFIED", "FAILED"})
 TOOL_STATES = frozenset({"ABSENT", "ACTIVE", "UNKNOWN"})
@@ -106,6 +113,8 @@ _JOURNAL_FORBIDDEN_KEY_FRAGMENTS = frozenset({
 })
 _OPAQUE_JOURNAL_REFERENCE = re.compile(r"^receipt:[a-z0-9][a-z0-9._-]{0,127}$")
 _SAFE_TARGET_ID = re.compile(r"^[a-z0-9][a-z0-9._-]{0,127}$")
+_PYTHON_TAG = re.compile(r"^cp[0-9]{2,3}$")
+_PYTHON_PLATFORM_TAG = re.compile(r"^macosx_26_0_arm64$")
 # A composition identity is publication metadata, not a display label. Keep
 # Unicode non-whitespace identifiers possible, but prohibit controls and all
 # whitespace so its exact identity remains unambiguous across the schema,
@@ -384,6 +393,141 @@ class DownloadIdentity:
     def __post_init__(self) -> None:
         _https_url(self.url, "download URL")
         _digest(self.digest, "download digest")
+
+
+@dataclass(frozen=True)
+class ManagedPythonRuntimeIdentity:
+    """One immutable platform-approved CPython runtime, never inferred from PATH."""
+
+    schema: str
+    implementation: str
+    version: SemanticVersion
+    operating_system: str
+    architecture: str
+    minimum_macos_version: SemanticVersion
+    build_variant: str
+    python_tag: str
+    abi_tag: str
+    platform_tag: str
+    artifact_kind: str
+    managed_root_identity: str
+    artifact: DownloadIdentity
+    source: DownloadIdentity
+    source_provenance: DownloadIdentity
+    build_provenance: DownloadIdentity
+    policy_revision: str
+    identity_digest: str
+
+    def __post_init__(self) -> None:
+        if self.schema != MANAGED_PYTHON_RUNTIME_SCHEMA:
+            raise ValueError("managed Python runtime schema is unsupported")
+        if self.implementation != MANAGED_PYTHON_IMPLEMENTATION:
+            raise ValueError("managed Python runtime implementation is unsupported")
+        if not isinstance(self.version, SemanticVersion):
+            raise ValueError("managed Python runtime version must be exact semantic version")
+        if self.operating_system != MANAGED_PYTHON_OPERATING_SYSTEM:
+            raise ValueError("managed Python runtime operating system must be macOS")
+        if self.architecture != MANAGED_PYTHON_ARCHITECTURE:
+            raise ValueError("managed Python runtime must be arm64-only")
+        if (
+            not isinstance(self.minimum_macos_version, SemanticVersion)
+            or self.minimum_macos_version.major < MINIMUM_MACOS_MAJOR
+        ):
+            raise ValueError("managed Python runtime requires macOS 26 or newer")
+        if self.build_variant != MANAGED_PYTHON_BUILD_VARIANT:
+            raise ValueError("managed Python runtime build variant is unsupported")
+        expected_tag = f"cp{self.version.major}{self.version.minor}"
+        if self.python_tag != expected_tag or not _PYTHON_TAG.fullmatch(self.python_tag):
+            raise ValueError("managed Python runtime python_tag does not match its exact version")
+        if self.abi_tag != self.python_tag:
+            raise ValueError("managed Python runtime ABI tag must equal the standard-GIL Python tag")
+        if not _PYTHON_PLATFORM_TAG.fullmatch(self.platform_tag):
+            raise ValueError("managed Python runtime platform tag must be macOS 26 arm64")
+        if self.artifact_kind != MANAGED_PYTHON_ARTIFACT_KIND:
+            raise ValueError("managed Python runtime artifact kind is unsupported")
+        if self.managed_root_identity != MANAGED_PYTHON_ROOT_IDENTITY:
+            raise ValueError("managed Python runtime root identity is unsupported")
+        for label, locator in (
+            ("artifact", self.artifact),
+            ("source", self.source),
+            ("source provenance", self.source_provenance),
+            ("build provenance", self.build_provenance),
+        ):
+            if not isinstance(locator, DownloadIdentity):
+                raise ValueError(f"managed Python runtime {label} identity is invalid")
+        if not _POLICY_REVISION.fullmatch(self.policy_revision):
+            raise ValueError("managed Python runtime policy revision is invalid")
+        _digest(self.identity_digest, "managed Python runtime identity_digest")
+        if self.identity_digest != self.computed_identity_digest():
+            raise ValueError("managed Python runtime identity_digest does not bind the exact runtime")
+
+    def identity_material(self) -> Mapping[str, object]:
+        return {
+            "schema": self.schema,
+            "implementation": self.implementation,
+            "version": str(self.version),
+            "operating_system": self.operating_system,
+            "architecture": self.architecture,
+            "minimum_macos_version": str(self.minimum_macos_version),
+            "build_variant": self.build_variant,
+            "python_tag": self.python_tag,
+            "abi_tag": self.abi_tag,
+            "platform_tag": self.platform_tag,
+            "artifact_kind": self.artifact_kind,
+            "managed_root_identity": self.managed_root_identity,
+            "artifact": {"url": self.artifact.url, "digest": self.artifact.digest},
+            "source": {"url": self.source.url, "digest": self.source.digest},
+            "source_provenance": {
+                "url": self.source_provenance.url,
+                "digest": self.source_provenance.digest,
+            },
+            "build_provenance": {
+                "url": self.build_provenance.url,
+                "digest": self.build_provenance.digest,
+            },
+            "policy_revision": self.policy_revision,
+        }
+
+    def computed_identity_digest(self) -> str:
+        return "sha256:" + sha256(_canonical_json(self.identity_material())).hexdigest()
+
+    @classmethod
+    def from_mapping(cls, value: object) -> "ManagedPythonRuntimeIdentity":
+        fields = frozenset({
+            "schema", "implementation", "version", "operating_system", "architecture",
+            "minimum_macos_version", "build_variant", "python_tag", "abi_tag", "platform_tag",
+            "artifact_kind", "managed_root_identity", "artifact", "source", "source_provenance",
+            "build_provenance", "policy_revision", "identity_digest",
+        })
+        payload = _mapping(value, fields, "managed Python runtime")
+
+        def locator(name: str) -> DownloadIdentity:
+            item = _mapping(payload[name], frozenset({"url", "digest"}), f"managed Python {name}")
+            return DownloadIdentity(
+                _https_url(item["url"], f"managed Python {name} URL"),
+                _digest(item["digest"], f"managed Python {name} digest"),
+            )
+
+        return cls(
+            _required(payload["schema"], "managed Python schema"),
+            _required(payload["implementation"], "managed Python implementation"),
+            SemanticVersion.parse(payload["version"], "managed Python version"),
+            _required(payload["operating_system"], "managed Python operating_system"),
+            _required(payload["architecture"], "managed Python architecture"),
+            SemanticVersion.parse(payload["minimum_macos_version"], "managed Python minimum_macos_version"),
+            _required(payload["build_variant"], "managed Python build_variant"),
+            _required(payload["python_tag"], "managed Python python_tag"),
+            _required(payload["abi_tag"], "managed Python abi_tag"),
+            _required(payload["platform_tag"], "managed Python platform_tag"),
+            _required(payload["artifact_kind"], "managed Python artifact_kind"),
+            _required(payload["managed_root_identity"], "managed Python managed_root_identity"),
+            locator("artifact"),
+            locator("source"),
+            locator("source_provenance"),
+            locator("build_provenance"),
+            _required(payload["policy_revision"], "managed Python policy_revision"),
+            _digest(payload["identity_digest"], "managed Python identity_digest"),
+        )
 
 
 @dataclass(frozen=True)
@@ -1313,6 +1457,7 @@ class CompositionCatalog:
     channel: str
     published_at: datetime
     expires_at: datetime
+    approved_python_runtime_identity: str
     entries: tuple[CompositionCatalogEntry, ...]
     component_combination_catalog: DownloadIdentity | None
     catalog_digest: str
@@ -1325,6 +1470,7 @@ class CompositionCatalog:
             raise ValueError("composition catalog channel is unsupported")
         if self.expires_at <= self.published_at:
             raise ValueError("composition catalog must expire after publication")
+        _digest(self.approved_python_runtime_identity, "approved Python runtime identity")
         if not self.entries or any(not isinstance(entry, CompositionCatalogEntry) for entry in self.entries):
             raise ValueError("composition catalog entries are invalid")
         if any(entry.channel != self.channel for entry in self.entries):
@@ -1371,11 +1517,12 @@ class CompositionCatalog:
         )
         if not isinstance(value, Mapping) or dict(parsed_raw) != dict(value):
             raise UniversalInstallerError("composition catalog object does not match verified catalog bytes")
-        legacy_fields = frozenset({
-            "schema", "sequence", "channel", "published_at", "expires_at", "compositions", "signatures",
+        required_fields = frozenset({
+            "schema", "sequence", "channel", "published_at", "expires_at",
+            "approved_python_runtime_identity", "compositions", "signatures",
         })
-        selection_index_fields = legacy_fields | frozenset({"component_combination_catalog"})
-        if not isinstance(value, Mapping) or frozenset(value) not in {legacy_fields, selection_index_fields}:
+        selection_index_fields = required_fields | frozenset({"component_combination_catalog"})
+        if not isinstance(value, Mapping) or frozenset(value) not in {required_fields, selection_index_fields}:
             raise ValueError("composition catalog fields are invalid")
         payload = value
         if payload["schema"] != COMPOSITION_CATALOG_SCHEMA:
@@ -1408,6 +1555,10 @@ class CompositionCatalog:
             channel=_required(payload["channel"], "composition catalog channel"),
             published_at=_timestamp(payload["published_at"], "composition catalog published_at"),
             expires_at=_timestamp(payload["expires_at"], "composition catalog expires_at"),
+            approved_python_runtime_identity=_digest(
+                payload["approved_python_runtime_identity"],
+                "approved Python runtime identity",
+            ),
             entries=tuple(CompositionCatalogEntry.from_mapping(entry) for entry in entries),
             component_combination_catalog=selection_index,
             catalog_digest=actual,
@@ -1734,7 +1885,7 @@ def plan_managed_tools(
     requirements: Iterable[ManagedToolRequirement],
     readbacks: Mapping[str, ManagedToolReadback],
 ) -> tuple[ManagedToolAction, ...]:
-    """Plan Git/Python bootstrap or upgrades under a managed root only."""
+    """Plan generic managed tools; Python has a stronger, separate contract."""
 
     result: list[ManagedToolAction] = []
     identities: set[str] = set()
@@ -1756,6 +1907,98 @@ def plan_managed_tools(
         else:
             result.append(ManagedToolAction(requirement.identity, "UPGRADE", "managed tool differs from exact required identity", requirement, readback))
     return tuple(result)
+
+
+@dataclass(frozen=True)
+class ManagedPythonRuntimeReadback:
+    """Trusted observation from the installer-owned Python root, never PATH."""
+
+    state: str
+    runtime_identity: str | None
+    managed_root_identity: str | None
+    runtime_slot_identity: str | None
+    retained_runtime_identities: tuple[str, ...]
+    evidence_reference: str
+
+    def __post_init__(self) -> None:
+        if self.state not in TOOL_STATES:
+            raise ValueError("managed Python runtime state is unsupported")
+        _required(self.evidence_reference, "managed Python readback evidence_reference")
+        if not isinstance(self.retained_runtime_identities, tuple):
+            raise ValueError("managed Python retained runtime identities must be a tuple")
+        for identity in self.retained_runtime_identities:
+            _digest(identity, "retained managed Python runtime identity")
+        if len(set(self.retained_runtime_identities)) != len(self.retained_runtime_identities):
+            raise ValueError("managed Python retained runtime identities must be unique")
+        if self.state == "ACTIVE":
+            identity = _digest(self.runtime_identity, "active managed Python runtime identity")
+            if self.managed_root_identity != MANAGED_PYTHON_ROOT_IDENTITY:
+                raise ValueError("active managed Python runtime is outside the installer-owned root")
+            expected_slot = "sha256-" + identity.removeprefix("sha256:")
+            if self.runtime_slot_identity != expected_slot:
+                raise ValueError("active managed Python slot does not match its exact runtime identity")
+        elif any(
+            value is not None
+            for value in (self.runtime_identity, self.managed_root_identity, self.runtime_slot_identity)
+        ) or self.retained_runtime_identities:
+            raise ValueError("absent or unknown managed Python readback cannot identify runtime slots")
+
+
+@dataclass(frozen=True)
+class ManagedPythonRuntimeAction:
+    action: str
+    reason: str
+    requirement: ManagedPythonRuntimeIdentity
+    readback: ManagedPythonRuntimeReadback
+    rollback_runtime_identity: str | None
+
+    def __post_init__(self) -> None:
+        if self.action not in {"INSTALL", "UPGRADE", "NO_CHANGE", "BLOCKED"}:
+            raise ValueError("managed Python runtime action is unsupported")
+        _required(self.reason, "managed Python runtime action reason")
+        if not isinstance(self.requirement, ManagedPythonRuntimeIdentity) or not isinstance(
+            self.readback,
+            ManagedPythonRuntimeReadback,
+        ):
+            raise ValueError("managed Python runtime action inputs are invalid")
+        if self.rollback_runtime_identity is not None:
+            _digest(self.rollback_runtime_identity, "managed Python rollback runtime identity")
+        if self.action == "UPGRADE" and self.rollback_runtime_identity != self.readback.runtime_identity:
+            raise ValueError("managed Python upgrade must retain the active runtime for rollback")
+        if self.action != "UPGRADE" and self.rollback_runtime_identity is not None:
+            raise ValueError("only a managed Python upgrade can bind a rollback runtime")
+
+
+def plan_managed_python_runtime(
+    requirement: ManagedPythonRuntimeIdentity,
+    readback: ManagedPythonRuntimeReadback,
+) -> ManagedPythonRuntimeAction:
+    """Select only the signed exact runtime and retain an upgrade rollback identity."""
+
+    if not isinstance(requirement, ManagedPythonRuntimeIdentity) or not isinstance(
+        readback,
+        ManagedPythonRuntimeReadback,
+    ):
+        raise ValueError("managed Python requirement and trusted readback are required")
+    if readback.state == "UNKNOWN":
+        return ManagedPythonRuntimeAction(
+            "BLOCKED", "managed Python runtime inventory is unknown", requirement, readback, None
+        )
+    if readback.state == "ABSENT":
+        return ManagedPythonRuntimeAction(
+            "INSTALL", "approved managed Python runtime is absent", requirement, readback, None
+        )
+    if readback.runtime_identity == requirement.identity_digest:
+        return ManagedPythonRuntimeAction(
+            "NO_CHANGE", "exact approved managed Python runtime is active", requirement, readback, None
+        )
+    return ManagedPythonRuntimeAction(
+        "UPGRADE",
+        "active managed Python runtime differs from the exact approved identity",
+        requirement,
+        readback,
+        readback.runtime_identity,
+    )
 
 
 @dataclass(frozen=True)
@@ -1944,10 +2187,44 @@ class SystemServiceContract:
 
 
 @dataclass(frozen=True)
+class PythonRuntimeQualification:
+    """Product-owned build and test evidence for one exact Python identity."""
+
+    runtime_identity_digest: str
+    build_evidence: DownloadIdentity
+    test_evidence: DownloadIdentity
+
+    def __post_init__(self) -> None:
+        _digest(self.runtime_identity_digest, "component Python runtime identity")
+        if not isinstance(self.build_evidence, DownloadIdentity) or not isinstance(
+            self.test_evidence,
+            DownloadIdentity,
+        ):
+            raise ValueError("component Python qualification evidence is invalid")
+
+
+@dataclass(frozen=True)
+class ProductVenvRequirement:
+    """A product-isolated venv identity, with no caller-controlled filesystem path."""
+
+    component_identity: str
+    venv_identity: str
+    python_runtime_identity: str
+
+    def __post_init__(self) -> None:
+        if self.component_identity not in COMPONENT_IDENTITIES:
+            raise ValueError("product venv component identity is unsupported")
+        if not _SAFE_TARGET_ID.fullmatch(self.venv_identity):
+            raise ValueError("product venv identity must be a safe opaque identifier")
+        _digest(self.python_runtime_identity, "product venv Python runtime identity")
+
+
+@dataclass(frozen=True)
 class CompositionComponent:
     identity: str
     role: str
     artifact: QualifiedArtifact
+    python_runtime_qualification: PythonRuntimeQualification
     service: SystemServiceContract | None
 
     def __post_init__(self) -> None:
@@ -1956,6 +2233,8 @@ class CompositionComponent:
         _required(self.role, "composition component role")
         if not isinstance(self.artifact, QualifiedArtifact):
             raise ValueError("composition component requires a qualified artifact")
+        if not isinstance(self.python_runtime_qualification, PythonRuntimeQualification):
+            raise ValueError("composition component requires exact Python build and test evidence")
         if self.identity in SERVICE_COMPONENTS and not isinstance(self.service, SystemServiceContract):
             raise ValueError("server composition component requires a system LaunchDaemon contract")
         if self.identity in LOCAL_COMPONENTS and self.service is not None:
@@ -1972,6 +2251,8 @@ class CompositionManifest:
     installer_requirement: InstallerRequirement
     host_requirement: HostRequirement
     managed_tools: tuple[ManagedToolRequirement, ...]
+    python_runtime: ManagedPythonRuntimeIdentity
+    product_venvs: tuple[ProductVenvRequirement, ...]
     providers: tuple[ProviderRequirement, ...]
     components: tuple[CompositionComponent, ...]
     upgrade_from: tuple[str, ...]
@@ -1985,6 +2266,8 @@ class CompositionManifest:
             raise ValueError("composition installer requirement is invalid")
         if not isinstance(self.host_requirement, HostRequirement):
             raise ValueError("composition host requirement is invalid")
+        if not isinstance(self.python_runtime, ManagedPythonRuntimeIdentity):
+            raise ValueError("composition managed Python runtime is invalid")
         for label, items, expected_type, identity in (
             ("managed tools", self.managed_tools, ManagedToolRequirement, "identity"),
             ("components", self.components, CompositionComponent, "identity"),
@@ -2006,6 +2289,27 @@ class CompositionManifest:
         ]
         if len(service_references) != len(set(service_references)):
             raise ValueError("composition system service references must be unique")
+        if any(not isinstance(venv, ProductVenvRequirement) for venv in self.product_venvs):
+            raise ValueError("composition product venv requirements are invalid")
+        component_identities = {component.identity for component in self.components}
+        if {venv.component_identity for venv in self.product_venvs} != component_identities:
+            raise ValueError("composition requires exactly one product venv for every component")
+        if len(self.product_venvs) != len(component_identities):
+            raise ValueError("composition product venv component identities must be unique")
+        venv_identities = [venv.venv_identity for venv in self.product_venvs]
+        if len(venv_identities) != len(set(venv_identities)):
+            raise ValueError("composition product venv identities must be unique")
+        if any(
+            venv.python_runtime_identity != self.python_runtime.identity_digest
+            for venv in self.product_venvs
+        ):
+            raise ValueError("composition product venvs must bind the approved Python runtime")
+        if any(
+            component.python_runtime_qualification.runtime_identity_digest
+            != self.python_runtime.identity_digest
+            for component in self.components
+        ):
+            raise ValueError("composition components must be built and tested against the approved Python runtime")
         if not isinstance(self.upgrade_from, tuple):
             raise ValueError("composition upgrade_from is invalid")
         for identity in self.upgrade_from:
@@ -2041,7 +2345,7 @@ class CompositionManifest:
         """Internal parser used only after a catalog digest binds raw bytes."""
         payload = _mapping(
             value,
-            frozenset({"schema", "composition_id", "channel", "requires_installer", "host_requirements", "managed_tools", "providers", "components", "upgrade_from"}),
+            frozenset({"schema", "composition_id", "channel", "requires_installer", "host_requirements", "managed_tools", "python_runtime", "product_venvs", "providers", "components", "upgrade_from"}),
             "composition manifest",
         )
         if payload["schema"] != COMPOSITION_SCHEMA:
@@ -2077,6 +2381,8 @@ class CompositionManifest:
                 _boolean(host["requires_trusted_clock"], "requires_trusted_clock"),
             ),
             managed_tools=_parse_managed_tools(payload["managed_tools"]),
+            python_runtime=ManagedPythonRuntimeIdentity.from_mapping(payload["python_runtime"]),
+            product_venvs=_parse_product_venvs(payload["product_venvs"]),
             providers=_parse_providers(payload["providers"]),
             components=_parse_components(payload["components"]),
             upgrade_from=tuple(
@@ -2112,6 +2418,24 @@ def _parse_managed_tools(value: object) -> tuple[ManagedToolRequirement, ...]:
     return tuple(result)
 
 
+def _parse_product_venvs(value: object) -> tuple[ProductVenvRequirement, ...]:
+    if not isinstance(value, list):
+        raise ValueError("product_venvs must be a list")
+    result = []
+    for entry in value:
+        item = _mapping(
+            entry,
+            frozenset({"component_identity", "venv_identity", "python_runtime_identity"}),
+            "product venv",
+        )
+        result.append(ProductVenvRequirement(
+            _required(item["component_identity"], "product venv component_identity"),
+            _required(item["venv_identity"], "product venv venv_identity"),
+            _digest(item["python_runtime_identity"], "product venv python_runtime_identity"),
+        ))
+    return tuple(result)
+
+
 def _parse_providers(value: object) -> tuple[ProviderRequirement, ...]:
     if not isinstance(value, list):
         raise ValueError("providers must be a list")
@@ -2133,8 +2457,29 @@ def _parse_components(value: object) -> tuple[CompositionComponent, ...]:
         raise ValueError("components must be a list")
     result = []
     for entry in value:
-        item = _mapping(entry, frozenset({"identity", "role", "artifact", "service"}), "composition component")
+        item = _mapping(
+            entry,
+            frozenset({"identity", "role", "artifact", "python_runtime_qualification", "service"}),
+            "composition component",
+        )
         artifact = _mapping(item["artifact"], frozenset({"version", "source_revision", "source", "digest", "qualification"}), "component artifact")
+        python_qualification = _mapping(
+            item["python_runtime_qualification"],
+            frozenset({"runtime_identity_digest", "build_evidence", "test_evidence"}),
+            "component Python runtime qualification",
+        )
+
+        def evidence(name: str) -> DownloadIdentity:
+            locator = _mapping(
+                python_qualification[name],
+                frozenset({"url", "digest"}),
+                f"component Python {name}",
+            )
+            return DownloadIdentity(
+                _https_url(locator["url"], f"component Python {name} URL"),
+                _digest(locator["digest"], f"component Python {name} digest"),
+            )
+
         service_value = item["service"]
         service = None
         if service_value is not None:
@@ -2154,6 +2499,14 @@ def _parse_components(value: object) -> tuple[CompositionComponent, ...]:
                 _https_url(artifact["source"], "component source"),
                 _digest(artifact["digest"], "component digest"),
                 _required(artifact["qualification"], "component qualification"),
+            ),
+            PythonRuntimeQualification(
+                _digest(
+                    python_qualification["runtime_identity_digest"],
+                    "component Python runtime identity",
+                ),
+                evidence("build_evidence"),
+                evidence("test_evidence"),
             ),
             service,
         ))
@@ -2226,6 +2579,10 @@ class VerifiedCompositionSelection:
             raise UniversalInstallerError("composition entry is not a member of the verified catalog")
         if manifest.composition_id != entry.composition_id or manifest.manifest_digest != entry.manifest.digest:
             raise UniversalInstallerError("composition manifest is not bound to the verified catalog entry")
+        if manifest.python_runtime.identity_digest != catalog.approved_python_runtime_identity:
+            raise UniversalInstallerError(
+                "composition Python runtime is not the exact identity approved by the signed catalog"
+            )
         object.__setattr__(self, "installer_context", installer_context)
         object.__setattr__(self, "catalog", catalog)
         object.__setattr__(self, "catalog_identity", catalog_identity)
@@ -2352,6 +2709,8 @@ class CompositionPlan:
     host_preflight: HostPreflight
     provider_gate: ProviderGate
     managed_tool_actions: tuple[ManagedToolAction, ...]
+    python_runtime_action: ManagedPythonRuntimeAction
+    product_venvs: tuple[ProductVenvRequirement, ...]
     component_diffs: tuple[ComponentDiff, ...]
 
     def __post_init__(self) -> None:
@@ -2373,6 +2732,19 @@ class CompositionPlan:
             raise ValueError("composition plan gates are invalid")
         if any(not isinstance(action, ManagedToolAction) for action in self.managed_tool_actions):
             raise ValueError("composition plan managed tool actions are invalid")
+        if not isinstance(self.python_runtime_action, ManagedPythonRuntimeAction):
+            raise ValueError("composition plan managed Python runtime action is invalid")
+        if any(not isinstance(venv, ProductVenvRequirement) for venv in self.product_venvs):
+            raise ValueError("composition plan product venv requirements are invalid")
+        if any(
+            venv.python_runtime_identity != self.python_runtime_action.requirement.identity_digest
+            for venv in self.product_venvs
+        ):
+            raise ValueError("composition plan product venvs do not bind its exact Python runtime")
+        if len({venv.component_identity for venv in self.product_venvs}) != len(self.product_venvs):
+            raise ValueError("composition plan product venv component identities must be unique")
+        if len({venv.venv_identity for venv in self.product_venvs}) != len(self.product_venvs):
+            raise ValueError("composition plan product venv identities must be unique")
         if any(not isinstance(diff, ComponentDiff) for diff in self.component_diffs):
             raise ValueError("composition plan component diffs are invalid")
 
@@ -2394,6 +2766,8 @@ class CompositionPlan:
             for action in self.managed_tool_actions
             if action.action != "NO_CHANGE"
         )
+        if self.python_runtime_action.action != "NO_CHANGE":
+            reasons.append(f"managed Python runtime: {self.python_runtime_action.reason}")
         return tuple(reasons)
 
     @property
@@ -2410,15 +2784,22 @@ class CompositionPlan:
         it calls any product adapter.
         """
 
-        return not self.non_tool_blocking_reasons and all(
-            action.action != "BLOCKED" for action in self.managed_tool_actions
+        return (
+            not self.non_tool_blocking_reasons
+            and self.python_runtime_action.action != "BLOCKED"
+            and all(
+                action.action != "BLOCKED" for action in self.managed_tool_actions
+            )
         )
 
     @property
     def requires_managed_tool_reconciliation(self) -> bool:
         """A fresh readback/plan is mandatory before product dispatch after tools."""
 
-        return any(action.action != "NO_CHANGE" for action in self.managed_tool_actions)
+        return (
+            self.python_runtime_action.action != "NO_CHANGE"
+            or any(action.action != "NO_CHANGE" for action in self.managed_tool_actions)
+        )
 
     def fingerprint(self) -> str:
         """Bind a durable future install operation to this exact read-only plan."""
@@ -2457,6 +2838,17 @@ class CompositionPlan:
             },
             "composition_route_failures": self.composition_route_failures,
             "tools": [(action.identity, action.action, action.requirement.artifact.digest) for action in self.managed_tool_actions],
+            "python_runtime": {
+                "required_identity": self.python_runtime_action.requirement.identity_digest,
+                "action": self.python_runtime_action.action,
+                "observed_identity": self.python_runtime_action.readback.runtime_identity,
+                "rollback_identity": self.python_runtime_action.rollback_runtime_identity,
+                "identity_material": self.python_runtime_action.requirement.identity_material(),
+            },
+            "product_venvs": [
+                (venv.component_identity, venv.venv_identity, venv.python_runtime_identity)
+                for venv in self.product_venvs
+            ],
             "providers": [(action.identity, action.action) for action in self.provider_gate.actions],
             "components": [
                 (diff.component, diff.installation_identity, diff.action, None if diff.target_artifact is None else diff.target_artifact.digest)
@@ -2496,11 +2888,17 @@ def _validate_journal_evidence(state: str, evidence: Mapping[str, object]) -> No
         raise ValueError("installer journal evidence must be a mapping")
     expected: dict[str, tuple[frozenset[str], str]] = {
         "PLANNED": (frozenset({"result"}), "PLAN_ACCEPTED"),
-        "MANAGED_TOOLS": (frozenset({"result", "tool_receipt_references", "post_tool_plan_fingerprint"}), "TOOLS_VERIFIED"),
+        "MANAGED_TOOLS": (frozenset({
+            "result", "tool_receipt_references", "python_runtime_receipt_reference",
+            "python_runtime_identity", "retained_python_runtime_identity", "post_tool_plan_fingerprint",
+        }), "TOOLS_VERIFIED"),
         "PRODUCT_OPERATIONS": (frozenset({"result", "product_receipt_references"}), "PRODUCT_OPERATIONS_DISPATCHED"),
         "READINESS": (frozenset({"result", "readiness_receipt_references"}), "READINESS_VERIFIED"),
         "CLEANUP_PENDING": (frozenset({"result", "cleanup_receipt_references", "failed_target_ids"}), "CLEANUP_PENDING"),
-        "RECOVERY_PENDING": (frozenset({"result", "recovery_receipt_references"}), "RECOVERY_PENDING"),
+        "RECOVERY_PENDING": (frozenset({
+            "result", "recovery_receipt_references", "python_runtime_rollback_receipt_reference",
+            "restored_python_runtime_identity",
+        }), "RECOVERY_PENDING"),
         "COMPLETE": (frozenset({"result", "cleanup_receipt_references"}), "CLEANUP_COMPLETE"),
         "FAILED": (frozenset({"result", "failure_code", "recovery_receipt_references"}), "FAILED"),
     }
@@ -2509,7 +2907,10 @@ def _validate_journal_evidence(state: str, evidence: Mapping[str, object]) -> No
         raise ValueError("installer journal evidence has unsupported fields or result")
     required_keys: dict[str, frozenset[str]] = {
         "PLANNED": frozenset({"result"}),
-        "MANAGED_TOOLS": frozenset({"result", "tool_receipt_references", "post_tool_plan_fingerprint"}),
+        "MANAGED_TOOLS": frozenset({
+            "result", "tool_receipt_references", "python_runtime_receipt_reference",
+            "python_runtime_identity", "retained_python_runtime_identity", "post_tool_plan_fingerprint",
+        }),
         "PRODUCT_OPERATIONS": frozenset({"result", "product_receipt_references"}),
         "READINESS": frozenset({"result", "readiness_receipt_references"}),
         "CLEANUP_PENDING": frozenset({"result", "cleanup_receipt_references", "failed_target_ids"}),
@@ -2544,6 +2945,26 @@ def _validate_journal_evidence(state: str, evidence: Mapping[str, object]) -> No
         value = evidence["post_tool_plan_fingerprint"]
         if not isinstance(value, str) or not re.fullmatch(r"[0-9a-f]{64}", value):
             raise ValueError("post_tool_plan_fingerprint must be a SHA-256 hex value")
+    if "python_runtime_receipt_reference" in evidence:
+        reference = evidence["python_runtime_receipt_reference"]
+        if not isinstance(reference, str) or not _OPAQUE_JOURNAL_REFERENCE.fullmatch(reference):
+            raise ValueError("python_runtime_receipt_reference must be an opaque reference")
+    if "python_runtime_identity" in evidence:
+        _digest(evidence["python_runtime_identity"], "journal Python runtime identity")
+        rollback = evidence["retained_python_runtime_identity"]
+        if rollback is not None:
+            _digest(rollback, "journal retained Python runtime identity")
+    recovery_pair = {
+        "python_runtime_rollback_receipt_reference",
+        "restored_python_runtime_identity",
+    }
+    if set(evidence) & recovery_pair:
+        if not recovery_pair <= set(evidence):
+            raise ValueError("Python runtime recovery evidence must be complete")
+        reference = evidence["python_runtime_rollback_receipt_reference"]
+        if not isinstance(reference, str) or not _OPAQUE_JOURNAL_REFERENCE.fullmatch(reference):
+            raise ValueError("python_runtime_rollback_receipt_reference must be an opaque reference")
+        _digest(evidence["restored_python_runtime_identity"], "restored Python runtime identity")
 
 
 @dataclass(frozen=True)
@@ -2572,6 +2993,9 @@ class InstallerOperationRecord:
     installer_bundle_digest: str
     composition_id: str
     composition_manifest_digest: str
+    python_runtime_identity: str
+    python_runtime_rollback_identity: str | None
+    product_venv_identities: tuple[tuple[str, str], ...]
     state: str
     events: tuple[InstallerJournalEvent, ...]
 
@@ -2590,6 +3014,12 @@ class InstallerOperationRecord:
             plan.installer_context.self_update.installed.bundle_digest,
             plan.composition_id,
             plan.manifest_digest,
+            plan.python_runtime_action.requirement.identity_digest,
+            plan.python_runtime_action.rollback_runtime_identity,
+            tuple(
+                (venv.component_identity, venv.venv_identity)
+                for venv in plan.product_venvs
+            ),
             "PLANNED",
             (InstallerJournalEvent("PLANNED", {"result": "PLAN_ACCEPTED"}),),
         )
@@ -2606,6 +3036,30 @@ class InstallerOperationRecord:
         _digest(self.installer_bundle_digest, "installer journal installer_bundle_digest")
         _composition_catalog_id(self.composition_id, "installer journal composition_id")
         _digest(self.composition_manifest_digest, "installer journal composition_manifest_digest")
+        _digest(self.python_runtime_identity, "installer journal Python runtime identity")
+        if self.python_runtime_rollback_identity is not None:
+            _digest(
+                self.python_runtime_rollback_identity,
+                "installer journal Python rollback runtime identity",
+            )
+            if self.python_runtime_rollback_identity == self.python_runtime_identity:
+                raise ValueError("installer journal Python rollback identity must differ from its target")
+        if (
+            not self.product_venv_identities
+            or any(
+                not isinstance(item, tuple)
+                or len(item) != 2
+                or item[0] not in COMPONENT_IDENTITIES
+                or not isinstance(item[1], str)
+                or not _SAFE_TARGET_ID.fullmatch(item[1])
+                for item in self.product_venv_identities
+            )
+        ):
+            raise ValueError("installer journal product venv identities are invalid")
+        if len({item[0] for item in self.product_venv_identities}) != len(self.product_venv_identities):
+            raise ValueError("installer journal product venv component identities must be unique")
+        if len({item[1] for item in self.product_venv_identities}) != len(self.product_venv_identities):
+            raise ValueError("installer journal product venv identities must be unique")
         if self.state not in INSTALLER_OPERATION_STATES:
             raise ValueError("installer operation state is unsupported")
         if not self.events or any(not isinstance(event, InstallerJournalEvent) for event in self.events):
@@ -2617,6 +3071,22 @@ class InstallerOperationRecord:
         for before, after in zip(self.events, self.events[1:]):
             if after.state not in _INSTALLER_OPERATION_TRANSITIONS[before.state]:
                 raise ValueError("installer operation journal has an invalid state transition")
+        for event in self.events:
+            if event.state == "MANAGED_TOOLS":
+                if event.evidence.get("python_runtime_identity") != self.python_runtime_identity:
+                    raise ValueError("installer journal managed-tool event has a different Python target")
+                if (
+                    event.evidence.get("retained_python_runtime_identity")
+                    != self.python_runtime_rollback_identity
+                ):
+                    raise ValueError("installer journal managed-tool event has a different Python rollback")
+            if event.state == "RECOVERY_PENDING" and "restored_python_runtime_identity" in event.evidence:
+                if (
+                    self.python_runtime_rollback_identity is None
+                    or event.evidence["restored_python_runtime_identity"]
+                    != self.python_runtime_rollback_identity
+                ):
+                    raise ValueError("installer journal recovery event has a different Python rollback")
 
     def transition(self, state: str, evidence: Mapping[str, object]) -> "InstallerOperationRecord":
         if state not in _INSTALLER_OPERATION_TRANSITIONS[self.state]:
@@ -2630,6 +3100,23 @@ class InstallerOperationRecord:
                 "managed tools require a verified reconciliation event before product operations"
             )
         event = InstallerJournalEvent(state, evidence)
+        if state == "MANAGED_TOOLS":
+            if evidence.get("python_runtime_identity") != self.python_runtime_identity:
+                raise UniversalInstallerError(
+                    "managed-tool receipt does not activate the journaled Python runtime identity"
+                )
+            if evidence.get("retained_python_runtime_identity") != self.python_runtime_rollback_identity:
+                raise UniversalInstallerError(
+                    "managed-tool receipt does not retain the journaled Python rollback identity"
+                )
+        if state == "RECOVERY_PENDING" and "restored_python_runtime_identity" in evidence:
+            if (
+                self.python_runtime_rollback_identity is None
+                or evidence["restored_python_runtime_identity"] != self.python_runtime_rollback_identity
+            ):
+                raise UniversalInstallerError(
+                    "recovery receipt does not restore the journaled Python rollback identity"
+                )
         return InstallerOperationRecord(
             self.operation_id,
             self.plan_fingerprint,
@@ -2639,6 +3126,9 @@ class InstallerOperationRecord:
             self.installer_bundle_digest,
             self.composition_id,
             self.composition_manifest_digest,
+            self.python_runtime_identity,
+            self.python_runtime_rollback_identity,
+            self.product_venv_identities,
             state,
             self.events + (event,),
         )
@@ -2646,7 +3136,8 @@ class InstallerOperationRecord:
 
 _INSTALLER_RECORD_FIELDS = frozenset({
     "operation_id", "plan_fingerprint", "requires_managed_tool_reconciliation", "installer_version", "installer_source_revision", "installer_bundle_digest",
-    "composition_id", "composition_manifest_digest", "state", "events",
+    "composition_id", "composition_manifest_digest", "python_runtime_identity",
+    "python_runtime_rollback_identity", "product_venv_identities", "state", "events",
 })
 _INSTALLER_EVENT_FIELDS = frozenset({"state", "evidence"})
 
@@ -2816,9 +3307,33 @@ class StandaloneInstallerJournal:
             _required(payload["installer_bundle_digest"], "installer journal installer_bundle_digest"),
             _composition_catalog_id(payload["composition_id"], "installer journal composition_id"),
             _required(payload["composition_manifest_digest"], "installer journal composition_manifest_digest"),
+            _required(payload["python_runtime_identity"], "installer journal Python runtime identity"),
+            (
+                None
+                if payload["python_runtime_rollback_identity"] is None
+                else _required(
+                    payload["python_runtime_rollback_identity"],
+                    "installer journal Python rollback runtime identity",
+                )
+            ),
+            StandaloneInstallerJournal._parse_product_venv_identities(payload["product_venv_identities"]),
             _required(payload["state"], "installer operation state"),
             tuple(events),
         )
+
+    @staticmethod
+    def _parse_product_venv_identities(value: object) -> tuple[tuple[str, str], ...]:
+        if not isinstance(value, list):
+            raise ValueError("installer journal product venv identities must be a list")
+        parsed: list[tuple[str, str]] = []
+        for item in value:
+            if not isinstance(item, list) or len(item) != 2:
+                raise ValueError("installer journal product venv identity is invalid")
+            parsed.append((
+                _required(item[0], "installer journal product venv component"),
+                _required(item[1], "installer journal product venv identity"),
+            ))
+        return tuple(parsed)
 
 
 class CompositionPlanner:
@@ -2830,6 +3345,7 @@ class CompositionPlanner:
         *,
         host_facts: HostFacts,
         managed_tool_readbacks: Mapping[str, ManagedToolReadback],
+        python_runtime_readback: ManagedPythonRuntimeReadback,
         provider_selections: Mapping[str, ProviderSelection],
         provider_readbacks: Mapping[str, ProviderReadback],
         selected_readbacks: Mapping[str, ProductInstallationReadback],
@@ -2847,6 +3363,7 @@ class CompositionPlanner:
             if not isinstance(readback, ProductInstallationReadback) or readback.component != identity:
                 raise UniversalInstallerError("selected product readback is invalid")
         tool_actions = plan_managed_tools(manifest.managed_tools, managed_tool_readbacks)
+        python_runtime_action = plan_managed_python_runtime(manifest.python_runtime, python_runtime_readback)
         provider_gate = evaluate_provider_gate(manifest.providers, provider_selections, provider_readbacks)
         component_diffs = CompositionPlanner._component_diffs(manifest, selected_readbacks, update_assessments, discovered_installations)
         return CompositionPlan(
@@ -2865,6 +3382,8 @@ class CompositionPlanner:
             preflight_host(manifest.host_requirement, host_facts),
             provider_gate,
             tool_actions,
+            python_runtime_action,
+            manifest.product_venvs,
             component_diffs,
         )
 

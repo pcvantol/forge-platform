@@ -14,16 +14,22 @@ release-composition evidence kernels. The component-operation contract consumes
 product-owned runtime readback, exact-candidate update assessment, and
 execute/resume evidence without selecting a runtime itself. A strict Universal
 Installer policy kernel and native macOS SwiftUI wizard shell now exist for
-self-update, signed composition selection, preflight, managed Git/Python
-planning, provider gating, and read-only diffs. A separate installer-release
+self-update, signed composition selection, preflight, managed Git, exact
+catalog-approved Python-runtime planning, provider gating, and read-only diffs.
+The Python contract binds one immutable version/artifact/provenance/ABI identity,
+requires component build-and-test evidence against it, freezes rollback state,
+and assigns one isolated venv identity per product without consulting `PATH`.
+A separate installer-release
 framework persists immutable `PREPARED` candidate bytes before qualification,
 can produce a source-only unsigned macOS `.app` candidate, and binds the exact
 staged archive digest to future signed evidence and a durable installer
 operation. Its release identity policy intentionally starts
 `UNCONFIGURED`, so protected signing/notarization/publication gates fail closed
 until the actual GitHub namespace, bundle/team identity and public-key policy
-are reviewed. A signed and notarized installer release, privileged
-bootstrapper, and concrete product adapters remain unimplemented; this
+are reviewed. No production arm64 Python artifact is approved yet; runtime
+installation and venv creation remain fail-closed executor work. A signed and
+notarized installer release, privileged bootstrapper, and concrete product
+adapters remain unimplemented; this
 repository does not publish producer product artifacts or change product
 runtime behavior.
 

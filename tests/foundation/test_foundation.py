@@ -141,12 +141,26 @@ def main() -> None:
         raise SystemExit("universal installer composition architecture must be arm64 only")
     if "2[6-9]" not in host_requirement["minimum_macos_version"].get("pattern", ""):
         raise SystemExit("universal installer composition must require macOS 26 or newer")
+    python_runtime = installer_composition["$defs"]["managed_python_runtime"]["properties"]
+    if python_runtime["architecture"] != {"const": "arm64"}:
+        raise SystemExit("managed Python runtime artifact must be arm64 only")
+    if python_runtime["managed_root_identity"] != {"const": "forge-platform-managed-python-v1"}:
+        raise SystemExit("managed Python runtime must remain installer-owned")
+    if installer_composition["$defs"]["managed_tool"]["properties"]["identity"] != {"const": "git"}:
+        raise SystemExit("Python must not regress to generic managed-tool or PATH selection")
+    installer_catalog = json.loads(
+        (ROOT / "schemas/universal-installer-composition-catalog.schema.json").read_text()
+    )
+    if "approved_python_runtime_identity" not in installer_catalog["required"]:
+        raise SystemExit("signed composition catalog must approve one exact Python runtime")
     package_manifest = (ROOT / "macos/ForgePlatformInstaller/Package.swift").read_text()
     if 'platforms: [.macOS("26.0")]' not in package_manifest:
         raise SystemExit("native installer package must target macOS 26")
     installer_version = json.loads((ROOT / "installer-version.json").read_text())
     if installer_version.get("product") != "forge-platform-installer":
         raise SystemExit("installer version authority is invalid")
+    if "managed-python-runtime/v1" not in installer_version.get("capabilities", []):
+        raise SystemExit("installer version authority omits exact managed-Python capability")
     canonical_versioning = (ROOT / ".github/workflows/canonical-versioning.yml").read_text()
     for required_command in (
         "scripts/validate_installer_version.py",

@@ -18,6 +18,13 @@ older are rejected before any platform mutation. Product artifacts and future
 platform expansion require their own reviewed increments; there is no fallback
 architecture in the current installer release or composition schemas.
 
+The signed composition catalog additionally approves one exact managed-Python
+runtime identity. A composition is admissible only when its full arm64/macOS-26
+runtime material, every component's build/test qualification, and one isolated
+venv identity per product bind that same digest. Runtime selection never uses
+`PATH`; the accepted operation freezes the target and any retained rollback
+identity. No production Python artifact or runtime executor is claimed yet.
+
 ## Installed-server deployment and topology bootstrap
 
 The accepted target deployment is defined by [ADR-0006](adr/ADR-0006-server-deployment-and-discovery.md) and the shared [instance discovery and pairing contract](INSTANCE_DISCOVERY_AND_PAIRING_CONTRACT.md). Forge Server, EP Server and Workspace Server are headless, independently installed services with separate central runtime roots, product-owned SQL/files and versioned HTTP APIs above their application services. They may share a host but not a database or direct SQL path.

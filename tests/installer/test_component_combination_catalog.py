@@ -184,6 +184,7 @@ def verified_outer_catalog(
         "channel": "stable",
         "published_at": published_at,
         "expires_at": expires_at,
+        "approved_python_runtime_identity": "sha256:" + "c" * 64,
         "compositions": [{
             "composition_id": "outer-catalog-fixture",
             "channel": "stable",

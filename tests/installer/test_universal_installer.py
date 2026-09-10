@@ -51,6 +51,8 @@ from forge_platform.universal_installer import (  # noqa: E402
     InstallerRelease,
     InstallerRequirement,
     InstallerOperationRecord,
+    ManagedPythonRuntimeIdentity,
+    ManagedPythonRuntimeReadback,
     ManagedToolReadback,
     ProviderReadback,
     ProviderSelection,
@@ -66,6 +68,7 @@ from forge_platform.universal_installer import (  # noqa: E402
     VerifiedInstallerContext,
     evaluate_provider_gate,
     canonical_https_url,
+    plan_managed_python_runtime,
     plan_managed_tools,
     preflight_host,
     provider_command,
@@ -80,6 +83,11 @@ EP_DIGEST = "sha256:" + "3" * 64
 OLD_EP_DIGEST = "sha256:" + "4" * 64
 GIT_DIGEST = "sha256:" + "5" * 64
 PYTHON_DIGEST = "sha256:" + "6" * 64
+PYTHON_SOURCE_DIGEST = "sha256:" + "c" * 64
+PYTHON_SOURCE_PROVENANCE_DIGEST = "sha256:" + "d" * 64
+PYTHON_BUILD_PROVENANCE_DIGEST = "sha256:" + "e" * 64
+PYTHON_BUILD_EVIDENCE_DIGEST = "sha256:" + "a" * 64
+PYTHON_TEST_EVIDENCE_DIGEST = "sha256:" + "b" * 64
 MANIFEST_DIGEST = "sha256:" + "7" * 64
 RELEASE_TRUST_CONFIGURATION_SHA256 = "8" * 64
 PROVENANCE_SHA256 = "9" * 64
@@ -87,6 +95,7 @@ CODE_DIRECTORY_SHA256 = "a" * 64
 NOTARIZATION_RECEIPT_REFERENCE = "receipt:fixture-notarization-arm64"
 INSTALLER_CAPABILITIES = (
     "composition/v1",
+    "managed-python-runtime/v1",
     "provider-gate/v1",
     "system-launchdaemon/v1",
 )
@@ -115,6 +124,47 @@ SEALED_RELEASE_TRUST = SealedInstallerReleaseTrustExpectation(
     expected_team_identifier="ABCDE12345",
     configuration_sha256=RELEASE_TRUST_CONFIGURATION_SHA256,
 )
+
+
+def python_runtime_payload(**changes: object) -> dict[str, object]:
+    payload: dict[str, object] = {
+        "schema": "forge-platform.managed-python-runtime/v1",
+        "implementation": "cpython",
+        "version": "3.14.7",
+        "operating_system": "macos",
+        "architecture": "arm64",
+        "minimum_macos_version": "26.0.0",
+        "build_variant": "standard-gil",
+        "python_tag": "cp314",
+        "abi_tag": "cp314",
+        "platform_tag": "macosx_26_0_arm64",
+        "artifact_kind": "forge-platform-managed-python-runtime-archive-v1",
+        "managed_root_identity": "forge-platform-managed-python-v1",
+        "artifact": {
+            "url": "https://artifacts.example.invalid/python-3.14.7-macos26-arm64.tar.zst",
+            "digest": PYTHON_DIGEST,
+        },
+        "source": {
+            "url": "https://artifacts.example.invalid/Python-3.14.7.tar.xz",
+            "digest": PYTHON_SOURCE_DIGEST,
+        },
+        "source_provenance": {
+            "url": "https://evidence.example.invalid/python-3.14.7-source-sigstore.json",
+            "digest": PYTHON_SOURCE_PROVENANCE_DIGEST,
+        },
+        "build_provenance": {
+            "url": "https://evidence.example.invalid/python-3.14.7-macos26-arm64-build.json",
+            "digest": PYTHON_BUILD_PROVENANCE_DIGEST,
+        },
+        "policy_revision": "forge-platform-managed-python-v1",
+    }
+    payload.update(changes)
+    identity_material = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    payload["identity_digest"] = "sha256:" + sha256(identity_material).hexdigest()
+    return payload
+
+
+PYTHON_RUNTIME_IDENTITY = python_runtime_payload()["identity_digest"]
 
 
 class FixtureVerifier:
@@ -340,8 +390,13 @@ def manifest_payload(
         },
         "managed_tools": [
             {"identity": "git", "version": "2.45.0", "url": "https://artifacts.example.invalid/git.pkg", "digest": GIT_DIGEST},
-            {"identity": "python", "version": "3.12.0", "url": "https://artifacts.example.invalid/python.pkg", "digest": PYTHON_DIGEST},
         ],
+        "python_runtime": python_runtime_payload(),
+        "product_venvs": [{
+            "component_identity": "engineering-platform-server",
+            "venv_identity": "engineering-platform-server-primary",
+            "python_runtime_identity": PYTHON_RUNTIME_IDENTITY,
+        }],
         "providers": providers if providers is not None else [
             {"identity": "codex", "required": True, "minimum_version": "1.0.0", "credential_scope": "user"},
             {"identity": "github-cli", "required": True, "minimum_version": "2.0.0", "credential_scope": "user"},
@@ -356,6 +411,17 @@ def manifest_payload(
                     "source": "https://registry.example.invalid/engineering-platform-2.3.1.whl",
                     "digest": EP_DIGEST,
                     "qualification": "https://evidence.example.invalid/ep-2.3.1",
+                },
+                "python_runtime_qualification": {
+                    "runtime_identity_digest": PYTHON_RUNTIME_IDENTITY,
+                    "build_evidence": {
+                        "url": "https://evidence.example.invalid/ep-2.3.1-python-build.json",
+                        "digest": PYTHON_BUILD_EVIDENCE_DIGEST,
+                    },
+                    "test_evidence": {
+                        "url": "https://evidence.example.invalid/ep-2.3.1-python-tests.json",
+                        "digest": PYTHON_TEST_EVIDENCE_DIGEST,
+                    },
                 },
                 "service": {"manager": "launchd", "domain": "system", "kind": "LaunchDaemon", "product_service_reference": "ep-server-service-v1"},
             },
@@ -406,8 +472,25 @@ def host_facts(
 def tool_readbacks() -> dict[str, ManagedToolReadback]:
     return {
         "git": ManagedToolReadback("git", "ACTIVE", SemanticVersion.parse("2.45.0"), GIT_DIGEST, "managed-git-root", "evidence:git"),
-        "python": ManagedToolReadback("python", "ACTIVE", SemanticVersion.parse("3.12.0"), PYTHON_DIGEST, "managed-python-root", "evidence:python"),
     }
+
+
+def python_runtime_readback(
+    *,
+    state: str = "ACTIVE",
+    runtime_identity: str | None = PYTHON_RUNTIME_IDENTITY,
+) -> ManagedPythonRuntimeReadback:
+    if state != "ACTIVE":
+        return ManagedPythonRuntimeReadback(state, None, None, None, (), f"evidence:python-{state.lower()}")
+    assert runtime_identity is not None
+    return ManagedPythonRuntimeReadback(
+        "ACTIVE",
+        runtime_identity,
+        "forge-platform-managed-python-v1",
+        "sha256-" + runtime_identity.removeprefix("sha256:"),
+        (),
+        "evidence:python-active",
+    )
 
 
 def provider_readbacks(*, github_state: str = "VERIFIED") -> dict[str, ProviderReadback]:
@@ -447,6 +530,7 @@ def selection(
     sequence: int = 4,
     accepted_catalog: AcceptedCatalogIdentity | None = None,
     manifest_changes: dict[str, object] | None = None,
+    approved_python_runtime_identity: str | None = None,
     trusted_clock: bool = True,
 ) -> VerifiedCompositionSelection:
     context = context or current_context()
@@ -458,6 +542,10 @@ def selection(
         "channel": "stable",
         "published_at": "2026-09-01T00:00:00Z",
         "expires_at": "2026-10-01T00:00:00Z",
+        "approved_python_runtime_identity": (
+            approved_python_runtime_identity
+            or json.loads(raw_manifest)["python_runtime"]["identity_digest"]
+        ),
         "compositions": [{
             "composition_id": composition_id,
             "channel": "stable",
@@ -554,6 +642,7 @@ class UniversalInstallerTests(unittest.TestCase):
             "channel": "stable",
             "published_at": "2026-09-01T00:00:00Z",
             "expires_at": "2026-10-01T00:00:00Z",
+            "approved_python_runtime_identity": PYTHON_RUNTIME_IDENTITY,
             "compositions": [{
                 "composition_id": "stable-001",
                 "channel": "stable",
@@ -584,6 +673,22 @@ class UniversalInstallerTests(unittest.TestCase):
             ).entries[0].composition_id,
             "stable-001",
         )
+        missing_python_approval = dict(catalog)
+        missing_python_approval.pop("approved_python_runtime_identity")
+        with self.assertRaisesRegex(ValueError, "fields are invalid"):
+            CompositionCatalog.from_signed_bytes(
+                json.dumps(missing_python_approval, sort_keys=True, separators=(",", ":")).encode("utf-8"),
+                FixtureVerifier(),
+                signature_policy=FIXTURE_SIGNATURE_POLICY,
+            )
+        invalid_python_approval = dict(catalog)
+        invalid_python_approval["approved_python_runtime_identity"] = "sha256:" + "A" * 64
+        with self.assertRaisesRegex(ValueError, "lowercase sha256"):
+            CompositionCatalog.from_signed_bytes(
+                json.dumps(invalid_python_approval, sort_keys=True, separators=(",", ":")).encode("utf-8"),
+                FixtureVerifier(),
+                signature_policy=FIXTURE_SIGNATURE_POLICY,
+            )
         for identity in ("stable 001", " stable-001", "stable-001 ", "stable\x00-001", "x" * 257):
             catalog["compositions"][0]["composition_id"] = identity
             boundary_raw = json.dumps(catalog, sort_keys=True, separators=(",", ":")).encode("utf-8")
@@ -1036,6 +1141,7 @@ class UniversalInstallerTests(unittest.TestCase):
             "channel": "stable",
             "published_at": "2026-09-01T00:00:00Z",
             "expires_at": "2026-10-01T00:00:00Z",
+            "approved_python_runtime_identity": PYTHON_RUNTIME_IDENTITY,
             "compositions": [{
                 "composition_id": "stable-001",
                 "channel": "stable",
@@ -1131,6 +1237,7 @@ class UniversalInstallerTests(unittest.TestCase):
             "channel": "stable",
             "published_at": "2026-09-01T00:00:00Z",
             "expires_at": "2026-10-01T00:00:00Z",
+            "approved_python_runtime_identity": PYTHON_RUNTIME_IDENTITY,
             "compositions": [{
                 "composition_id": "stable-001",
                 "channel": "stable",
@@ -1163,6 +1270,7 @@ class UniversalInstallerTests(unittest.TestCase):
                 channel=parsed.channel,
                 published_at=parsed.published_at,
                 expires_at=parsed.expires_at,
+                approved_python_runtime_identity=parsed.approved_python_runtime_identity,
                 entries=parsed.entries,
                 component_combination_catalog=parsed.component_combination_catalog,
                 catalog_digest=parsed.catalog_digest,
@@ -1244,6 +1352,7 @@ class UniversalInstallerTests(unittest.TestCase):
                 manifest(),
                 host_facts=host_facts(),
                 managed_tool_readbacks=tool_readbacks(),
+                python_runtime_readback=python_runtime_readback(),
                 provider_selections={"codex": ProviderSelection("codex", True), "github-cli": ProviderSelection("github-cli", True)},
                 provider_readbacks=provider_readbacks(),
                 selected_readbacks={"engineering-platform-server": absent_readback()},
@@ -1253,6 +1362,7 @@ class UniversalInstallerTests(unittest.TestCase):
             selection(),
             host_facts=host_facts(),
             managed_tool_readbacks=tool_readbacks(),
+            python_runtime_readback=python_runtime_readback(),
             provider_selections={"codex": ProviderSelection("codex", True), "github-cli": ProviderSelection("github-cli", True)},
             provider_readbacks=provider_readbacks(),
             selected_readbacks={"engineering-platform-server": active_readback(artifact=OLD_EP_ARTIFACT.correlation)},
@@ -1269,6 +1379,7 @@ class UniversalInstallerTests(unittest.TestCase):
             selection(),
             host_facts=host_facts(),
             managed_tool_readbacks=tool_readbacks(),
+            python_runtime_readback=python_runtime_readback(),
             provider_selections={"codex": ProviderSelection("codex", True), "github-cli": ProviderSelection("github-cli", True)},
             provider_readbacks=provider_readbacks(),
             selected_readbacks={"engineering-platform-server": active_readback(artifact=OLD_EP_ARTIFACT.correlation)},
@@ -1313,12 +1424,86 @@ class UniversalInstallerTests(unittest.TestCase):
 
     def test_managed_tool_plan_never_uses_path_and_unknown_inventory_blocks(self) -> None:
         actions = plan_managed_tools(manifest().managed_tools, tool_readbacks())
-        self.assertEqual([action.action for action in actions], ["NO_CHANGE", "NO_CHANGE"])
+        self.assertEqual([action.action for action in actions], ["NO_CHANGE"])
         unknown = dict(tool_readbacks())
         unknown["git"] = ManagedToolReadback("git", "UNKNOWN", None, None, None, "evidence:git-unknown")
         actions = plan_managed_tools(manifest().managed_tools, unknown)
         self.assertEqual(actions[0].action, "BLOCKED")
         self.assertFalse(hasattr(actions[0].readback, "path"))
+        with self.assertRaisesRegex(ValueError, "unsupported"):
+            ManagedToolReadback(
+                "python", "ACTIVE", SemanticVersion.parse("3.14.7"), PYTHON_DIGEST,
+                "managed-python-root", "evidence:python",
+            )
+
+    def test_exact_managed_python_runtime_is_path_independent_and_rollback_bound(self) -> None:
+        requirement = manifest().python_runtime
+        current = python_runtime_readback()
+        self.assertEqual(plan_managed_python_runtime(requirement, current).action, "NO_CHANGE")
+        self.assertFalse(hasattr(current, "path"))
+        self.assertEqual(
+            plan_managed_python_runtime(requirement, python_runtime_readback(state="ABSENT")).action,
+            "INSTALL",
+        )
+        self.assertEqual(
+            plan_managed_python_runtime(requirement, python_runtime_readback(state="UNKNOWN")).action,
+            "BLOCKED",
+        )
+        previous = "sha256:" + "0" * 64
+        upgrade = plan_managed_python_runtime(
+            requirement,
+            python_runtime_readback(runtime_identity=previous),
+        )
+        self.assertEqual(upgrade.action, "UPGRADE")
+        self.assertEqual(upgrade.rollback_runtime_identity, previous)
+
+    def test_managed_python_identity_is_exact_and_fails_closed_on_tampering(self) -> None:
+        payload = python_runtime_payload()
+        parsed = ManagedPythonRuntimeIdentity.from_mapping(payload)
+        self.assertEqual(str(parsed.version), "3.14.7")
+        self.assertEqual(parsed.identity_digest, PYTHON_RUNTIME_IDENTITY)
+        self.assertEqual(parsed.architecture, "arm64")
+        self.assertFalse(hasattr(parsed, "path"))
+
+        for field, value, message in (
+            ("version", "3.14.8", "identity_digest"),
+            ("architecture", "x86_64", "arm64-only"),
+            ("minimum_macos_version", "25.0.0", "macOS 26"),
+            ("abi_tag", "abi3", "ABI tag"),
+            ("platform_tag", "macosx_15_0_universal2", "platform tag"),
+        ):
+            tampered = dict(payload)
+            tampered[field] = value
+            with self.subTest(field=field), self.assertRaisesRegex(ValueError, message):
+                ManagedPythonRuntimeIdentity.from_mapping(tampered)
+
+    def test_signed_catalog_and_every_product_bind_one_python_runtime(self) -> None:
+        with self.assertRaisesRegex(UniversalInstallerError, "exact identity approved"):
+            selection(approved_python_runtime_identity="sha256:" + "f" * 64)
+
+        payload = manifest_payload()
+        payload["components"][0]["python_runtime_qualification"]["runtime_identity_digest"] = (
+            "sha256:" + "f" * 64
+        )
+        raw = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+        entry = CompositionCatalogEntry(
+            payload["composition_id"],
+            "stable",
+            DownloadIdentity(
+                "https://github.example.invalid/releases/python-mismatch.json",
+                "sha256:" + sha256(raw).hexdigest(),
+            ),
+            InstallerRequirement(SemanticVersion.parse("1.0.0"), frozenset(INSTALLER_CAPABILITIES)),
+        )
+        with self.assertRaisesRegex(ValueError, "built and tested"):
+            CompositionManifest.from_catalog_bytes(entry, raw)
+
+        payload = manifest_payload()
+        payload["product_venvs"][0]["python_runtime_identity"] = "sha256:" + "f" * 64
+        raw = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+        entry = replace(entry, manifest=DownloadIdentity(entry.manifest.url, "sha256:" + sha256(raw).hexdigest()))
+        with self.assertRaisesRegex(ValueError, "venvs must bind"):
+            CompositionManifest.from_catalog_bytes(entry, raw)
 
     def test_dynamic_provider_gate_blocks_until_both_required_providers_verify(self) -> None:
         requirements = manifest().providers
@@ -1345,6 +1530,7 @@ class UniversalInstallerTests(unittest.TestCase):
                 "workspace-client",
                 "client",
                 EP_ARTIFACT,
+                manifest().components[0].python_runtime_qualification,
                 SystemServiceContract("launchd", "system", "LaunchDaemon", "wrong-client-service"),
             )
 
@@ -1353,6 +1539,7 @@ class UniversalInstallerTests(unittest.TestCase):
             selection(),
             host_facts=host_facts(),
             managed_tool_readbacks=tool_readbacks(),
+            python_runtime_readback=python_runtime_readback(),
             provider_selections={"codex": ProviderSelection("codex", True), "github-cli": ProviderSelection("github-cli", True)},
             provider_readbacks=provider_readbacks(),
             selected_readbacks={"engineering-platform-server": absent_readback()},
@@ -1369,6 +1556,7 @@ class UniversalInstallerTests(unittest.TestCase):
             selection(),
             host_facts=host_facts(),
             managed_tool_readbacks=readbacks,
+            python_runtime_readback=python_runtime_readback(),
             provider_selections={"codex": ProviderSelection("codex", True), "github-cli": ProviderSelection("github-cli", True)},
             provider_readbacks=provider_readbacks(),
             selected_readbacks={"engineering-platform-server": absent_readback()},
@@ -1383,6 +1571,7 @@ class UniversalInstallerTests(unittest.TestCase):
             selection(),
             host_facts=host_facts(),
             managed_tool_readbacks=tool_readbacks(),
+            python_runtime_readback=python_runtime_readback(),
             provider_selections={"codex": ProviderSelection("codex", True), "github-cli": ProviderSelection("github-cli", True)},
             provider_readbacks=provider_readbacks(),
             selected_readbacks={"engineering-platform-server": absent_readback(inventory_coverage="PARTIAL")},
@@ -1396,6 +1585,7 @@ class UniversalInstallerTests(unittest.TestCase):
             selection(),
             host_facts=host_facts(),
             managed_tool_readbacks=tool_readbacks(),
+            python_runtime_readback=python_runtime_readback(),
             provider_selections={"codex": ProviderSelection("codex", True), "github-cli": ProviderSelection("github-cli", True)},
             provider_readbacks=provider_readbacks(github_state="AUTHENTICATION_REQUIRED"),
             selected_readbacks={"engineering-platform-server": active_readback(artifact=OLD_EP_ARTIFACT.correlation)},
@@ -1430,6 +1620,12 @@ class UniversalInstallerTests(unittest.TestCase):
             "managed_tools": [
                 {"identity": "git", "version": "2.45.0", "url": "https://artifacts.example.invalid/git.pkg", "digest": GIT_DIGEST},
             ],
+            "python_runtime": python_runtime_payload(),
+            "product_venvs": [{
+                "component_identity": "engineering-platform-server",
+                "venv_identity": "engineering-platform-server-primary",
+                "python_runtime_identity": PYTHON_RUNTIME_IDENTITY,
+            }],
             "providers": [
                 {"identity": "codex", "required": True, "minimum_version": "1.0.0", "credential_scope": "user"},
             ],
@@ -1441,6 +1637,17 @@ class UniversalInstallerTests(unittest.TestCase):
                         "version": "2.3.1", "source_revision": "e" * 40,
                         "source": "https://registry.example.invalid/engineering-platform-2.3.1.whl",
                         "digest": EP_DIGEST, "qualification": "https://evidence.example.invalid/ep",
+                    },
+                    "python_runtime_qualification": {
+                        "runtime_identity_digest": PYTHON_RUNTIME_IDENTITY,
+                        "build_evidence": {
+                            "url": "https://evidence.example.invalid/ep-python-build.json",
+                            "digest": PYTHON_BUILD_EVIDENCE_DIGEST,
+                        },
+                        "test_evidence": {
+                            "url": "https://evidence.example.invalid/ep-python-tests.json",
+                            "digest": PYTHON_TEST_EVIDENCE_DIGEST,
+                        },
                     },
                     "service": {"manager": "launchd", "domain": "system", "kind": "LaunchDaemon", "product_service_reference": "ep-server-v1"},
                 },
@@ -1514,6 +1721,7 @@ class UniversalInstallerTests(unittest.TestCase):
             selection(),
             host_facts=host_facts(),
             managed_tool_readbacks=tool_readbacks(),
+            python_runtime_readback=python_runtime_readback(),
             provider_selections={"codex": ProviderSelection("codex", True), "github-cli": ProviderSelection("github-cli", True)},
             provider_readbacks=provider_readbacks(),
             selected_readbacks={"engineering-platform-server": absent_readback()},
@@ -1566,15 +1774,22 @@ class UniversalInstallerTests(unittest.TestCase):
             selection(),
             host_facts=host_facts(),
             managed_tool_readbacks=tool_readbacks(),
+            python_runtime_readback=python_runtime_readback(),
             provider_selections={"codex": ProviderSelection("codex", True), "github-cli": ProviderSelection("github-cli", True)},
             provider_readbacks=provider_readbacks(),
             selected_readbacks={"engineering-platform-server": absent_readback()},
             update_assessments={},
         )
+        self.assertEqual(plan.python_runtime_action.action, "NO_CHANGE")
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary) / "installer operations"
             journal = StandaloneInstallerJournal(root)
             record = InstallerOperationRecord.create("install-001", plan)
+            self.assertEqual(record.python_runtime_identity, PYTHON_RUNTIME_IDENTITY)
+            self.assertEqual(
+                record.product_venv_identities,
+                (("engineering-platform-server", "engineering-platform-server-primary"),),
+            )
             self.assertEqual(journal.start(record), record)
             self.assertEqual(oct((root / "install-001.json").stat().st_mode & 0o777), "0o600")
             self.assertEqual(oct(root.stat().st_mode & 0o777), "0o700")
@@ -1624,6 +1839,7 @@ class UniversalInstallerTests(unittest.TestCase):
                 selection(),
                 host_facts=host_facts(),
                 managed_tool_readbacks=tool_inventory,
+                python_runtime_readback=python_runtime_readback(),
                 provider_selections={"codex": ProviderSelection("codex", True), "github-cli": ProviderSelection("github-cli", True)},
                 provider_readbacks=provider_readbacks(),
                 selected_readbacks={"engineering-platform-server": absent_readback()},
@@ -1643,6 +1859,9 @@ class UniversalInstallerTests(unittest.TestCase):
                 {
                     "result": "TOOLS_VERIFIED",
                     "tool_receipt_references": ["receipt:tool-git"],
+                    "python_runtime_receipt_reference": "receipt:python-runtime",
+                    "python_runtime_identity": PYTHON_RUNTIME_IDENTITY,
+                    "retained_python_runtime_identity": None,
                     "post_tool_plan_fingerprint": "a" * 64,
                 },
             )
@@ -1654,6 +1873,50 @@ class UniversalInstallerTests(unittest.TestCase):
                 ).state,
                 "PRODUCT_OPERATIONS",
             )
+
+        previous_python = "sha256:" + "0" * 64
+        upgrade_plan = CompositionPlanner.plan(
+            selection(),
+            host_facts=host_facts(),
+            managed_tool_readbacks=tool_readbacks(),
+            python_runtime_readback=python_runtime_readback(runtime_identity=previous_python),
+            provider_selections={"codex": ProviderSelection("codex", True), "github-cli": ProviderSelection("github-cli", True)},
+            provider_readbacks=provider_readbacks(),
+            selected_readbacks={"engineering-platform-server": absent_readback()},
+            update_assessments={},
+        )
+        upgrade_record = InstallerOperationRecord.create("upgrade-python", upgrade_plan)
+        self.assertEqual(upgrade_record.python_runtime_rollback_identity, previous_python)
+        evidence = {
+            "result": "TOOLS_VERIFIED",
+            "tool_receipt_references": ["receipt:python-runtime"],
+            "python_runtime_receipt_reference": "receipt:python-runtime",
+            "python_runtime_identity": PYTHON_RUNTIME_IDENTITY,
+            "retained_python_runtime_identity": previous_python,
+            "post_tool_plan_fingerprint": "b" * 64,
+        }
+        with self.assertRaisesRegex(UniversalInstallerError, "does not activate"):
+            upgrade_record.transition(
+                "MANAGED_TOOLS",
+                {**evidence, "python_runtime_identity": "sha256:" + "f" * 64},
+            )
+        managed_record = upgrade_record.transition("MANAGED_TOOLS", evidence)
+        self.assertEqual(managed_record.state, "MANAGED_TOOLS")
+        recovery_evidence = {
+            "result": "RECOVERY_PENDING",
+            "recovery_receipt_references": ["receipt:python-recovery"],
+            "python_runtime_rollback_receipt_reference": "receipt:python-rollback",
+            "restored_python_runtime_identity": previous_python,
+        }
+        with self.assertRaisesRegex(UniversalInstallerError, "does not restore"):
+            managed_record.transition(
+                "RECOVERY_PENDING",
+                {**recovery_evidence, "restored_python_runtime_identity": "sha256:" + "f" * 64},
+            )
+        self.assertEqual(
+            managed_record.transition("RECOVERY_PENDING", recovery_evidence).state,
+            "RECOVERY_PENDING",
+        )
 
 
 if __name__ == "__main__":

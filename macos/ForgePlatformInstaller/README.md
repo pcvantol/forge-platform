@@ -20,7 +20,8 @@ The shell provides these gated screens:
   requirements before any downstream gate;
 - host-preflight evidence, including installer-owned Git and Python toolchain
   checks for that accepted session without selecting or modifying an unrelated
-  global toolchain;
+  global toolchain; the signed outer catalog now carries the one exact approved
+  managed-Python identity for subsequent manifest/session verification;
 - a dynamic Codex CLI / GitHub CLI provider screen, with independent selection,
   install, authentication, and verification states derived only from that
   session;
@@ -126,12 +127,15 @@ descriptor verifier; it does not fetch a feed, authorize an update, stage
 bytes, or grant product authority. Source builds carry no provenance resource
 and remain fail-closed.
 
-The default coordinator fails closed. The current generic Python planning seam
-does not yet establish the next increment's exact platform-approved Python
-runtime identity. That future signed identity must bind version, macOS/arm64
-artifact digest, source/build provenance, ABI/tag, minimum macOS and policy
-revision, and all product release evidence must refer to that same identity;
-each product remains in its own venv. This package deliberately ships no real
+The default coordinator fails closed. The native signed-catalog verifier now
+requires and returns one exact approved managed-Python identity; the Python
+policy kernel verifies the complete version, thin arm64 macOS artifact,
+source/build provenance, ABI/tag, minimum macOS and policy-revision material,
+requires every product's build/test evidence to name that identity, assigns
+each product a distinct opaque venv identity, and freezes target/rollback
+identities in the operation journal. This is a source contract, not a runtime
+installer: the package does not download or install Python, create a venv, or
+claim that a production arm64 runtime artifact has been approved. It ships no real
 release URL, signing key, credential, shell invocation, privileged helper or
 product adapter. A production composition must inject implementations for the
 signed-feed verifier, current-bundle inspector, operation-owned downloader,
