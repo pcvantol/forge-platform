@@ -307,7 +307,9 @@ final class SignedCompositionCatalogTests: XCTestCase {
     }
 }
 
-private struct CatalogFixture {
+/// Shared signed-catalog fixture for core test targets. It creates only
+/// ephemeral keys and fixture data; no test can turn it into production trust.
+struct CatalogFixture {
     private struct SigningKey {
         let id: String
         let key: Curve25519.Signing.PrivateKey
@@ -317,6 +319,7 @@ private struct CatalogFixture {
     let feed: VerifiedCompositionCatalogFeedLocator
     let currentInstaller: CurrentVerifiedInstallerCompositionContext
     let verifier: SignedCompositionCatalogFeedVerifier
+    let trustConfiguration: SealedCompositionCatalogTrustConfiguration
     private let signingKeys: [SigningKey]
     private let trustDigest = String(repeating: "d", count: 64)
 
@@ -339,6 +342,16 @@ private struct CatalogFixture {
             ed25519PublicKeys: catalogKeys
         )
         verifier = SignedCompositionCatalogFeedVerifier(signaturePolicy: catalogPolicy)
+        trustConfiguration = try SealedCompositionCatalogTrustConfiguration(
+            configurationSHA256: SealedCompositionCatalogTrustConfiguration.canonicalSHA256(
+                installerReleaseTrustConfigurationSHA256: catalogPolicy.installerReleaseTrustConfigurationSHA256,
+                signatureThreshold: catalogPolicy.signatureThreshold,
+                ed25519PublicKeys: catalogPolicy.ed25519PublicKeys
+            ),
+            installerReleaseTrustConfigurationSHA256: catalogPolicy.installerReleaseTrustConfigurationSHA256,
+            signatureThreshold: catalogPolicy.signatureThreshold,
+            ed25519PublicKeys: catalogPolicy.ed25519PublicKeys
+        )
 
         let asset = try GitHubInstallerReleaseAsset(
             repository: "example-owner/forge-platform-installer",
@@ -385,6 +398,22 @@ private struct CatalogFixture {
         )
     }
 
+    func trustConfiguration(
+        boundTrustDigest: String
+    ) throws -> SealedCompositionCatalogTrustConfiguration {
+        let catalogPolicy = try policy(boundTrustDigest: boundTrustDigest)
+        return try SealedCompositionCatalogTrustConfiguration(
+            configurationSHA256: SealedCompositionCatalogTrustConfiguration.canonicalSHA256(
+                installerReleaseTrustConfigurationSHA256: catalogPolicy.installerReleaseTrustConfigurationSHA256,
+                signatureThreshold: catalogPolicy.signatureThreshold,
+                ed25519PublicKeys: catalogPolicy.ed25519PublicKeys
+            ),
+            installerReleaseTrustConfigurationSHA256: catalogPolicy.installerReleaseTrustConfigurationSHA256,
+            signatureThreshold: catalogPolicy.signatureThreshold,
+            ed25519PublicKeys: catalogPolicy.ed25519PublicKeys
+        )
+    }
+
     func readback(
         _ bytes: Data,
         feed: VerifiedCompositionCatalogFeedLocator? = nil,
@@ -399,6 +428,34 @@ private struct CatalogFixture {
             observedAt: readbackObservedAt,
             freshUntil: freshUntil ?? readbackObservedAt.addingTimeInterval(60),
             trustedClock: trustedClock
+        )
+    }
+
+    func transportReadback(
+        _ bytes: Data,
+        feed: VerifiedCompositionCatalogFeedLocator? = nil
+    ) throws -> UntrustedCompositionCatalogFeedReadback {
+        try UntrustedCompositionCatalogFeedReadback(feed: feed ?? self.feed, bytes: bytes)
+    }
+
+    func clockAttestation(
+        _ bytes: Data,
+        feed: VerifiedCompositionCatalogFeedLocator? = nil,
+        observedAt: Date? = nil,
+        freshUntil: Date? = nil,
+        trustedClock: Bool = true,
+        verifiedAt: Date? = nil
+    ) throws -> TrustedCompositionCatalogClockAttestation {
+        let trustedReadback = try readback(
+            bytes,
+            feed: feed,
+            observedAt: observedAt,
+            freshUntil: freshUntil,
+            trustedClock: trustedClock
+        )
+        return try TrustedCompositionCatalogClockAttestation(
+            readback: trustedReadback,
+            verifiedAt: verifiedAt ?? trustedReadback.observedAt
         )
     }
 

@@ -37,23 +37,24 @@ only when installer sequence, provenance, release-trust-configuration digest,
 catalog locator, distinct outer catalog/index identities, selected entry and
 provider requirements are bound to that context; concurrent, stale and
 mismatched results fail closed. The core now includes an internal, read-only
-outer-catalog admission kernel: it checks a bounded strict-JSON readback,
-five-minute trusted-clock freshness, exact locator/channel binding, a
-separately scoped Ed25519 threshold policy, expiry and caller-supplied
-anti-replay evidence. Its output is internal verified outer-catalog evidence
-plus a candidate anchor; it does not fetch, persist, select an index/manifest,
-produce a session or change a product. The default preparer therefore remains
-typed unavailable. The core now also has an unassembled, credential-free
-exact-locator transport seam and a code-signed catalog-trust resource loader;
-an absent resource fails closed and neither facility supplies trusted-clock
-evidence. It also has an unassembled, installer-owned durable catalog-anchor
-store keyed by raw release-trust digest, channel and exact feed locator. That
-store accepts only a typed `COMPLETE` terminal-operation commitment and rejects
-regression/conflicting bytes, but it has no product receipt validator or caller
-yet. This package still has no manifest verifier or session-plan producer. A
-future trusted selector must first accept one immutable composition session;
-every enabled provider from that session must then be in the `verified` state
-before the wizard can continue.
+catalog-admission coordinator: it loads only sealed catalog trust, fetches the
+exact sealed locator, requires separately injected independent clock evidence
+for those exact bytes, and reads (but cannot write) the durable anti-replay
+anchor before applying strict JSON/signature/channel/expiry verification. Its
+output is ephemeral verified outer-catalog evidence plus a candidate anchor; it
+does not persist, select an index/manifest, produce a session or change a
+product. The default clock attester is typed unavailable—neither the local
+clock nor an HTTP `Date` header is sufficient evidence—and the default session
+preparer remains typed unavailable. The core also has a credential-free
+exact-locator transport seam, a code-signed catalog-trust resource loader and
+an installer-owned durable catalog-anchor store keyed by raw release-trust
+digest, channel and exact feed locator. The store accepts only a typed
+`COMPLETE` terminal-operation commitment and rejects regression/conflicting
+bytes, but it has no product receipt validator or caller yet. This package
+still has no manifest verifier or session-plan producer. A future trusted
+selector must first accept one immutable composition session; every enabled
+provider from that session must then be in the `verified` state before the
+wizard can continue.
 
 The released app is wired through `ReleasedInstallerStartupBoundary`: it does
 not construct a wizard with `UnavailableInstallerWizardCoordinator`, and it

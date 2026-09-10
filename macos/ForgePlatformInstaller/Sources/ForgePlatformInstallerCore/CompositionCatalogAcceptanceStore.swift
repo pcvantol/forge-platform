@@ -2,20 +2,33 @@ import CryptoKit
 import Darwin
 import Foundation
 
-/// Read/write seam for the highest terminally committed signed catalog per
-/// exact installer trust, channel and feed scope. This is deliberately
+/// Read-only capability for the highest terminally committed signed catalog
+/// per exact installer trust, channel and feed scope. This is deliberately
 /// separate from installer self-update acceptance: a catalog anchor may not be
-/// read from or written to a product data root, nor may it be saved as a bare
+/// read from a product data root, nor may it be treated as a bare
 /// sequence/digest outside a completed composition operation.
-protocol CompositionCatalogAcceptanceStoring: Sendable {
+///
+/// Keeping this capability distinct lets a catalog-admission reader prove
+/// replay protection without acquiring authority to record a new acceptance.
+protocol CompositionCatalogAcceptanceReading: Sendable {
     func loadAcceptedCatalog(
         for scope: CompositionCatalogAcceptanceScope
     ) async -> Result<CompositionCatalogAcceptance?, CompositionCatalogAcceptanceStorageFailure>
+}
 
+/// Write capability for a future product-owned terminal operation coordinator.
+/// It is intentionally absent from read-only admission and session-selection
+/// boundaries: only validated terminal product evidence may advance an anchor.
+protocol CompositionCatalogAcceptanceCommitting: Sendable {
     func commit(
         _ commitment: CompositionCatalogTerminalCommitment
     ) async -> Result<Void, CompositionCatalogAcceptanceStorageFailure>
 }
+
+/// Backwards-compatible aggregate for the durable store itself. New readers
+/// should depend on `CompositionCatalogAcceptanceReading` and receive no
+/// commit authority.
+protocol CompositionCatalogAcceptanceStoring: CompositionCatalogAcceptanceReading, CompositionCatalogAcceptanceCommitting {}
 
 /// The storage boundary deliberately returns one generic failure. A caller
 /// must not project a state path, lock condition, malformed record, catalog
