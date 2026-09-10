@@ -222,6 +222,10 @@ public struct VerifiedInstallerReleaseRecord: Equatable, Sendable {
     /// is signed release metadata, not an unchecked checksum supplied by the
     /// bundle currently being launched.
     public let expectedReleaseTrustConfigurationSHA256: String
+    /// Catalog-feed locator carried by the same verified installer descriptor.
+    /// It is a locator for a future separately trusted catalog verifier, not a
+    /// catalog trust root and not a UI/network authority on its own.
+    public let compositionCatalogFeed: VerifiedCompositionCatalogFeedLocator
     public let notarizationReference: String
     public let githubAsset: GitHubInstallerReleaseAsset
 
@@ -237,6 +241,7 @@ public struct VerifiedInstallerReleaseRecord: Equatable, Sendable {
         capabilities: [String],
         provenanceSHA256: String,
         expectedReleaseTrustConfigurationSHA256: String,
+        compositionCatalogFeed: VerifiedCompositionCatalogFeedLocator,
         notarizationReference: String,
         githubAsset: GitHubInstallerReleaseAsset
     ) throws {
@@ -287,6 +292,7 @@ public struct VerifiedInstallerReleaseRecord: Equatable, Sendable {
             releaseTrustConfigurationSHA256: expectedReleaseTrustConfigurationSHA256
         )
         self.expectedReleaseTrustConfigurationSHA256 = expectedReleaseTrustConfigurationSHA256
+        self.compositionCatalogFeed = compositionCatalogFeed
         self.notarizationReference = notarizationReference
         self.githubAsset = githubAsset
     }
@@ -513,8 +519,26 @@ public actor VerifiedInstallerSelfUpdateCoordinator: TrustedInstallerRuntime {
     private let atomicHandoff: any InstallerAtomicHandoffPerforming
     private let recoveryStore: any InstallerSelfUpdateRecoveryStoring
     private let operationLock: any InstallerSelfUpdateOperationLocking
+    /// The catalog/session collaborator remains deliberately separate from
+    /// self-update.  The default is fail-closed until a later increment adds a
+    /// reviewed catalog trust policy and native verifier.
+    private let compositionSessionPreparer: any VerifiedCompositionSessionPreparing
 
     private var pendingUpdate: PendingUpdate?
+    /// A release record observed during an update check is not yet authority
+    /// for composition.  It becomes current only after `enforceCurrentInstaller`
+    /// has completed its mandatory self-update path.
+    private var checkedCurrentReleaseRecord: VerifiedInstallerReleaseRecord?
+    private var currentVerifiedReleaseRecord: VerifiedInstallerReleaseRecord?
+    private var preparedCompositionSession: VerifiedCompositionSessionPlan?
+    /// A selector may perform independent verification asynchronously.  Admit
+    /// only one request for a current release generation; a second request
+    /// cannot create a competing catalog/index/manifest decision while the
+    /// first is in flight.
+    private var inFlightCompositionSessionGeneration: UInt64?
+    /// Prevent an in-flight asynchronous preparer result from being accepted
+    /// after any new currency check invalidates the current release context.
+    private var compositionSessionGeneration: UInt64 = 0
     /// Retained only after a verified atomic handoff has persisted its receipt.
     /// `O_CLOEXEC`/process termination releases a real file lease; keeping it
     /// here closes the gap where an old installer is still alive while its
@@ -528,7 +552,8 @@ public actor VerifiedInstallerSelfUpdateCoordinator: TrustedInstallerRuntime {
         artifactVerifier: any StagedInstallerArtifactVerifying,
         atomicHandoff: any InstallerAtomicHandoffPerforming,
         recoveryStore: any InstallerSelfUpdateRecoveryStoring,
-        operationLock: any InstallerSelfUpdateOperationLocking
+        operationLock: any InstallerSelfUpdateOperationLocking,
+        compositionSessionPreparer: any VerifiedCompositionSessionPreparing = UnavailableVerifiedCompositionSessionPreparer()
     ) {
         self.releaseFeed = releaseFeed
         self.currentBundleInspector = currentBundleInspector
@@ -537,6 +562,7 @@ public actor VerifiedInstallerSelfUpdateCoordinator: TrustedInstallerRuntime {
         self.atomicHandoff = atomicHandoff
         self.recoveryStore = recoveryStore
         self.operationLock = operationLock
+        self.compositionSessionPreparer = compositionSessionPreparer
     }
 
     public func checkForUpdate(currentVersion: InstallerVersion) async -> SelfUpdateCheckResult {
@@ -549,6 +575,7 @@ public actor VerifiedInstallerSelfUpdateCoordinator: TrustedInstallerRuntime {
 
     private func checkForUpdateWhileLocked(currentVersion: InstallerVersion) async -> SelfUpdateCheckResult {
         pendingUpdate = nil
+        invalidateVerifiedCompositionSession()
 
         switch await recoverInterruptedUpdate() {
         case .success:
@@ -589,12 +616,56 @@ public actor VerifiedInstallerSelfUpdateCoordinator: TrustedInstallerRuntime {
         }
     }
 
-    /// This coordinator owns only the installer release-update lifecycle. It
-    /// intentionally has no catalog/manifest verifier or composition-session
-    /// authority, so even a successfully current installer cannot continue to
-    /// preflight, provider, or product work through this runtime alone.
+    /// A composition session may cross into the wizard only after this runtime
+    /// retained one exact current release record through mandatory startup
+    /// enforcement.  The injected preparer supplies no new trust root here:
+    /// the default remains unavailable, and a future implementation is still
+    /// responsible for catalog/index/manifest verification under its own
+    /// reviewed policy.
     public func prepareVerifiedCompositionSession() async -> InstallerSessionPreparationResult {
-        .unavailable(.coordinatorUnavailable)
+        guard let currentVerifiedReleaseRecord else {
+            return .unavailable(.selectionUnavailable)
+        }
+        if let preparedCompositionSession {
+            return .prepared(preparedCompositionSession)
+        }
+
+        let context = CurrentVerifiedInstallerCompositionContext(release: currentVerifiedReleaseRecord)
+        let generation = compositionSessionGeneration
+        guard inFlightCompositionSessionGeneration == nil else {
+            return .unavailable(.selectionUnavailable)
+        }
+        inFlightCompositionSessionGeneration = generation
+        let result = await compositionSessionPreparer.prepareVerifiedCompositionSession(for: context)
+
+        // Actor reentrancy permits a concurrent update check or a second
+        // preparation request while the collaborator is suspended.  A result
+        // belonging to a superseded release context, or a request racing the
+        // one already in flight, cannot be admitted.
+        guard inFlightCompositionSessionGeneration == generation else {
+            return .unavailable(.selectionUnavailable)
+        }
+        inFlightCompositionSessionGeneration = nil
+        guard generation == compositionSessionGeneration,
+              self.currentVerifiedReleaseRecord == currentVerifiedReleaseRecord else {
+            return .unavailable(.selectionUnavailable)
+        }
+        switch result {
+        case .unavailable:
+            return result
+        case .prepared(let plan):
+            guard context.accepts(plan) else {
+                return .unavailable(.selectionUnavailable)
+            }
+            if let preparedCompositionSession {
+                guard preparedCompositionSession == plan else {
+                    return .unavailable(.selectionUnavailable)
+                }
+                return .prepared(preparedCompositionSession)
+            }
+            self.preparedCompositionSession = plan
+            return .prepared(plan)
+        }
     }
 
     /// The startup path deliberately owns one lease from interrupted-operation
@@ -609,6 +680,12 @@ public actor VerifiedInstallerSelfUpdateCoordinator: TrustedInstallerRuntime {
             return .failed(reason)
         case .verifiedGitHubRelease(let release):
             if release.version == currentVersion {
+                guard let checkedCurrentReleaseRecord,
+                      checkedCurrentReleaseRecord.release == release else {
+                    return .failed(InstallerSelfUpdateFailureCode.releaseMetadataRejected.userFacingMessage)
+                }
+                currentVerifiedReleaseRecord = checkedCurrentReleaseRecord
+                self.checkedCurrentReleaseRecord = nil
                 return .current(release)
             }
             switch await handOffSelfUpdateWhileLocked(release) {
@@ -642,6 +719,7 @@ public actor VerifiedInstallerSelfUpdateCoordinator: TrustedInstallerRuntime {
             guard isExactCurrentRelease(currentBundle, latestRelease) else {
                 return rejected(.releaseIdentityConflict)
             }
+            checkedCurrentReleaseRecord = latestRelease
             return .verifiedGitHubRelease(latestRelease.release)
         }
 
@@ -673,7 +751,8 @@ public actor VerifiedInstallerSelfUpdateCoordinator: TrustedInstallerRuntime {
     }
 
     public func handOffSelfUpdate(_ release: VerifiedInstallerRelease) async -> SelfUpdateHandoffResult {
-        await whileExclusivelyLocked(
+        invalidateVerifiedCompositionSession()
+        return await whileExclusivelyLocked(
             unavailable: { self.failed($0.code) },
             retainLeaseWhen: { result in
                 if case .relaunching = result {
@@ -943,6 +1022,14 @@ public actor VerifiedInstallerSelfUpdateCoordinator: TrustedInstallerRuntime {
         hasExpectedApplicationIdentity(currentBundle, for: release)
             && release.release.version > currentBundle.version
             && release.sequence > currentBundle.acceptedReleaseSequence
+    }
+
+    private func invalidateVerifiedCompositionSession() {
+        checkedCurrentReleaseRecord = nil
+        currentVerifiedReleaseRecord = nil
+        preparedCompositionSession = nil
+        inFlightCompositionSessionGeneration = nil
+        compositionSessionGeneration &+= 1
     }
 
     private func recoverInterruptedUpdate() async -> Result<Void, InstallerSelfUpdateFailure> {

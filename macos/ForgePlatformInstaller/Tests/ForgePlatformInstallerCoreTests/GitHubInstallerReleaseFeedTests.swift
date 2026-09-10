@@ -44,6 +44,7 @@ final class GitHubInstallerReleaseFeedTests: XCTestCase {
         XCTAssertEqual(record.provenanceExpectation.policyRevision, "release/v2")
         XCTAssertEqual(record.provenanceExpectation.capabilities, ["composition/v1", "provider-gate/v1"])
         XCTAssertEqual(record.expectedCodeDirectorySHA256, fixture.codeDirectorySHA256)
+        XCTAssertEqual(record.compositionCatalogFeed.url, "https://catalog.example.test/feed.json")
         XCTAssertEqual(record.notarizationReference, "receipt:installer-arm64-v2")
         XCTAssertEqual(
             acceptance,

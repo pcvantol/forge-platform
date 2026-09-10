@@ -351,6 +351,9 @@ private func makeHandoffFixture() throws -> AtomicHandoffFixture {
         capabilities: ["component-provisioner/v1", "provider-gate/v1"],
         provenanceSHA256: provenance.provenanceSHA256,
         expectedReleaseTrustConfigurationSHA256: trust.configurationSHA256,
+        compositionCatalogFeed: try VerifiedCompositionCatalogFeedLocator(
+            url: "https://catalog.example.invalid/forge-platform/stable.json"
+        ),
         notarizationReference: "receipt:notarization-ticket-v1",
         githubAsset: githubAsset
     )
