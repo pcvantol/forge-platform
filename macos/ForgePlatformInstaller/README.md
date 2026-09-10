@@ -42,8 +42,18 @@ exact sealed locator, requires separately injected independent clock evidence
 for those exact bytes, and reads (but cannot write) the durable anti-replay
 anchor before applying strict JSON/signature/channel/expiry verification. Its
 output is ephemeral verified outer-catalog evidence plus a candidate anchor; it
-does not persist, select an index/manifest, produce a session or change a
-product. The default clock attester is typed unavailable—neither the local
+does not persist, fetch an index/manifest, produce a session or change a
+product. A separate pure native selector accepts only exact index bytes pinned
+by that verified outer catalog. It retains distinct outer/index identities,
+rechecks both outer/index publication and expiry against supplied trusted time,
+requires an exact requested component set and explicit upgrade route, and
+returns `installerUpdateRequired` for the newest routable entry when its
+minimum version or capabilities exceed the current installer; it never falls
+back to older bytes. When a future coordinator supplies a matching accepted
+index anchor, it rejects replay and same-sequence/different-byte input. The
+selector writes no anti-replay anchor and has no
+transport, manifest, session, UI, provider or product-operation authority. The
+default clock attester is typed unavailable—neither the local
 clock nor an HTTP `Date` header is sufficient evidence—and the default session
 preparer remains typed unavailable. The core also has a credential-free
 exact-locator transport seam, a code-signed catalog-trust resource loader and
@@ -52,7 +62,7 @@ digest, channel and exact feed locator. The store accepts only a typed
 `COMPLETE` terminal-operation commitment and rejects regression/conflicting
 bytes, but it has no product receipt validator or caller yet. This package
 still has no manifest verifier or session-plan producer. A future trusted
-selector must first accept one immutable composition session; every enabled
+coordinator must first accept one immutable composition session; every enabled
 provider from that session must then be in the `verified` state before the
 wizard can continue.
 

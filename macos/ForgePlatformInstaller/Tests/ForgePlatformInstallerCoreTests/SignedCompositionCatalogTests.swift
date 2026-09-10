@@ -323,7 +323,10 @@ struct CatalogFixture {
     private let signingKeys: [SigningKey]
     private let trustDigest = String(repeating: "d", count: 64)
 
-    init() throws {
+    init(
+        installerVersion: String = "1.0.0",
+        installerCapabilities: [String] = ["composition/v1", "provider-gate/v1"]
+    ) throws {
         now = try XCTUnwrap(ISO8601DateFormatter().date(from: "2026-09-10T12:00:00Z"))
         feed = try VerifiedCompositionCatalogFeedLocator(url: "https://catalog.example.test/catalog.json")
         let first = SigningKey(id: "catalog-a", key: Curve25519.Signing.PrivateKey())
@@ -355,11 +358,11 @@ struct CatalogFixture {
 
         let asset = try GitHubInstallerReleaseAsset(
             repository: "example-owner/forge-platform-installer",
-            tag: "installer-1.0.0",
+            tag: "installer-\(installerVersion)",
             assetName: "ForgePlatformInstaller.zip"
         )
         let release = VerifiedInstallerRelease(
-            version: try InstallerVersion("1.0.0"),
+            version: try InstallerVersion(installerVersion),
             releasePage: asset.releasePage,
             assetName: asset.assetName,
             sha256: String(repeating: "a", count: 64),
@@ -374,7 +377,7 @@ struct CatalogFixture {
             expectedTeamIdentifier: "ABCDE12345",
             expectedCodeDirectorySHA256: String(repeating: "c", count: 64),
             policyRevision: "release-v1",
-            capabilities: ["composition/v1", "provider-gate/v1"],
+            capabilities: installerCapabilities,
             provenanceSHA256: String(repeating: "e", count: 64),
             expectedReleaseTrustConfigurationSHA256: trustDigest,
             compositionCatalogFeed: feed,

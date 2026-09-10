@@ -68,6 +68,14 @@ _RAW_SHA256 = re.compile(r"^[0-9a-f]{64}$")
 _SOURCE_REVISION = re.compile(r"^[0-9a-f]{40,64}$")
 _CAPABILITY = re.compile(r"^[a-z0-9][a-z0-9./_-]{0,127}$")
 _POLICY_REVISION = re.compile(r"^[a-z0-9][a-z0-9._/-]{0,127}$")
+# All signed installer/catalog time fields use one deliberately narrow RFC3339
+# profile.  Keeping it UTC and whole-second avoids platform parser
+# normalisation (for example invalid calendar dates) and fractional precision
+# loss across the Python qualifier and native macOS verifier.
+_CANONICAL_RFC3339_UTC = re.compile(
+    r"^(?P<year>[0-9]{4})-(?P<month>[0-9]{2})-(?P<day>[0-9]{2})"
+    r"T(?P<hour>[0-9]{2}):(?P<minute>[0-9]{2}):(?P<second>[0-9]{2})Z$"
+)
 # Each path segment begins alphanumerically, so a signed identity can never
 # produce a dot segment such as ``owner/..`` after GitHub URL derivation.
 _GITHUB_REPOSITORY = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,99}/[A-Za-z0-9][A-Za-z0-9._-]{0,99}$")
@@ -204,15 +212,37 @@ def _https_url(value: object, label: str) -> str:
     return canonical_https_url(value, label)
 
 
-def _timestamp(value: object, label: str) -> datetime:
+def canonical_rfc3339_utc_timestamp(value: object, label: str) -> datetime:
+    """Parse the one wire-stable RFC3339 timestamp profile used by installer metadata.
+
+    The profile is ASCII ``YYYY-MM-DDTHH:MM:SSZ`` only.  It is an RFC3339
+    subset, not a display-date convenience parser: offsets, fractional
+    seconds, lowercase separators, whitespace and parser-normalised calendar
+    values are rejected before any comparison or signature-bound selection.
+    """
+
     value = _required(value, label)
+    match = _CANONICAL_RFC3339_UTC.fullmatch(value)
+    if match is None:
+        raise ValueError(f"{label} must be a canonical RFC3339 UTC timestamp")
     try:
-        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        return datetime(
+            int(match["year"]),
+            int(match["month"]),
+            int(match["day"]),
+            int(match["hour"]),
+            int(match["minute"]),
+            int(match["second"]),
+            tzinfo=timezone.utc,
+        )
     except ValueError as error:
-        raise ValueError(f"{label} must be an RFC3339 timestamp") from error
-    if parsed.tzinfo is None:
-        raise ValueError(f"{label} must include an offset")
-    return parsed.astimezone(timezone.utc)
+        raise ValueError(f"{label} must be a canonical RFC3339 UTC timestamp") from error
+
+
+def _timestamp(value: object, label: str) -> datetime:
+    """Compatibility spelling for signed installer and outer-catalog fields."""
+
+    return canonical_rfc3339_utc_timestamp(value, label)
 
 
 def _canonical_json(value: Mapping[str, object]) -> bytes:
@@ -1406,17 +1436,27 @@ class CompositionCatalog:
             if not entry.installer_requirement.unmet_by(installer_context.capabilities)
         )
 
-    def component_combination_catalog_binding(self) -> "CatalogPublicationBinding":
+    def component_combination_catalog_binding(
+        self,
+        *,
+        outer_catalog_acceptance: "AcceptedCatalogIdentity",
+    ) -> "CatalogPublicationBinding":
         """Return the selection-index binding only from this verified catalog.
 
         The import stays local to avoid a module import cycle: the selection
         policy consumes :class:`CompositionCatalog`, while the signed catalog
-        remains the sole owner of the upstream verification boundary.
+        remains the sole owner of the upstream verification boundary.  The
+        caller must provide the exact scoped outer-catalog acceptance emitted
+        by that boundary; a channel-only component-index anchor is unsafe
+        across trust or feed rotation.
         """
 
         from .composition_catalog import CatalogPublicationBinding
 
-        return CatalogPublicationBinding.from_verified_composition_catalog(self)
+        return CatalogPublicationBinding.from_verified_composition_catalog(
+            self,
+            outer_catalog_acceptance=outer_catalog_acceptance,
+        )
 
 
 @dataclass(frozen=True)

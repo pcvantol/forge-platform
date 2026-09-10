@@ -320,8 +320,8 @@ struct SignedCompositionCatalogFeedVerifier {
               channel == expectedChannel,
               let publishedAtRaw = fields["published_at"]?.stringValue,
               let expiresAtRaw = fields["expires_at"]?.stringValue,
-              let publishedAt = parseRFC3339(publishedAtRaw),
-              let expiresAt = parseRFC3339(expiresAtRaw),
+              let publishedAt = CanonicalRFC3339UTC.parse(publishedAtRaw),
+              let expiresAt = CanonicalRFC3339UTC.parse(expiresAtRaw),
               publishedAt <= observedAt,
               expiresAt > publishedAt,
               expiresAt > now,
@@ -453,20 +453,6 @@ struct SignedCompositionCatalogFeedVerifier {
             trustedPublicKeys: trustedKeys,
             signatureThreshold: signaturePolicy.signatureThreshold
         )
-    }
-
-    private static func parseRFC3339(_ value: String) -> Date? {
-        guard GitHubInstallerReleaseDescriptorValidation.isASCII(value) else {
-            return nil
-        }
-        let fractional = ISO8601DateFormatter()
-        fractional.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-        if let date = fractional.date(from: value) {
-            return date
-        }
-        let standard = ISO8601DateFormatter()
-        standard.formatOptions = [.withInternetDateTime]
-        return standard.date(from: value)
     }
 
     private struct ParsedCatalog: Sendable {
