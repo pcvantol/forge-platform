@@ -1,128 +1,87 @@
 # Forge Platform local consolidation and parked installer
 
-Increment: `FOUR_REPO_CONSOLIDATION_PARKING_2026_09_10`. Recorded 2026-09-10.
-Scoped under [Forge Platform roadmap](README.md).
+Increment: `FOUR_REPO_CONSOLIDATION_PARKING_2026_09_10`. Reconciled
+2026-09-10. Scoped under the [Forge Platform roadmap](README.md).
 [Documentary consolidation DAG](CONSOLIDATION_PARKING_2026_09_10_DAG.json).
 
-## Decision and existing authoritative parking scope
+## Decision and evidence boundary
 
-The owner requests unfinished work be preserved, assessed and parked for later.
-This documentation-only NO_BUMP change records local inventory and its remaining
-checks. It does not reopen or duplicate the already-merged clean-install plan.
-Its documentary authority starts only at its own protected merge. No product
-code, tests, workflows, version, run, provider invocation, credential, service,
-installer, release, live machine or cleanup is changed.
+Physical repository cleanup is complete. This documentation-only, `NO_BUMP`
+closure reconciles the existing consolidation record with that result; it does
+not reopen or copy the installer roadmap. No product source, tests, workflows,
+version, runtime, installation, release, credential, grant, Mission, Action or
+qualification is changed or authorized. Documentary execution remains
+disabled.
 
-PARKED is not cancelled, qualified, a runtime lifecycle transition, or proof
-that a local process has stopped. Old handoff next-increment instructions do
-not authorize resumption. A later explicitly selected task must use current
-owning evidence and authority; missing prerequisites are recorded, not built
-as an unrequested side effect. No new universal-installer prerequisite is
-inserted before the original serial Forge -> EP -> Forge Mission canary.
+`USER_REPORTED` below is the supplied cleanup and semantic-classification
+evidence. `LOCAL_READBACK_VERIFIED` is the direct checkout/ref readback before
+the temporary documentation worktree was created. `SOURCE_VERIFIED` is current
+GitHub readback. The temporary documentation branch used to deliver this
+record is bookkeeping, not product work, and is removed after protected merge.
 
-## Verified remote closure
+## Reconciled physical state
 
-SOURCE_VERIFIED remote main: `0bb24eb1094d7912de4e624b3ecd97fe73159ce9`.
-[PR #61](https://github.com/pcvantol/forge-platform/pull/61) is merged with that
-merge SHA and historical head `70ec30080c007424cdb1f3dd52f467ec916144ec`.
-Fresh heads/open-PR readback contains main only and no open PR before this
-separate documentation change. No remote product featurebranch remains.
-This is remote source integration, NOT an operationally complete installer.
+Pre-documentation main was
+`99a8db443f411c66255891d20abe89522d7b6e95`, equal locally and on
+`origin/main` (`LOCAL_READBACK_VERIFIED`, `SOURCE_VERIFIED`).
 
-[Remote heads](https://api.github.com/repos/pcvantol/forge-platform/git/matching-refs/heads/) ·
-[open PRs](https://api.github.com/repos/pcvantol/forge-platform/pulls?state=open&per_page=100).
-Existing clean-install scope, all detailed nodes and resumption rules remain in
-[EP_SERVER_CLEAN_INSTALL_V1.md](EP_SERVER_CLEAN_INSTALL_V1.md). Retain that
-record and delivered source unchanged. The cross-product index is owned by
-[Forge](https://github.com/pcvantol/forge/blob/main/docs/roadmap/CONSOLIDATION_PARKING_2026_09_10.md),
-not a second installer execution authority.
-
-## Owner-reported local inventory
-
-USER_REPORTED, not independently inspected on the Mac:
-
-| Inventory | Reported value | Disposition |
-| --- | --- | --- |
-| Local branches | 54: main plus 53 features | Retain until exact per-ref assessment |
-| Worktrees | 52: primary plus 51 auxiliary | All reported clean; no blanket removal |
-| Main | 41 commits behind origin/main, no unique local main commits | FAST_FORWARD_CANDIDATE after current worktree/ancestry/ownership checks |
-| Featurebranches with merged PR link | 37 | CONDITIONAL_CLEANUP_CANDIDATES after local tip equals qualified PR head or later residuals are reconciled |
-| Featurebranches without direct PR link | 16 | PARKED_PENDING_COMPARISON; names/tips and actual patches not supplied |
-
-The report does not identify each of the 53 branches or map them onto the 51
-auxiliary worktrees. Do not infer that all auxiliary trees belong to the 37
-merged items. Full names, paths, SHA tips, PR mapping, ignored/stash content,
-locks and active ownership remain open evidence requirements. Clean status
-only establishes the reported absence of ordinary uncommitted changes; it does
-not establish retention safety, no ignored data or semantic integration.
-
-For each of the unnamed 16, capture exact refs and compare its patch to fresh
-main and any predecessor/successor PR. Classify PRESENT_ON_MAIN,
-SUPERSEDED_BY_STRONGER_MAIN_IMPLEMENTATION, GENUINE_RESIDUAL or UNRESOLVED.
-Retain genuine/unknown work with content and provenance; do not merge obsolete
-intermediate branches merely to call the repository consolidated. A suspected
-squash equivalent is not a proven content match and not deletion authority.
-
-A later authorized physical cleanup must verify exact target, no active run/
-lease/conflicting PR or locked worktree, all tracked/untracked/ignored data,
-post-merge local commits and recoverable retention. A bundle alone cannot
-preserve uncommitted/untracked/ignored files. Do not follow .engineering into
-runtime data, publish private artifacts, globally prune or force-delete.
-No local fast-forward, worktree removal or branch deletion is executed here.
-
-## Parked installer outcome and non-goals
-
-Existing v1 outcome: `EP_SERVER_CLEAN_INSTALL_VERIFIED`, only a clean EP Server
-installation on native Apple Silicon/macOS 26+ with the exact approved Python
-identity. It excludes Forge, Workspace, EP Project Agent, GitHub/Codex/provider
-login, upgrades, repair, migration, rollback, uninstall and cleanup from the
-v1 acceptance scope. Administrator authority for a system service is separate
-from provider credentials. Existing/conflicting installations fail the clean
-path; they do not silently become upgrade operations.
-
-The owner reports SOURCE_FIXED foundation for host restrictions, pinned Python
-identity/build evidence, durable Python executor kernel, signed catalog and
-component selection, native shell/self-update/release packaging and the
-parking DAG. This is consistent with the merged scope record, not proof of
-production adapters, signed published installer or clean-Mac/reboot success.
-Source-level rollback primitives do not expand the v1 operation scope.
-
-## Remaining dependency groups — all retained and parked
-
-| Consolidation node | Existing owning nodes / required result |
+| Evidence | Reconciled result |
 | --- | --- |
-| FP-LOCAL | Exact branch/worktree inventory, including names and tips of all 16 unmatched branches |
-| FP-MAIN | Safe current fast-forward only; no reset or integration of unknown work |
-| FP-37 | Per-item final preservation check for the 37 reported merged branches |
-| FP-16 | Semantic/residual assessment for the 16 unmatched branches |
-| FP-CLEANUP | Per-target permitted removal after evidence and retention; no blanket deletion of 51 trees |
-| FP-INSTALLER | Reference, do not replace, the existing EP-only clean-install DAG |
-| FP-LATER | Wider product provisioners, provider flows, upgrade/migration/rollback/uninstall/cleanup and discovery remain post-v1 parked work |
+| Local worktrees | `1` |
+| Local feature branches | `0` |
+| Unpreserved WIP | `0` |
+| Delivered branches removed | `37` |
+| Formerly unmatched branches examined | `16` |
+| `PRESENT_ON_MAIN` | `11` |
+| `SUPERSEDED_BY_STRONGER_MAIN_IMPLEMENTATION` | `5` |
+| `GENUINE_RESIDUAL` | `0` |
+| `UNRESOLVED` | `0` |
 
-FP-INSTALLER retains every existing dependency, without inventing extra edges:
+The 37 delivered branches and their auxiliary worktrees were removed after the
+physical preservation checks. Every one of the 16 unmatched branches was
+classified; none retained unique product bytes or an unresolved question.
+Therefore there is no active local cleanup lane and no parked local Forge
+Platform residual.
 
-- FP-EP-CI-1: approved independent cryptographically signed C-3a time authority
-  and adapter; local clock/ordinary NTP/HTTP Date are not the accepted substitute;
-- EP-CI-1 and EP-CI-2: EP-owned published exact artifact and Python build/test
-  evidence, clean-only provisioner, readback, service/health and terminal receipt;
-- FP-EP-CI-2/3/4: locked mutation re-verification, receipt validation, one-component
-  preset/readback, native index transport, manifest/session production;
-- FP-EP-CI-5/6: real Python transport/archive/Mach-O inspection, privileged bridge
-  and native wizard/session to EP provisioner wiring;
-- FP-EP-CI-7: protected signing, notarization, release, production trust resources
-  and current-installer handoff;
-- FP-EP-CI-Q: explicitly authorized clean-Mac installation, fresh-shell, reboot
-  and resolver/identity proof, yielding EP_SERVER_CLEAN_INSTALL_VERIFIED.
+## Reconciled documentary nodes
 
-Those remain the detailed [existing graph](EP_SERVER_CLEAN_INSTALL_V1.md), not
-newly scheduled work. Policy-aware composition, Project Hygiene release scope,
-MVP and knowledge integration remain under [README.md](README.md) and their
-owning DAGs. Do not silently discard them or start them from this checkpoint.
+| Node | Disposition | Closure / retained acceptance |
+| --- | --- | --- |
+| `FP-LOCAL` | `RESOLVED` | One baseline worktree, zero local feature branches and zero unpreserved WIP |
+| `FP-MAIN` | `COMPLETE` | Baseline local `main` equals `origin/main`; final documentation delivery fast-forwards it again |
+| `FP-37` | `COMPLETE` | 37 delivered branches removed after reconciliation |
+| `FP-16` | `RESOLVED` | 16 examined: 11 present on main, 5 superseded by stronger main implementation, 0 genuine residual, 0 unresolved |
+| `FP-CLEANUP` | `COMPLETE` | All authorized auxiliary cleanup completed; no active local feature lane remains |
+| `FP-INSTALLER` | `PARKED_EXISTING_DAG_RETAINED` | Retain the existing detailed clean-install DAG unchanged |
+| `FP-LATER` | `PARKED` | Wider provisioner, provider, lifecycle, composition, discovery, policy, hygiene and knowledge work remains parked in its owning roadmaps |
+
+## Installer DAG remains separate and parked
+
+[EP Server clean-install v1](EP_SERVER_CLEAN_INSTALL_V1.md) remains the
+detailed installer DAG. Its `FP-EP-CI-*` and `EP-CI-*` nodes, dependencies,
+authority gates, source/operational distinction and resumption rules are not
+copied into this consolidation DAG. `FP-INSTALLER` is only a retained pointer.
+
+Installer completion is not a predecessor of the original first serial Forge
+Mission E2E. This closure does not decide which exact Engineering Platform
+producer capability that later readiness audit will require, and it does not
+equate delivered source with an installed or qualified product.
+
+## Cross-product boundary
+
+Forge Platform remains the distribution/composition owner. Forge owns Mission
+planning; Engineering Platform owns execution and producer qualification;
+Workspace is a peer control-plane product. Repository cleanup is neither a
+Mission nor a capability qualification. No dependency on installer completion,
+Workspace implementation, full repository cleanup or subagent optimization is
+introduced by this record.
+
+The cross-product consolidation index remains owned by
+[Forge](https://github.com/pcvantol/forge/blob/main/docs/roadmap/CONSOLIDATION_PARKING_2026_09_10.md).
 
 ## Closure
 
-Remote source integration and installer parking are proven by #61. This change
-adds the owner-reported local inventory and explicit unresolved per-branch work.
-Physical consolidation is NOT_COMPLETE: the 16 unmatched branches have not
-been examined here and no worktree has been removed. No product runtime,
-release, installer or first Forge E2E capability is qualified by these docs.
+Forge Platform physical consolidation and local-main reconciliation are
+complete. Installer work remains parked under its existing detailed roadmap;
+no installer, runtime or first-Forge-E2E capability is qualified by this
+documentation closure.
