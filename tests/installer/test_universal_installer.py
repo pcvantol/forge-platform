@@ -24,6 +24,7 @@ from forge_platform.component_operations import (  # noqa: E402
 from forge_platform.composition_catalog import CatalogPublicationBinding  # noqa: E402
 from forge_platform.universal_installer import (  # noqa: E402
     AcceptedCatalogIdentity,
+    CatalogAcceptanceScope,
     COMPOSITION_CATALOG_SCHEMA,
     COMPOSITION_SCHEMA,
     MAXIMUM_CANONICAL_HTTPS_URL_LENGTH,
@@ -1115,6 +1116,52 @@ class UniversalInstallerTests(unittest.TestCase):
             )
         with self.assertRaisesRegex(UniversalInstallerError, "trusted clock"):
             selection(context=initial.installer_context, trusted_clock=False)
+
+    def test_catalog_acceptance_anchor_is_scoped_to_the_verified_installer_context(self) -> None:
+        initial = selection(sequence=4)
+        scope = initial.catalog_identity.scope
+        context = initial.installer_context
+
+        self.assertEqual(
+            scope.installer_release_trust_configuration_sha256,
+            context.release.release_trust_configuration_sha256,
+        )
+        self.assertEqual(scope.channel, context.release.channel)
+        self.assertEqual(scope.catalog_feed_url, context.release.composition_catalog_feed.url)
+
+        mismatched_scopes = {
+            "release trust configuration": replace(
+                scope,
+                installer_release_trust_configuration_sha256="f" * 64,
+            ),
+            "channel": replace(scope, channel="candidate"),
+            "catalog feed": replace(
+                scope,
+                catalog_feed_url="https://github.example.invalid/forge-platform-installer/stable/alternate.json",
+            ),
+        }
+        for label, mismatched_scope in mismatched_scopes.items():
+            with self.subTest(label=label):
+                mismatched_anchor = replace(initial.catalog_identity, scope=mismatched_scope)
+                with self.assertRaisesRegex(UniversalInstallerError, "anchor scope does not match"):
+                    selection(
+                        context=context,
+                        sequence=initial.catalog_identity.sequence,
+                        accepted_catalog=mismatched_anchor,
+                    )
+
+        with self.assertRaisesRegex(ValueError, "accepted catalog scope"):
+            AcceptedCatalogIdentity(  # type: ignore[arg-type]
+                "stable",
+                initial.catalog_identity.sequence,
+                initial.catalog_identity.catalog_digest,
+            )
+        with self.assertRaisesRegex(ValueError, "accepted catalog feed URL"):
+            CatalogAcceptanceScope(
+                scope.installer_release_trust_configuration_sha256,
+                scope.channel,
+                "https://github.example.invalid/invalid fragment#blocked",
+            )
 
     def test_planner_rejects_unbound_manifest_and_requires_explicit_composition_route(self) -> None:
         with self.assertRaisesRegex(ValueError, "verified composition selection"):
