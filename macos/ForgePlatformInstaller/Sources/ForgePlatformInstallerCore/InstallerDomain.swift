@@ -359,14 +359,7 @@ public struct VerifiedCompositionSessionPlan: Equatable, Sendable {
     }
 
     private static func isSafeCompositionIdentity(_ value: String) -> Bool {
-        guard !value.isEmpty,
-              value.utf8.count <= 256,
-              value == value.trimmingCharacters(in: .whitespacesAndNewlines) else {
-            return false
-        }
-        return value.unicodeScalars.allSatisfy { scalar in
-            scalar.value >= 0x20 && scalar.value != 0x7F
-        }
+        CompositionCatalogValidation.isCompositionIdentity(value)
     }
 
     private static func isSHA256Identity(_ value: String) -> Bool {

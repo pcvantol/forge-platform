@@ -293,6 +293,46 @@ class ComponentCombinationCatalogTests(unittest.TestCase):
         self.assertEqual(unapproved_route.state, "UPGRADE_ROUTE_BLOCKED")
         self.assertFalse(unapproved_route.permits_composition_fetch)
 
+    def test_index_entries_and_installed_identity_use_the_catalog_composition_grammar(self) -> None:
+        for invalid in (
+            "forge ep stable 001",
+            "forge\u0085ep-stable-001",
+            "forge\u00A0ep-stable-001",
+            "forge\u0001ep-stable-001",
+            "forge\ud800ep-stable-001",
+            "x" * 257,
+        ):
+            with self.subTest(invalid=invalid):
+                with self.assertRaisesRegex(ValueError, "bounded whitespace-free identity"):
+                    catalog([entry(invalid, 1, FORGE_EP_COMPONENTS)])
+
+        with self.assertRaisesRegex(ValueError, "bounded whitespace-free identity"):
+            catalog([
+                entry(
+                    "forge-ep-stable-002",
+                    2,
+                    FORGE_EP_COMPONENTS,
+                    upgrade_from=("forge\u0085ep-stable-001",),
+                ),
+            ])
+        with self.assertRaisesRegex(ValueError, "bounded whitespace-free identity"):
+            ComponentCombinationRequest(
+                frozenset({"forge-runtime", "engineering-platform-server"}),
+                installed_composition_id="forge\u0085ep-stable-001",
+        )
+
+        zero_width_identity = "forge\uFEFFep-stable-001"
+        zero_width_entry = entry(zero_width_identity, 1, FORGE_EP_COMPONENTS)
+        zero_width_entry["manifest"]["url"] = "https://manifest.example.invalid/zero-width-identity.json"  # type: ignore[index]
+        parsed = catalog([zero_width_entry])
+        selection = select_component_combination(
+            parsed,
+            installer(),
+            ComponentCombinationRequest(frozenset({"forge-runtime", "engineering-platform-server"})),
+            now=NOW,
+        )
+        self.assertEqual(selection.entry.composition_id, zero_width_identity)  # type: ignore[union-attr]
+
     def test_higher_unknown_capability_is_not_silently_bypassed_for_an_older_combination(self) -> None:
         parsed = catalog([
             entry("forge-ep-stable-001", 1, FORGE_EP_COMPONENTS),

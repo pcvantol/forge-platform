@@ -28,6 +28,13 @@
   },
   "$defs": {
     "sha256": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+    "composition_identity": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256,
+      "pattern": "^[^\\u0000-\\u001F\\u007F\\u0020\\u0085\\u00A0\\u1680\\u2000-\\u200A\\u2028\\u2029\\u202F\\u205F\\u3000\\uD800-\\uDFFF]+$",
+      "description": "Bounded Unicode composition identity without Unicode White_Space or C0/DEL controls; runtime validation mirrors this grammar exactly."
+    },
     "https_url": {
       "type": "string",
       "maxLength": 2048,
@@ -73,13 +80,7 @@
       "additionalProperties": false,
       "required": ["composition_id", "channel", "url", "digest", "requires_installer"],
       "properties": {
-        "composition_id": {
-          "type": "string",
-          "minLength": 1,
-          "maxLength": 256,
-          "pattern": "^[^\\s\\u0000-\\u001F\\u007F]+$",
-          "description": "Bounded Unicode composition identity without whitespace or C0/DEL controls; runtime validation mirrors this grammar exactly."
-        },
+        "composition_id": {"$ref": "#/$defs/composition_identity"},
         "channel": {"enum": ["stable", "candidate"]},
         "url": {"$ref": "#/$defs/https_url"},
         "digest": {"$ref": "#/$defs/sha256"},

@@ -222,6 +222,32 @@ final class InstallerDomainTests: XCTestCase {
         XCTAssertEqual(plan.providerRequirements.first?.credentialScope, .user)
     }
 
+    func testSessionPlanUsesTheExactCatalogCompositionIdentityGrammar() throws {
+        XCTAssertNoThrow(
+            try makeSessionPlan(
+                requirements: [],
+                compositionIdentity: "forge\u{FEFF}platform-complete-v1"
+            )
+        )
+
+        for invalid in [
+            "forge platform-complete-v1",
+            "forge\u{0085}platform-complete-v1",
+            "forge\u{00A0}platform-complete-v1",
+            "forge\u{0001}platform-complete-v1",
+            String(repeating: "x", count: 257),
+        ] {
+            XCTAssertThrowsError(
+                try makeSessionPlan(requirements: [], compositionIdentity: invalid)
+            ) { error in
+                XCTAssertEqual(
+                    error as? VerifiedCompositionSessionPlanError,
+                    .invalidCompositionIdentity
+                )
+            }
+        }
+    }
+
     func testCatalogAndInstallerEvidenceRejectNonCanonicalValues() throws {
         XCTAssertThrowsError(
             try VerifiedCompositionCatalogIdentity(
@@ -371,6 +397,7 @@ final class InstallerDomainTests: XCTestCase {
     private func makeSessionPlan(
         requirements: [ProviderRequirement],
         sessionID: String = "session-1",
+        compositionIdentity: String = "forge-platform-complete-v1",
         installerReleaseSequence: UInt64 = 1,
         installerProvenanceSHA256: String = String(repeating: "b", count: 64),
         installerReleaseTrustConfigurationSHA256: String = String(repeating: "e", count: 64),
@@ -378,7 +405,7 @@ final class InstallerDomainTests: XCTestCase {
     ) throws -> VerifiedCompositionSessionPlan {
         try VerifiedCompositionSessionPlan(
             sessionID: sessionID,
-            compositionIdentity: "forge-platform-complete-v1",
+            compositionIdentity: compositionIdentity,
             manifestSHA256: "sha256:" + String(repeating: "a", count: 64),
             installerReleaseSequence: installerReleaseSequence,
             installerProvenanceSHA256: installerProvenanceSHA256,

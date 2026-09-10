@@ -34,6 +34,7 @@ from .universal_installer import (
     SemanticVersion,
     UniversalInstallerError,
 )
+from .composition_identity import require_composition_identity
 
 
 COMPONENT_COMBINATION_CATALOG_SCHEMA = "forge-platform.component-combination-catalog/v1"
@@ -231,7 +232,7 @@ class ComponentCombinationCatalogEntry:
     upgrade_from: tuple[str, ...]
 
     def __post_init__(self) -> None:
-        _required(self.composition_id, "catalog composition_id")
+        require_composition_identity(self.composition_id, "catalog composition_id")
         _positive_int(self.selection_sequence, "catalog selection_sequence")
         if self.channel not in INSTALLER_CHANNELS:
             raise ValueError("catalog composition channel is unsupported")
@@ -255,8 +256,8 @@ class ComponentCombinationCatalogEntry:
             raise ValueError("catalog composition component capabilities must be bound by requires_installer")
         if not isinstance(self.upgrade_from, tuple):
             raise ValueError("catalog composition upgrade_from is invalid")
-        if any(not isinstance(item, str) or not item for item in self.upgrade_from):
-            raise ValueError("catalog composition upgrade_from is invalid")
+        for identity in self.upgrade_from:
+            require_composition_identity(identity, "catalog composition upgrade_from")
         if len(self.upgrade_from) != len(set(self.upgrade_from)):
             raise ValueError("catalog composition upgrade_from must be unique")
         if self.composition_id in self.upgrade_from:
@@ -289,7 +290,7 @@ class ComponentCombinationCatalogEntry:
         if not isinstance(upgrade_from, list):
             raise ValueError("catalog composition upgrade_from must be a list")
         return cls(
-            composition_id=_required(payload["composition_id"], "catalog composition_id"),
+            composition_id=require_composition_identity(payload["composition_id"], "catalog composition_id"),
             selection_sequence=_positive_int(payload["selection_sequence"], "catalog selection_sequence"),
             channel=_required(payload["channel"], "catalog composition channel"),
             manifest=DownloadIdentity(
@@ -301,7 +302,10 @@ class ComponentCombinationCatalogEntry:
                 SemanticVersion.parse(installer["minimum_version"], "catalog minimum installer version"),
                 _capabilities(installer["capabilities"], "catalog installer capabilities", required=False),
             ),
-            upgrade_from=tuple(_required(item, "catalog composition upgrade_from") for item in upgrade_from),
+            upgrade_from=tuple(
+                require_composition_identity(item, "catalog composition upgrade_from")
+                for item in upgrade_from
+            ),
         )
 
 
@@ -449,7 +453,7 @@ class ComponentCombinationRequest:
         for identity in self.component_identities:
             _component_identity(identity, "requested component identity")
         if self.installed_composition_id is not None:
-            _required(self.installed_composition_id, "installed composition identity")
+            require_composition_identity(self.installed_composition_id, "installed composition identity")
 
 
 @dataclass(frozen=True)

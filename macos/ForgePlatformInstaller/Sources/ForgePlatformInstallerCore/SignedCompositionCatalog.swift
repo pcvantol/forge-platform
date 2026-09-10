@@ -479,7 +479,10 @@ struct SignedCompositionCatalogFeedVerifier {
     }
 }
 
-private enum CompositionCatalogValidation {
+/// Shared native validation for outer-catalog and session/receipt composition
+/// identities. Keeping the grammar here avoids accepting a value in one
+/// native boundary that another cannot correlate to the same signed catalog.
+enum CompositionCatalogValidation {
     static let maximumPublicKeyCount = 16
 
     static func isKeyID(_ value: String) -> Bool {

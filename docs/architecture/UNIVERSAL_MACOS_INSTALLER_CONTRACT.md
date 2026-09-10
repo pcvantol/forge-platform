@@ -295,9 +295,10 @@ catalog bytes, with at most 64 nested containers and 16,384 JSON values. It
 requires an injected trusted-clock readback whose freshness window is no more
 than five minutes, exactly the catalog locator carried by the current verified
 installer descriptor, and a separately reviewed catalog-key threshold policy.
-Catalog composition identities are exact, non-normalized sequences of at most
-256 Unicode scalars and exclude whitespace and C0/DEL controls across schema,
-qualifier and native verifier.
+Catalog composition identities are exact, non-normalized sequences of one to
+256 Unicode scalars and exclude Unicode White_Space and C0/DEL controls across
+the outer catalog, component-combination index, manifest, policy/journal
+records, terminal commitment, schemas, qualifier and native session verifier.
 That policy is explicitly scoped to the current installer V2
 release-trust-configuration digest, but it has a separate key set: a
 self-update key does not automatically become a catalog-signing key. C-1 only

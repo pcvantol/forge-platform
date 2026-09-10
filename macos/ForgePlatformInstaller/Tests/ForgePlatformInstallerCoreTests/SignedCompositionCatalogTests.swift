@@ -63,6 +63,7 @@ final class SignedCompositionCatalogTests: XCTestCase {
             capabilities: ["catalog-component-set/v1", "catalog-component-set/v1"]
         )
         let whitespaceCompositionID = fixture.unsignedCatalog(compositionID: "forge ep workspace v1")
+        let unicodeWhitespaceCompositionID = fixture.unsignedCatalog(compositionID: "forge\u{0085}ep-workspace-v1")
         let overlongCompositionID = fixture.unsignedCatalog(compositionID: String(repeating: "x", count: 257))
         let duplicateRoot = Data(
             "{\"schema\":\"forge-platform.composition-catalog/v1\",\"schema\":\"forge-platform.composition-catalog/v1\"}".utf8
@@ -71,6 +72,7 @@ final class SignedCompositionCatalogTests: XCTestCase {
             try fixture.signedCatalogBytes(unsigned: unknownUnsigned),
             try fixture.signedCatalogBytes(unsigned: duplicateCapabilities),
             try fixture.signedCatalogBytes(unsigned: whitespaceCompositionID),
+            try fixture.signedCatalogBytes(unsigned: unicodeWhitespaceCompositionID),
             try fixture.signedCatalogBytes(unsigned: overlongCompositionID),
             duplicateRoot,
         ]
@@ -265,6 +267,19 @@ final class SignedCompositionCatalogTests: XCTestCase {
             return XCTFail("Unicode in an otherwise valid catalog should be canonicalized before verification")
         }
         XCTAssertEqual(catalog.entries.first?.compositionID, "forge-é-🚀")
+
+        let zeroWidthNonBreakingSpace = try fixture.signedCatalogBytes(
+            unsigned: fixture.unsignedCatalog(compositionID: "forge\u{FEFF}platform-v1")
+        )
+        guard case .success(let zeroWidthCatalog) = fixture.verifier.verify(
+            try fixture.readback(zeroWidthNonBreakingSpace),
+            for: fixture.currentInstaller,
+            acceptedCatalog: nil,
+            now: fixture.now
+        ) else {
+            return XCTFail("A non-whitespace Unicode scalar must retain its exact composition identity")
+        }
+        XCTAssertEqual(zeroWidthCatalog.entries.first?.compositionID, "forge\u{FEFF}platform-v1")
 
         let deepJSON = Data((String(repeating: "[", count: StrictJSONResourceReader.maximumNestingDepth + 1)
             + "0"

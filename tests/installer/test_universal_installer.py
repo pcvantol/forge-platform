@@ -8,6 +8,7 @@ from dataclasses import replace
 from hashlib import sha256
 import json
 from pathlib import Path
+import re
 import sys
 import tempfile
 import unittest
@@ -1373,6 +1374,97 @@ class UniversalInstallerTests(unittest.TestCase):
             CompositionManifest.from_catalog_bytes(bad_entry, bad_raw)
         with self.assertRaisesRegex(UniversalInstallerError, "catalog digest"):
             CompositionManifest.from_catalog_bytes(entry, bad_raw)
+
+    def test_manifest_selection_plan_and_journal_share_the_catalog_composition_identity_grammar(self) -> None:
+        def bound_entry(raw: bytes, composition_id: str = "forge-ep-workspace-stable-001") -> CompositionCatalogEntry:
+            return CompositionCatalogEntry(
+                composition_id,
+                "stable",
+                DownloadIdentity(
+                    "https://github.example.invalid/releases/forge-ep-workspace-stable-001.json",
+                    "sha256:" + sha256(raw).hexdigest(),
+                ),
+                InstallerRequirement(SemanticVersion.parse("1.0.0"), frozenset(INSTALLER_CAPABILITIES)),
+            )
+
+        for invalid in (
+            "forge ep workspace",
+            "forge\u0085ep-workspace",
+            "forge\u00A0ep-workspace",
+            "forge\u0001ep-workspace",
+            "forge\ud800ep-workspace",
+            "x" * 257,
+        ):
+            with self.subTest(invalid=invalid):
+                raw = manifest_raw(composition_id=invalid)
+                with self.assertRaisesRegex(ValueError, "bounded whitespace-free identity"):
+                    CompositionManifest.from_catalog_bytes(bound_entry(raw), raw)
+
+        invalid_upgrade = manifest_raw(upgrade_from=("forge\u0085ep-workspace",))
+        with self.assertRaisesRegex(ValueError, "bounded whitespace-free identity"):
+            CompositionManifest.from_catalog_bytes(bound_entry(invalid_upgrade), invalid_upgrade)
+
+        zero_width_identity = "forge\uFEFFep-workspace-stable-001"
+        zero_width_raw = manifest_raw(composition_id=zero_width_identity)
+        zero_width_manifest = CompositionManifest.from_catalog_bytes(
+            bound_entry(zero_width_raw, zero_width_identity),
+            zero_width_raw,
+        )
+        self.assertEqual(zero_width_manifest.composition_id, zero_width_identity)
+
+        with self.assertRaisesRegex(ValueError, "bounded whitespace-free identity"):
+            InstalledCompositionIdentity("forge\u0085ep-workspace", MANIFEST_DIGEST)
+
+        plan = CompositionPlanner.plan(
+            selection(),
+            host_facts=host_facts(),
+            managed_tool_readbacks=tool_readbacks(),
+            provider_selections={"codex": ProviderSelection("codex", True), "github-cli": ProviderSelection("github-cli", True)},
+            provider_readbacks=provider_readbacks(),
+            selected_readbacks={"engineering-platform-server": absent_readback()},
+            update_assessments={},
+        )
+        with self.assertRaisesRegex(ValueError, "bounded whitespace-free identity"):
+            replace(plan, composition_id="forge\u0085ep-workspace")
+        record = InstallerOperationRecord.create("composition-identity-001", plan)
+        with self.assertRaisesRegex(ValueError, "bounded whitespace-free identity"):
+            replace(record, composition_id="forge\u0085ep-workspace")
+
+    def test_composition_identity_schemas_exclude_non_scalar_and_whitespace_values(self) -> None:
+        """Keep published JSON schema grammar identical to native/Python admission."""
+
+        patterns: list[str] = []
+        for relative_path in (
+            "schemas/universal-installer-composition.schema.json",
+            "schemas/universal-installer-component-combination-catalog.schema.json",
+            "schemas/universal-installer-composition-catalog.schema.json",
+        ):
+            schema = json.loads((ROOT / relative_path).read_text(encoding="utf-8"))
+            identity = schema["$defs"]["composition_identity"]
+            self.assertEqual(identity["minLength"], 1)
+            self.assertEqual(identity["maxLength"], 256)
+            pattern = identity["pattern"]
+            self.assertIn(r"\uD800-\uDFFF", pattern)
+            patterns.append(pattern)
+            compiled = re.compile(pattern)
+            def schema_accepts(value: str) -> bool:
+                return (
+                    identity["minLength"] <= len(value) <= identity["maxLength"]
+                    and compiled.fullmatch(value) is not None
+                )
+
+            self.assertTrue(schema_accepts("forge\uFEFFep-workspace"))
+            for invalid in (
+                "forge ep-workspace",
+                "forge\u0085ep-workspace",
+                "forge\u00A0ep-workspace",
+                "forge\u0001ep-workspace",
+                "forge\ud800ep-workspace",
+                "x" * 257,
+            ):
+                with self.subTest(path=relative_path, invalid=invalid):
+                    self.assertFalse(schema_accepts(invalid))
+        self.assertEqual(patterns, [patterns[0]] * len(patterns))
 
     def test_standalone_journal_is_atomic_non_secret_and_bound_to_one_ready_plan(self) -> None:
         plan = CompositionPlanner.plan(
