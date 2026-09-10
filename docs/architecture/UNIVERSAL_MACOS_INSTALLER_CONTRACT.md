@@ -563,6 +563,22 @@ it also validates the exact archived bytes and binds its scope to that same V2
 identity; its absence remains explicit and fail-closed. It still does not
 authorize signing or publication.
 
-Next owning increments are: qualify one independently reviewed clock-evidence adapter for C-3a (without treating a local clock or HTTP `Date` as trusted), design a product-owned terminal-operation receipt validator and a separately locked mutating re-verification boundary, then add the exact index transport, manifest verification and session-plan producer only after an explicit preset/component-set and product-owned installed-composition readback exist; connect the protected signer/notarization/publisher to the installer release framework and qualify an actual GitHub Release; native trusted bootstrap/handoff; EP then Forge/Workspace execute/resume/uninstall adapters; managed-tool/provider coordinators that retain no secrets; and installed-artifact clean-Mac, add/update/remove, migration/rollback, reboot-recovery, pairing, readiness, and summary qualification.
+The currently parked and prioritized resumption path is deliberately narrower:
+one EP Server clean installation with no provider login and no Forge, Workspace,
+EP Project Agent, update, repair, migration, rollback, removal or cleanup. Its
+exact status, ownership boundaries, non-goals, prerequisites and documentary
+DAG are in the [EP Server clean-install v1 parking roadmap](../roadmap/EP_SERVER_CLEAN_INSTALL_V1.md).
+That roadmap starts with an independently reviewed C-3a clock-evidence adapter
+(not a local clock or HTTP `Date`), an EP-owned terminal-operation receipt and
+locked mutating re-verification boundary, then exact session production, native
+runtime/product-adapter wiring, protected signing/notarization/publication and
+an authorized clean-Mac qualification. It does not make a live install eligible
+today.
+
+After that narrow v1 has its own evidence, the broader remaining horizon is EP
+lifecycle operations, Forge and Workspace execute/resume/uninstall adapters,
+managed-tool/provider coordinators retaining no secrets, and installed-artifact
+add/update/remove, migration/rollback, reboot-recovery, pairing, readiness and
+summary qualification.
 
 Until those increments have their own evidence, this is `SOURCE_FIXED` for the installer foundation only, not `INSTALLATION_VERIFIED`, `SINGLE_OPERATIONAL_INSTALLATION_VERIFIED`, or release/publication authority.
