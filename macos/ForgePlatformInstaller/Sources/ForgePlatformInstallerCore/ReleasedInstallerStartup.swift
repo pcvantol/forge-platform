@@ -1016,6 +1016,80 @@ struct StrictJSONResourceReader {
     }
 }
 
+/// One wire-stable RFC3339 profile for signed installer and catalog metadata.
+///
+/// The general Foundation ISO8601 parser is intentionally not used as the
+/// grammar: it accepts several non-canonical forms and may normalise invalid
+/// calendar values.  The installer protocol needs an exact common subset that
+/// the Python qualifier can prove identically: ASCII UTC, whole seconds,
+/// ``YYYY-MM-DDTHH:MM:SSZ``.
+enum CanonicalRFC3339UTC {
+    static func parse(_ value: String) -> Date? {
+        let bytes = Array(value.utf8)
+        guard bytes.count == 20,
+              bytes[4] == 45, // -
+              bytes[7] == 45, // -
+              bytes[10] == 84, // T
+              bytes[13] == 58, // :
+              bytes[16] == 58, // :
+              bytes[19] == 90, // Z
+              let year = decimal(bytes, 0..<4),
+              let month = decimal(bytes, 5..<7),
+              let day = decimal(bytes, 8..<10),
+              let hour = decimal(bytes, 11..<13),
+              let minute = decimal(bytes, 14..<16),
+              let second = decimal(bytes, 17..<19),
+              (1...9_999).contains(year),
+              (1...12).contains(month),
+              (0...23).contains(hour),
+              (0...59).contains(minute),
+              (0...59).contains(second),
+              (1...daysInMonth(year: year, month: month)).contains(day) else {
+            return nil
+        }
+
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(secondsFromGMT: 0) ?? .gmt
+        var components = DateComponents()
+        components.calendar = calendar
+        components.timeZone = calendar.timeZone
+        components.year = year
+        components.month = month
+        components.day = day
+        components.hour = hour
+        components.minute = minute
+        components.second = second
+        return calendar.date(from: components)
+    }
+
+    private static func decimal(_ bytes: [UInt8], _ range: Range<Int>) -> Int? {
+        var result = 0
+        for index in range {
+            let byte = bytes[index]
+            guard (48...57).contains(byte) else {
+                return nil
+            }
+            result = result * 10 + Int(byte - 48)
+        }
+        return result
+    }
+
+    private static func daysInMonth(year: Int, month: Int) -> Int {
+        switch month {
+        case 2:
+            return isLeapYear(year) ? 29 : 28
+        case 4, 6, 9, 11:
+            return 30
+        default:
+            return 31
+        }
+    }
+
+    private static func isLeapYear(_ year: Int) -> Bool {
+        year.isMultiple(of: 4) && (!year.isMultiple(of: 100) || year.isMultiple(of: 400))
+    }
+}
+
 /// The startup-only capability required of a trusted Universal Installer
 /// runtime.  It is intentionally narrower than a product installation engine.
 public protocol InstallerStartupEnforcing: Sendable {

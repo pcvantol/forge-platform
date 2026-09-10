@@ -22,7 +22,10 @@ from forge_platform.component_operations import (  # noqa: E402
     ProductUpdateAssessment,
     QualifiedArtifact,
 )
-from forge_platform.composition_catalog import CatalogPublicationBinding  # noqa: E402
+from forge_platform.composition_catalog import (  # noqa: E402
+    CatalogInstallerContext,
+    CatalogPublicationBinding,
+)
 from forge_platform.universal_installer import (  # noqa: E402
     AcceptedCatalogIdentity,
     CatalogAcceptanceScope,
@@ -1014,9 +1017,22 @@ class UniversalInstallerTests(unittest.TestCase):
                 "sha256:" + "8" * 64,
             ),
         )
+        outer_acceptance = AcceptedCatalogIdentity(
+            CatalogAcceptanceScope.from_verified_installer_context(current_context()),
+            parsed.sequence,
+            parsed.catalog_digest,
+        )
+        selector_context = CatalogInstallerContext.from_verified_installer_context(current_context())
+        self.assertEqual(selector_context.scope, outer_acceptance.scope)
+        self.assertEqual(selector_context.capabilities, current_context().capabilities)
         self.assertEqual(
-            CatalogPublicationBinding.from_verified_composition_catalog(parsed),
-            parsed.component_combination_catalog_binding(),
+            CatalogPublicationBinding.from_verified_composition_catalog(
+                parsed,
+                outer_catalog_acceptance=outer_acceptance,
+            ),
+            parsed.component_combination_catalog_binding(
+                outer_catalog_acceptance=outer_acceptance,
+            ),
         )
         self.assertIn(b"component_combination_catalog", verifier.payloads[0])
         self.assertEqual([entry.composition_id for entry in parsed.selectable_entries(current_context(), now=NOW)], ["stable-001"])
@@ -1084,8 +1100,16 @@ class UniversalInstallerTests(unittest.TestCase):
             signature_policy=FIXTURE_SIGNATURE_POLICY,
         )
         self.assertIsNone(parsed.component_combination_catalog)
+        outer_acceptance = AcceptedCatalogIdentity(
+            CatalogAcceptanceScope.from_verified_installer_context(current_context()),
+            parsed.sequence,
+            parsed.catalog_digest,
+        )
         with self.assertRaisesRegex(UniversalInstallerError, "does not declare"):
-            CatalogPublicationBinding.from_verified_composition_catalog(parsed)
+            CatalogPublicationBinding.from_verified_composition_catalog(
+                parsed,
+                outer_catalog_acceptance=outer_acceptance,
+            )
         with self.assertRaisesRegex(TypeError, "verified signed metadata"):
             CompositionCatalog(
                 sequence=parsed.sequence,
@@ -1098,7 +1122,10 @@ class UniversalInstallerTests(unittest.TestCase):
                 signatures=parsed.signatures,
             )
         with self.assertRaisesRegex(ValueError, "verified CompositionCatalog"):
-            CatalogPublicationBinding.from_verified_composition_catalog(object())
+            CatalogPublicationBinding.from_verified_composition_catalog(
+                object(),
+                outer_catalog_acceptance=outer_acceptance,
+            )
 
     def test_signed_catalog_can_advance_without_replacing_a_compatible_installer(self) -> None:
         initial = selection(sequence=4)
