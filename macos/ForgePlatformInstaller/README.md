@@ -118,16 +118,26 @@ Git/Python tooling, writes a product database, selects a runtime, creates a
 venv, or installs/modifies a service. Product-adapter integration remains under
 the product-owned contracts in the repository architecture.
 
-The unsigned app-layout helper accepts a release-trust descriptor only through
-an explicit `--sealed-release-trust-resource PATH` argument. It validates the
-native loader's exact three-field v1 JSON shape and canonical digest, rejects
-symlinks, duplicate/unknown fields and explicit key-material fields, then
-copies the caller's validated bytes verbatim to
-`Contents/Resources/ForgePlatformInstallerReleaseTrust.json`. It never finds,
-generates or defaults a production identity, repository, URL, public/private
-key or credential. Omitting that argument leaves the resource absent, so the
-candidate remains fail-closed until a protected release packager supplies a
-reviewed non-secret descriptor and code-signs the completed bundle.
+The unsigned app-layout helper accepts a V2 release-trust resource and V1
+release-provenance resource only as an explicit matched pair through
+`--sealed-release-trust-resource PATH` and
+`--sealed-release-provenance-resource PATH`. It validates their strict native
+forms, rejects symlinks, duplicate/unknown fields and explicit key-material
+fields, and copies the captured bytes verbatim into the candidate bundle. It
+never finds, generates or defaults a production identity, repository, URL,
+public/private key or credential. Omitting either resource leaves the candidate
+fail-closed until a protected release packager supplies reviewed non-secret
+resources and code-signs the completed bundle.
+
+That helper may additionally accept
+`--sealed-composition-catalog-trust-resource PATH`. It permits the separately
+scoped V1 catalog-signing policy only beside the matched V2/V1 pair and only
+when its `installer_release_trust_configuration_sha256` equals the packaged
+V2 trust configuration digest. It copies the exact validated policy to
+`Contents/Resources/ForgePlatformInstallerCompositionCatalogTrust.json`; an
+absent policy remains explicitly fail-closed. Packaging this resource does not
+wire the native loader, fetch a catalog, create a composition session, or
+authorize a product operation.
 
 Run the pure state-machine tests on macOS:
 

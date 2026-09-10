@@ -17,8 +17,13 @@ import unittest
 
 ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = ROOT / "scripts" / "package_macos_installer_app.py"
+sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "scripts"))
+from forge_platform.composition_catalog_trust import (  # noqa: E402
+    canonical_composition_catalog_trust_configuration_sha256,
+)
 from package_macos_installer_app import (  # noqa: E402
+    SealedCompositionCatalogTrustResource,
     SealedReleaseProvenanceResource,
     SealedReleaseTrustResource,
     package,
@@ -40,6 +45,7 @@ class PackageMacOSInstallerAppTests(unittest.TestCase):
             self.assertIn("INSTALLER_APP_BUNDLE=PASS", result.stdout)
             self.assertIn("sealed_release_trust=ABSENT_FAIL_CLOSED", result.stdout)
             self.assertIn("sealed_release_provenance=ABSENT_FAIL_CLOSED", result.stdout)
+            self.assertIn("sealed_composition_catalog_trust=ABSENT_FAIL_CLOSED", result.stdout)
             self.assertEqual(
                 (app_bundle / "Contents" / "MacOS" / "ForgePlatformInstaller").read_bytes(),
                 executable.read_bytes(),
@@ -60,6 +66,14 @@ class PackageMacOSInstallerAppTests(unittest.TestCase):
             )
             self.assertFalse(
                 (app_bundle / "Contents" / "Resources" / "ForgePlatformInstallerReleaseProvenance.json").exists()
+            )
+            self.assertFalse(
+                (
+                    app_bundle
+                    / "Contents"
+                    / "Resources"
+                    / "ForgePlatformInstallerCompositionCatalogTrust.json"
+                ).exists()
             )
 
     def test_copies_an_explicit_validated_v2_resource_verbatim_from_paths_with_spaces(self) -> None:
@@ -111,6 +125,105 @@ class PackageMacOSInstallerAppTests(unittest.TestCase):
                 (app_bundle / "Contents" / "Resources" / "ForgePlatformInstallerReleaseProvenance.json").read_bytes(),
                 provenance_bytes,
             )
+
+    def test_copies_an_explicit_catalog_trust_policy_verbatim_only_with_its_matched_release_resources(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            workspace = Path(temporary)
+            executable = self._executable(workspace)
+            trust_resource, _ = self._release_trust_resource(workspace)
+            provenance_resource, _ = self._release_provenance_resource(
+                workspace,
+                release_trust_configuration_sha256=_PUBLIC_V2_DIGEST,
+            )
+            catalog_trust_resource, catalog_trust_bytes = self._catalog_trust_resource(workspace)
+            app_bundle = workspace / "Forge Platform Installer.app"
+
+            result = self._run(
+                executable,
+                app_bundle,
+                trust_resource=trust_resource,
+                provenance_resource=provenance_resource,
+                catalog_trust_resource=catalog_trust_resource,
+            )
+
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIn("sealed_composition_catalog_trust=PACKAGED_V1", result.stdout)
+            self.assertEqual(
+                (
+                    app_bundle
+                    / "Contents"
+                    / "Resources"
+                    / "ForgePlatformInstallerCompositionCatalogTrust.json"
+                ).read_bytes(),
+                catalog_trust_bytes,
+            )
+
+    def test_rejects_catalog_trust_without_matched_release_resources_or_a_matching_v2_scope(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            workspace = Path(temporary)
+            executable = self._executable(workspace)
+            trust_resource, _ = self._release_trust_resource(workspace)
+            provenance_resource, _ = self._release_provenance_resource(
+                workspace,
+                release_trust_configuration_sha256=_PUBLIC_V2_DIGEST,
+            )
+            catalog_trust_resource, _ = self._catalog_trust_resource(workspace)
+
+            catalog_only_output = workspace / "catalog-only.app"
+            result = self._run(
+                executable,
+                catalog_only_output,
+                catalog_trust_resource=catalog_trust_resource,
+            )
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("catalog trust resource requires both sealed release trust and provenance", result.stderr)
+            self.assertFalse(catalog_only_output.exists())
+
+            mismatched_catalog_resource, _ = self._catalog_trust_resource(
+                workspace,
+                installer_release_trust_configuration_sha256="f" * 64,
+            )
+            mismatched_output = workspace / "mismatched-catalog.app"
+            result = self._run(
+                executable,
+                mismatched_output,
+                trust_resource=trust_resource,
+                provenance_resource=provenance_resource,
+                catalog_trust_resource=mismatched_catalog_resource,
+            )
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("catalog trust resource release trust configuration digest does not match", result.stderr)
+            self.assertFalse(mismatched_output.exists())
+
+            malformed_catalog_resource = workspace / "malformed catalog policy.json"
+            malformed_payload = self._catalog_trust_payload()
+            malformed_payload["catalog_url"] = "https://never-accepted.example.invalid/catalog.json"
+            self._write_payload(malformed_catalog_resource, malformed_payload)
+            malformed_output = workspace / "malformed-catalog.app"
+            result = self._run(
+                executable,
+                malformed_output,
+                trust_resource=trust_resource,
+                provenance_resource=provenance_resource,
+                catalog_trust_resource=malformed_catalog_resource,
+            )
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("unsupported or missing fields", result.stderr)
+            self.assertFalse(malformed_output.exists())
+
+            symlinked_catalog_resource = workspace / "symlinked catalog policy.json"
+            symlinked_catalog_resource.symlink_to(catalog_trust_resource)
+            symlinked_output = workspace / "symlinked-catalog.app"
+            result = self._run(
+                executable,
+                symlinked_output,
+                trust_resource=trust_resource,
+                provenance_resource=provenance_resource,
+                catalog_trust_resource=symlinked_catalog_resource,
+            )
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("must not be selected through a symlink", result.stderr)
+            self.assertFalse(symlinked_output.exists())
 
     def test_v2_canonical_digest_matches_the_public_cross_language_vector(self) -> None:
         self.assertEqual(
@@ -391,6 +504,29 @@ class PackageMacOSInstallerAppTests(unittest.TestCase):
                 )
             self.assertFalse(output.exists())
 
+    def test_public_packager_api_revalidates_a_manually_constructed_catalog_policy_before_pair_checks(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            workspace = Path(temporary)
+            executable = self._executable(workspace)
+            output = workspace / "forged-catalog-policy.app"
+            forged_catalog_trust = SealedCompositionCatalogTrustResource(
+                source=workspace / "not-a-real-catalog-policy.json",
+                contents=b"not-json-catalog-policy",
+                configuration_sha256="a" * 64,
+                installer_release_trust_configuration_sha256=_PUBLIC_V2_DIGEST,
+                signature_threshold=1,
+                signature_key_ids=("catalog-key-001",),
+            )
+
+            with self.assertRaisesRegex(ValueError, "strict UTF-8 JSON"):
+                package(
+                    executable=executable,
+                    output=output,
+                    bundle_identifier="com.example.forge-platform-installer",
+                    sealed_composition_catalog_trust=forged_catalog_trust,
+                )
+            self.assertFalse(output.exists())
+
     def test_public_packager_api_revalidates_executable_output_and_bundle_identifier(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             workspace = Path(temporary)
@@ -547,6 +683,13 @@ class PackageMacOSInstallerAppTests(unittest.TestCase):
             ("descriptor-key-b", base64.b64encode(bytes(range(32, 64))).decode("ascii")),
         ]
 
+    @staticmethod
+    def _catalog_public_keys() -> list[tuple[str, str]]:
+        return [
+            ("catalog-key-a", base64.b64encode(bytes(range(32))).decode("ascii")),
+            ("catalog-key-b", base64.b64encode(bytes(range(32, 64))).decode("ascii")),
+        ]
+
     @classmethod
     def _release_trust_payload(
         cls,
@@ -592,6 +735,60 @@ class PackageMacOSInstallerAppTests(unittest.TestCase):
         ).encode("utf-8")
         resource = workspace / "caller supplied trust" / (
             "release-trust-" + hashlib.sha256(contents).hexdigest()[:16] + ".json"
+        )
+        resource.parent.mkdir(exist_ok=True)
+        resource.write_bytes(contents)
+        return resource, contents
+
+    @classmethod
+    def _catalog_trust_payload(
+        cls,
+        *,
+        installer_release_trust_configuration_sha256: str = _PUBLIC_V2_DIGEST,
+        keys: list[tuple[str, str]] | None = None,
+        signature_threshold: int = 2,
+    ) -> dict[str, object]:
+        selected_keys = keys if keys is not None else cls._catalog_public_keys()
+        return {
+            "schema_version": 1,
+            "configuration_sha256": canonical_composition_catalog_trust_configuration_sha256(
+                installer_release_trust_configuration_sha256=(
+                    installer_release_trust_configuration_sha256
+                ),
+                signature_threshold=signature_threshold,
+                ed25519_public_keys=selected_keys,
+            ),
+            "installer_release_trust_configuration_sha256": (
+                installer_release_trust_configuration_sha256
+            ),
+            "signature_threshold": signature_threshold,
+            "ed25519_public_keys": [
+                {"key_id": key_id, "public_key_base64": public_key_base64}
+                for key_id, public_key_base64 in selected_keys
+            ],
+        }
+
+    @classmethod
+    def _catalog_trust_resource(
+        cls,
+        workspace: Path,
+        *,
+        installer_release_trust_configuration_sha256: str = _PUBLIC_V2_DIGEST,
+    ) -> tuple[Path, bytes]:
+        contents = (
+            json.dumps(
+                cls._catalog_trust_payload(
+                    installer_release_trust_configuration_sha256=(
+                        installer_release_trust_configuration_sha256
+                    )
+                ),
+                sort_keys=True,
+                indent=2,
+            )
+            + "\n"
+        ).encode("utf-8")
+        resource = workspace / "caller supplied catalog policy" / (
+            "catalog-trust-" + hashlib.sha256(contents).hexdigest()[:16] + ".json"
         )
         resource.parent.mkdir(exist_ok=True)
         resource.write_bytes(contents)
@@ -720,6 +917,7 @@ class PackageMacOSInstallerAppTests(unittest.TestCase):
         *,
         trust_resource: Path | None = None,
         provenance_resource: Path | None = None,
+        catalog_trust_resource: Path | None = None,
     ) -> subprocess.CompletedProcess[str]:
         command = [
             sys.executable,
@@ -735,6 +933,8 @@ class PackageMacOSInstallerAppTests(unittest.TestCase):
             command.extend(("--sealed-release-trust-resource", str(trust_resource)))
         if provenance_resource is not None:
             command.extend(("--sealed-release-provenance-resource", str(provenance_resource)))
+        if catalog_trust_resource is not None:
+            command.extend(("--sealed-composition-catalog-trust-resource", str(catalog_trust_resource)))
         return subprocess.run(
             command,
             cwd=ROOT,

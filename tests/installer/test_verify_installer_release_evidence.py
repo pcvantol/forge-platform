@@ -24,6 +24,10 @@ from forge_platform.installer_release_operation import (  # noqa: E402
     InstallerReleaseIdentity,
     InstallerReleaseOperation,
 )
+from forge_platform.composition_catalog_trust import (  # noqa: E402
+    COMPOSITION_CATALOG_TRUST_RESOURCE_NAME,
+    canonical_composition_catalog_trust_configuration_sha256,
+)
 from forge_platform.installer_release_provenance import (  # noqa: E402
     canonical_release_provenance_sha256,
 )
@@ -39,6 +43,9 @@ POLICY_REVISION = "forge-platform-installer-release-v1"
 RELEASE_SEQUENCE = 7
 TRUST_PUBLIC_KEYS = (
     ("release-key-001", base64.b64encode(bytes(range(32))).decode("ascii")),
+)
+CATALOG_TRUST_PUBLIC_KEYS = (
+    ("catalog-key-001", base64.b64encode(bytes(range(32, 64))).decode("ascii")),
 )
 RELEASE_TRUST_CONFIGURATION_SHA256 = canonical_release_trust_configuration_sha256(
     repository="example/forge-platform",
@@ -93,7 +100,51 @@ class VerifyInstallerReleaseEvidenceTests(unittest.TestCase):
             self.assertIn("tag=forge-platform-installer-v0.1.0", result.stdout)
             self.assertIn("signature_envelopes=STRUCTURALLY_BOUND", result.stdout)
             self.assertIn("threshold=1", result.stdout)
+            self.assertIn("catalog_trust=ABSENT_FAIL_CLOSED", result.stdout)
             self.assertIn("cryptographic_signature_verification=NOT_PERFORMED", result.stdout)
+
+    def test_binds_an_optional_catalog_trust_policy_to_the_archive_v2_scope(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            workspace = Path(temporary)
+            operation_path, descriptor_path, archive = self._write_release_inputs(
+                workspace,
+                catalog_trust=self._catalog_trust_payload(),
+            )
+
+            result = self._run(operation_path, descriptor_path, archive)
+
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIn("catalog_trust=STRUCTURALLY_BOUND_V1", result.stdout)
+
+    def test_rejects_a_self_consistent_catalog_policy_scoped_to_another_v2_trust_configuration(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            workspace = Path(temporary)
+            operation_path, descriptor_path, archive = self._write_release_inputs(
+                workspace,
+                catalog_trust=self._catalog_trust_payload(
+                    installer_release_trust_configuration_sha256="f" * 64
+                ),
+            )
+
+            result = self._run(operation_path, descriptor_path, archive)
+
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("catalog trust release trust configuration does not bind", result.stderr)
+
+    def test_rejects_a_malformed_optional_catalog_policy_in_the_signed_archive(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            workspace = Path(temporary)
+            catalog_trust = self._catalog_trust_payload()
+            catalog_trust["catalog_url"] = "https://never-accepted.example.invalid/catalog.json"
+            operation_path, descriptor_path, archive = self._write_release_inputs(
+                workspace,
+                catalog_trust=catalog_trust,
+            )
+
+            result = self._run(operation_path, descriptor_path, archive)
+
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("unsupported or missing fields", result.stderr)
 
     def test_rejects_an_archive_with_changed_bytes(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -448,11 +499,38 @@ class VerifyInstallerReleaseEvidenceTests(unittest.TestCase):
         }
 
     @staticmethod
+    def _catalog_trust_payload(
+        *,
+        installer_release_trust_configuration_sha256: str = RELEASE_TRUST_CONFIGURATION_SHA256,
+        signature_threshold: int = 1,
+        ed25519_public_keys: tuple[tuple[str, str], ...] = CATALOG_TRUST_PUBLIC_KEYS,
+    ) -> dict[str, object]:
+        return {
+            "schema_version": 1,
+            "configuration_sha256": canonical_composition_catalog_trust_configuration_sha256(
+                installer_release_trust_configuration_sha256=(
+                    installer_release_trust_configuration_sha256
+                ),
+                signature_threshold=signature_threshold,
+                ed25519_public_keys=ed25519_public_keys,
+            ),
+            "installer_release_trust_configuration_sha256": (
+                installer_release_trust_configuration_sha256
+            ),
+            "signature_threshold": signature_threshold,
+            "ed25519_public_keys": [
+                {"key_id": key_id, "public_key_base64": public_key_base64}
+                for key_id, public_key_base64 in ed25519_public_keys
+            ],
+        }
+
+    @staticmethod
     def _write_archive(
         archive: Path,
         provenance: dict[str, object],
         *,
         trust: dict[str, object] | None = None,
+        catalog_trust: dict[str, object] | None = None,
         symlinked_app_root: bool = False,
     ) -> None:
         archive.parent.mkdir(parents=True, exist_ok=True)
@@ -475,6 +553,19 @@ class VerifyInstallerReleaseEvidenceTests(unittest.TestCase):
                 "ForgePlatformInstaller.app/Contents/Resources/ForgePlatformInstallerReleaseProvenance.json",
                 json.dumps(provenance, sort_keys=True, separators=(",", ":"), allow_nan=False).encode("utf-8"),
             )
+            if catalog_trust is not None:
+                bundle.writestr(
+                    (
+                        "ForgePlatformInstaller.app/Contents/Resources/"
+                        + COMPOSITION_CATALOG_TRUST_RESOURCE_NAME
+                    ),
+                    json.dumps(
+                        catalog_trust,
+                        sort_keys=True,
+                        separators=(",", ":"),
+                        allow_nan=False,
+                    ).encode("utf-8"),
+                )
 
     @staticmethod
     def _replace_archive_provenance_and_rebind_archive_digest(
@@ -484,6 +575,7 @@ class VerifyInstallerReleaseEvidenceTests(unittest.TestCase):
         provenance: dict[str, object],
         *,
         trust: dict[str, object] | None = None,
+        catalog_trust: dict[str, object] | None = None,
         symlinked_app_root: bool = False,
     ) -> None:
         """Keep archive bytes/evidence self-consistent except for V1 binding."""
@@ -492,6 +584,7 @@ class VerifyInstallerReleaseEvidenceTests(unittest.TestCase):
             archive,
             provenance,
             trust=trust,
+            catalog_trust=catalog_trust,
             symlinked_app_root=symlinked_app_root,
         )
         archive_digest = "sha256:" + sha256(archive.read_bytes()).hexdigest()
@@ -513,11 +606,16 @@ class VerifyInstallerReleaseEvidenceTests(unittest.TestCase):
         )
 
     @staticmethod
-    def _write_release_inputs(workspace: Path) -> tuple[Path, Path, Path]:
+    def _write_release_inputs(
+        workspace: Path,
+        *,
+        catalog_trust: dict[str, object] | None = None,
+    ) -> tuple[Path, Path, Path]:
         archive = workspace / "ForgePlatformInstaller-macos-arm64.zip"
         VerifyInstallerReleaseEvidenceTests._write_archive(
             archive,
             VerifyInstallerReleaseEvidenceTests._provenance_payload(),
+            catalog_trust=catalog_trust,
         )
         archive_digest = "sha256:" + sha256(archive.read_bytes()).hexdigest()
         descriptor = {

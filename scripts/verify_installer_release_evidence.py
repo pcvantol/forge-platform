@@ -15,6 +15,7 @@ notarizes, or publishes an artifact.
 from __future__ import annotations
 
 import argparse
+from dataclasses import dataclass
 from datetime import datetime
 from hashlib import sha256
 import json
@@ -33,6 +34,12 @@ sys.path.insert(0, str(ROOT))
 from forge_platform.installer_release_operation import (  # noqa: E402
     InstallerReleaseOperation,
     InstallerReleaseOperationError,
+)
+from forge_platform.composition_catalog_trust import (  # noqa: E402
+    COMPOSITION_CATALOG_TRUST_MAXIMUM_BYTES,
+    COMPOSITION_CATALOG_TRUST_RESOURCE_NAME,
+    CompositionCatalogTrust,
+    parse_composition_catalog_trust_bytes,
 )
 from forge_platform.installer_release_provenance import (  # noqa: E402
     INSTALLER_RELEASE_PROVENANCE_MAXIMUM_BYTES,
@@ -70,6 +77,19 @@ _TEAM_IDENTIFIER = re.compile(r"^[A-Z0-9]{10}$")
 _RECEIPT_REFERENCE = re.compile(r"^receipt:[a-z0-9][a-z0-9._-]{0,127}$")
 _ARCHIVE_APP_BUNDLE_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9 ._-]{0,122}\.app$")
 _MAXIMUM_OPERATION_BYTES = 512 * 1024
+
+
+@dataclass(frozen=True)
+class InstallerReleaseEvidenceVerification:
+    """One verified release operation plus optional catalog-policy evidence.
+
+    ``catalog_trust_status`` describes only the code-signed public policy in
+    the archive. It is not evidence that a catalog was fetched, accepted,
+    selected, or used to authorize a component operation.
+    """
+
+    operation: InstallerReleaseOperation
+    catalog_trust_status: str
 
 
 def _reject_constant(value: str) -> None:
@@ -230,7 +250,8 @@ def _bundled_resource_bytes(
     resource_name: str,
     maximum_bytes: int,
     resource_label: str,
-) -> bytes:
+    required: bool = True,
+) -> bytes | None:
     """Read one bounded app resource from an archive without extraction.
 
     A protected evidence handoff must prove the bytes which will actually be
@@ -257,6 +278,8 @@ def _bundled_resource_bytes(
                     raise ValueError(f"archive {resource_label} resource path is invalid")
                 candidates.append(entry)
                 selected_components = components
+            if not candidates and not required:
+                return None
             if len(candidates) != 1:
                 raise ValueError(f"archive must contain exactly one bundled {resource_label} resource")
             resource = candidates[0]
@@ -299,30 +322,55 @@ def _bundled_resource_bytes(
 
 
 def _bundled_release_provenance(path: Path) -> InstallerReleaseProvenance:
+    contents = _bundled_resource_bytes(
+        path,
+        resource_name=INSTALLER_RELEASE_PROVENANCE_RESOURCE_NAME,
+        maximum_bytes=INSTALLER_RELEASE_PROVENANCE_MAXIMUM_BYTES,
+        resource_label="provenance",
+    )
+    assert contents is not None
     return parse_installer_release_provenance_bytes(
-        _bundled_resource_bytes(
-            path,
-            resource_name=INSTALLER_RELEASE_PROVENANCE_RESOURCE_NAME,
-            maximum_bytes=INSTALLER_RELEASE_PROVENANCE_MAXIMUM_BYTES,
-            resource_label="provenance",
-        ),
+        contents,
         label="archive provenance resource",
     )
 
 
 def _bundled_release_trust(path: Path) -> InstallerReleaseTrust:
+    contents = _bundled_resource_bytes(
+        path,
+        resource_name=INSTALLER_RELEASE_TRUST_RESOURCE_NAME,
+        maximum_bytes=INSTALLER_RELEASE_TRUST_MAXIMUM_BYTES,
+        resource_label="release trust",
+    )
+    assert contents is not None
     return parse_installer_release_trust_bytes(
-        _bundled_resource_bytes(
-            path,
-            resource_name=INSTALLER_RELEASE_TRUST_RESOURCE_NAME,
-            maximum_bytes=INSTALLER_RELEASE_TRUST_MAXIMUM_BYTES,
-            resource_label="release trust",
-        ),
+        contents,
         label="archive release trust resource",
     )
 
 
-def _archive_trust_binds_operation(path: Path, operation: InstallerReleaseOperation) -> None:
+def _bundled_composition_catalog_trust(path: Path) -> CompositionCatalogTrust | None:
+    """Read the optional V1 policy without creating a catalog authority."""
+
+    contents = _bundled_resource_bytes(
+        path,
+        resource_name=COMPOSITION_CATALOG_TRUST_RESOURCE_NAME,
+        maximum_bytes=COMPOSITION_CATALOG_TRUST_MAXIMUM_BYTES,
+        resource_label="composition catalog trust",
+        required=False,
+    )
+    if contents is None:
+        return None
+    return parse_composition_catalog_trust_bytes(
+        contents,
+        label="archive composition catalog trust resource",
+    )
+
+
+def _archive_trust_binds_operation(
+    path: Path,
+    operation: InstallerReleaseOperation,
+) -> InstallerReleaseTrust:
     """Bind all semantic V2 trust facts to the reviewed release identity."""
 
     trust = _bundled_release_trust(path)
@@ -341,6 +389,29 @@ def _archive_trust_binds_operation(path: Path, operation: InstallerReleaseOperat
         raise ValueError("archive trust signature threshold does not bind the reviewed identity")
     if trust.signature_key_ids != identity.signature_key_ids:
         raise ValueError("archive trust signing key identities do not bind the reviewed identity")
+    return trust
+
+
+def _archive_catalog_trust_binds_operation(
+    path: Path,
+    operation: InstallerReleaseOperation,
+    release_trust: InstallerReleaseTrust,
+) -> str | None:
+    """Bind an optional catalog policy to the exact current-bundle V2 scope."""
+
+    catalog_trust = _bundled_composition_catalog_trust(path)
+    if catalog_trust is None:
+        return None
+    if (
+        catalog_trust.installer_release_trust_configuration_sha256
+        != release_trust.configuration_sha256
+        or catalog_trust.installer_release_trust_configuration_sha256
+        != operation.release_identity.release_trust_configuration_sha256
+    ):
+        raise ValueError(
+            "archive composition catalog trust release trust configuration does not bind the reviewed identity"
+        )
+    return catalog_trust.configuration_sha256
 
 
 def _archive_provenance_binds_operation(path: Path, operation: InstallerReleaseOperation) -> None:
@@ -523,7 +594,7 @@ def verify(
     expected_bundle_identifier: str,
     expected_team_identifier: str,
     expected_asset_prefix: str,
-) -> InstallerReleaseOperation:
+) -> InstallerReleaseEvidenceVerification:
     if _REVISION.fullmatch(source_revision) is None:
         raise ValueError("candidate source revision is invalid")
     if not descriptor_raw or len(descriptor_raw) > MAXIMUM_INSTALLER_RELEASE_DESCRIPTOR_BYTES:
@@ -561,11 +632,17 @@ def verify(
         raise ValueError("durable installer release operation state is unsupported")
     if set(archive_paths) != set(operation.archives):
         raise ValueError("supplied archives do not match the durable operation architectures")
+    catalog_trust_configurations: set[str | None] = set()
     for architecture, path in archive_paths.items():
         if _file_digest(path) != operation.archives[architecture]:
             raise ValueError("archive digest does not bind the durable operation")
-        _archive_trust_binds_operation(path, operation)
+        release_trust = _archive_trust_binds_operation(path, operation)
         _archive_provenance_binds_operation(path, operation)
+        catalog_trust_configurations.add(
+            _archive_catalog_trust_binds_operation(path, operation, release_trust)
+        )
+    if len(catalog_trust_configurations) != 1:
+        raise ValueError("archive composition catalog trust policies differ across architectures")
 
     descriptor = _strict_object(descriptor_raw, "installer release descriptor")
     descriptor = _mapping(
@@ -600,7 +677,15 @@ def verify(
         or operation.qualification.policy_revision != operation.policy_revision
     ):
         raise ValueError("qualification evidence does not bind the candidate source revision and policy")
-    return operation
+    catalog_trust_configuration = next(iter(catalog_trust_configurations))
+    return InstallerReleaseEvidenceVerification(
+        operation=operation,
+        catalog_trust_status=(
+            "STRUCTURALLY_BOUND_V1"
+            if catalog_trust_configuration is not None
+            else "ABSENT_FAIL_CLOSED"
+        ),
+    )
 
 
 def _file_digest_bytes(value: bytes) -> str:
@@ -640,7 +725,7 @@ def main() -> None:
         )
         if descriptor_path.name != args.descriptor_asset_name:
             raise ValueError("descriptor path does not use the canonical GitHub descriptor asset name")
-        operation = verify(
+        verification = verify(
             operation_raw=operation_raw,
             descriptor_raw=descriptor_raw,
             archive_paths=_archive_arguments(args.archive),
@@ -661,11 +746,12 @@ def main() -> None:
         )
         print(
             "INSTALLER_RELEASE_EVIDENCE_STRUCTURE=PASS"
-            f" version={operation.installer_version}"
-            f" tag={operation.release_tag}"
-            f" state={operation.state}"
+            f" version={verification.operation.installer_version}"
+            f" tag={verification.operation.release_tag}"
+            f" state={verification.operation.state}"
             f" signature_envelopes=STRUCTURALLY_BOUND"
-            f" threshold={operation.release_identity.signature_threshold}"
+            f" threshold={verification.operation.release_identity.signature_threshold}"
+            f" catalog_trust={verification.catalog_trust_status}"
             " cryptographic_signature_verification=NOT_PERFORMED"
         )
     except (OSError, ValueError) as error:

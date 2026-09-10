@@ -26,6 +26,11 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from validate_installer_version import load_manifest
+from forge_platform.composition_catalog_trust import (
+    COMPOSITION_CATALOG_TRUST_MAXIMUM_BYTES,
+    COMPOSITION_CATALOG_TRUST_RESOURCE_NAME,
+    parse_composition_catalog_trust_bytes,
+)
 from forge_platform.installer_release_provenance import (
     INSTALLER_RELEASE_PROVENANCE_MAXIMUM_BYTES,
     INSTALLER_RELEASE_PROVENANCE_RESOURCE_NAME,
@@ -84,6 +89,24 @@ class SealedReleaseProvenanceResource:
     policy_revision: str
     capabilities: tuple[str, ...]
     release_trust_configuration_sha256: str
+
+
+@dataclass(frozen=True)
+class SealedCompositionCatalogTrustResource:
+    """Validated public V1 catalog policy bound to this installer trust root.
+
+    The resource is a separately code-signed policy, not a catalog, session,
+    downloader, or product-operation authorization.  Packaging preserves the
+    exact captured bytes so a later source-file change cannot replace the
+    policy that was validated for the candidate bundle.
+    """
+
+    source: Path
+    contents: bytes
+    configuration_sha256: str
+    installer_release_trust_configuration_sha256: str
+    signature_threshold: int
+    signature_key_ids: tuple[str, ...]
 
 
 def _read_regular_non_symlink_file(value: str, *, description: str, maximum_bytes: int) -> tuple[Path, bytes]:
@@ -205,6 +228,42 @@ def _validated_sealed_release_trust_resource(
     )
 
 
+def _sealed_composition_catalog_trust_resource(value: str) -> SealedCompositionCatalogTrustResource:
+    """Validate one exact public V1 policy for the catalog-signing keys."""
+
+    supplied = Path(value).expanduser()
+    if supplied.suffix != ".json":
+        raise ValueError("sealed composition catalog trust resource must have a .json filename")
+    source, contents = _read_regular_non_symlink_file(
+        value,
+        description="sealed composition catalog trust resource",
+        maximum_bytes=COMPOSITION_CATALOG_TRUST_MAXIMUM_BYTES,
+    )
+    return _validated_sealed_composition_catalog_trust_resource(source, contents)
+
+
+def _validated_sealed_composition_catalog_trust_resource(
+    source: Path,
+    contents: bytes,
+) -> SealedCompositionCatalogTrustResource:
+    """Revalidate captured V1 policy bytes at the public API boundary."""
+
+    trust = parse_composition_catalog_trust_bytes(
+        contents,
+        label="sealed composition catalog trust resource",
+    )
+    return SealedCompositionCatalogTrustResource(
+        source=source,
+        contents=contents,
+        configuration_sha256=trust.configuration_sha256,
+        installer_release_trust_configuration_sha256=(
+            trust.installer_release_trust_configuration_sha256
+        ),
+        signature_threshold=trust.signature_threshold,
+        signature_key_ids=trust.signature_key_ids,
+    )
+
+
 def _sealed_release_provenance_resource(value: str) -> SealedReleaseProvenanceResource:
     """Validate the exact public V1 provenance resource copied into the app.
 
@@ -276,6 +335,7 @@ def package(
     bundle_identifier: str,
     sealed_release_trust: SealedReleaseTrustResource | None = None,
     sealed_release_provenance: SealedReleaseProvenanceResource | None = None,
+    sealed_composition_catalog_trust: SealedCompositionCatalogTrustResource | None = None,
 ) -> None:
     """Lay out an unsigned app bundle without replacing an existing target.
 
@@ -298,7 +358,18 @@ def package(
             sealed_release_provenance.source,
             sealed_release_provenance.contents,
         )
+    if sealed_composition_catalog_trust is not None:
+        sealed_composition_catalog_trust = _validated_sealed_composition_catalog_trust_resource(
+            sealed_composition_catalog_trust.source,
+            sealed_composition_catalog_trust.contents,
+        )
 
+    if sealed_composition_catalog_trust is not None and (
+        sealed_release_trust is None or sealed_release_provenance is None
+    ):
+        raise ValueError(
+            "sealed composition catalog trust resource requires both sealed release trust and provenance resources"
+        )
     if (sealed_release_trust is None) != (sealed_release_provenance is None):
         raise ValueError(
             "released installer packaging requires both sealed release trust and provenance resources"
@@ -318,6 +389,15 @@ def package(
     ):
         raise ValueError(
             "sealed release trust resource bundle identifier does not match the packaged app"
+        )
+    if (
+        sealed_composition_catalog_trust is not None
+        and sealed_release_trust is not None
+        and sealed_composition_catalog_trust.installer_release_trust_configuration_sha256
+        != sealed_release_trust.configuration_sha256
+    ):
+        raise ValueError(
+            "sealed composition catalog trust resource release trust configuration digest does not match the bundled release trust resource"
         )
 
     manifest = load_manifest()
@@ -375,7 +455,11 @@ def package(
         with info_plist.open("wb") as stream:
             plistlib.dump(metadata, stream, fmt=plistlib.FMT_XML, sort_keys=True)
         info_plist.chmod(0o644)
-        if sealed_release_trust is not None or sealed_release_provenance is not None:
+        if (
+            sealed_release_trust is not None
+            or sealed_release_provenance is not None
+            or sealed_composition_catalog_trust is not None
+        ):
             resources.mkdir(mode=0o755)
         if sealed_release_trust is not None:
             trust_destination = resources / INSTALLER_RELEASE_TRUST_RESOURCE_NAME
@@ -387,6 +471,11 @@ def package(
             with provenance_destination.open("xb") as stream:
                 stream.write(sealed_release_provenance.contents)
             provenance_destination.chmod(0o644)
+        if sealed_composition_catalog_trust is not None:
+            catalog_trust_destination = resources / COMPOSITION_CATALOG_TRUST_RESOURCE_NAME
+            with catalog_trust_destination.open("xb") as stream:
+                stream.write(sealed_composition_catalog_trust.contents)
+            catalog_trust_destination.chmod(0o644)
     except BaseException:
         # The output path was required to be new and is therefore the sole
         # operation-owned cleanup target on failure.
@@ -414,6 +503,14 @@ def main() -> None:
             f"Contents/Resources/{INSTALLER_RELEASE_PROVENANCE_RESOURCE_NAME}"
         ),
     )
+    parser.add_argument(
+        "--sealed-composition-catalog-trust-resource",
+        help=(
+            "explicit public V1 JSON catalog-signing policy to copy verbatim to "
+            f"Contents/Resources/{COMPOSITION_CATALOG_TRUST_RESOURCE_NAME}; requires "
+            "the matched V2 release-trust and V1 provenance resources"
+        ),
+    )
     args = parser.parse_args()
     try:
         executable = _source_executable(args.executable)
@@ -429,12 +526,20 @@ def main() -> None:
             if args.sealed_release_provenance_resource is not None
             else None
         )
+        sealed_composition_catalog_trust = (
+            _sealed_composition_catalog_trust_resource(
+                args.sealed_composition_catalog_trust_resource
+            )
+            if args.sealed_composition_catalog_trust_resource is not None
+            else None
+        )
         package(
             executable=executable,
             output=output,
             bundle_identifier=bundle_identifier,
             sealed_release_trust=sealed_release_trust,
             sealed_release_provenance=sealed_release_provenance,
+            sealed_composition_catalog_trust=sealed_composition_catalog_trust,
         )
         print(
             "INSTALLER_APP_BUNDLE=PASS"
@@ -442,6 +547,7 @@ def main() -> None:
             f" bundle_identifier={bundle_identifier}"
             f" sealed_release_trust={'PACKAGED_V2' if sealed_release_trust is not None else 'ABSENT_FAIL_CLOSED'}"
             f" sealed_release_provenance={'PACKAGED_V1' if sealed_release_provenance is not None else 'ABSENT_FAIL_CLOSED'}"
+            f" sealed_composition_catalog_trust={'PACKAGED_V1' if sealed_composition_catalog_trust is not None else 'ABSENT_FAIL_CLOSED'}"
             " signing=UNSIGNED_CANDIDATE"
         )
     except (OSError, RuntimeError, ValueError) as error:
