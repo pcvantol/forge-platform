@@ -220,6 +220,7 @@ public enum VerifiedCompositionSessionPlanError: Error, Equatable, Sendable {
     case invalidManifestSHA256
     case invalidInstallerReleaseSequence
     case invalidInstallerProvenanceSHA256
+    case invalidInstallerReleaseTrustConfigurationSHA256
     case invalidComponentSelectionSequence
     case conflatedCatalogIdentities
     case duplicateProviderRequirement
@@ -250,6 +251,10 @@ public struct VerifiedCompositionSessionPlan: Equatable, Sendable {
     /// current sealed-release context before it can accept the plan.
     public let installerReleaseSequence: UInt64
     public let installerProvenanceSHA256: String
+    /// The exact current release-trust configuration that authorized the
+    /// catalog policy used to prepare this plan.  It keeps a plan from being
+    /// replayed across a trust-configuration rotation.
+    public let installerReleaseTrustConfigurationSHA256: String
     /// The exact locator carried by the verified installer-release descriptor.
     /// It is structural context binding only: this model neither fetches the
     /// URL nor treats it as a catalog trust root.
@@ -277,6 +282,7 @@ public struct VerifiedCompositionSessionPlan: Equatable, Sendable {
         manifestSHA256: String,
         installerReleaseSequence: UInt64,
         installerProvenanceSHA256: String,
+        installerReleaseTrustConfigurationSHA256: String,
         compositionCatalogFeed: VerifiedCompositionCatalogFeedLocator,
         compositionCatalog: VerifiedCompositionCatalogIdentity,
         componentCombinationCatalog: VerifiedCompositionCatalogIdentity,
@@ -298,6 +304,9 @@ public struct VerifiedCompositionSessionPlan: Equatable, Sendable {
         guard Self.isRawSHA256(installerProvenanceSHA256) else {
             throw VerifiedCompositionSessionPlanError.invalidInstallerProvenanceSHA256
         }
+        guard Self.isRawSHA256(installerReleaseTrustConfigurationSHA256) else {
+            throw VerifiedCompositionSessionPlanError.invalidInstallerReleaseTrustConfigurationSHA256
+        }
         guard componentSelectionSequence > 0 else {
             throw VerifiedCompositionSessionPlanError.invalidComponentSelectionSequence
         }
@@ -312,6 +321,7 @@ public struct VerifiedCompositionSessionPlan: Equatable, Sendable {
         self.manifestSHA256 = manifestSHA256
         self.installerReleaseSequence = installerReleaseSequence
         self.installerProvenanceSHA256 = installerProvenanceSHA256
+        self.installerReleaseTrustConfigurationSHA256 = installerReleaseTrustConfigurationSHA256
         self.compositionCatalogFeed = compositionCatalogFeed
         self.compositionCatalog = compositionCatalog
         self.componentCombinationCatalog = componentCombinationCatalog

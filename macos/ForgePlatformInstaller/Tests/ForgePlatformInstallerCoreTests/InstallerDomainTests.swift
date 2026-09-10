@@ -199,6 +199,7 @@ final class InstallerDomainTests: XCTestCase {
             manifestSHA256: "sha256:" + String(repeating: "a", count: 64),
             installerReleaseSequence: 10,
             installerProvenanceSHA256: String(repeating: "b", count: 64),
+            installerReleaseTrustConfigurationSHA256: String(repeating: "e", count: 64),
             compositionCatalogFeed: try VerifiedCompositionCatalogFeedLocator(
                 url: "https://catalog.example.test/feed.json"
             ),
@@ -215,6 +216,7 @@ final class InstallerDomainTests: XCTestCase {
         XCTAssertEqual(plan.catalogSequence, outerCatalog.sequence)
         XCTAssertEqual(plan.catalogSHA256, outerCatalog.sha256)
         XCTAssertEqual(plan.componentSelectionSequence, 40)
+        XCTAssertEqual(plan.installerReleaseTrustConfigurationSHA256, String(repeating: "e", count: 64))
         XCTAssertEqual(plan.providerRequirements, [requirement])
         XCTAssertEqual(plan.providerRequirements.first?.minimumVersion, minimumVersion)
         XCTAssertEqual(plan.providerRequirements.first?.credentialScope, .user)
@@ -259,6 +261,17 @@ final class InstallerDomainTests: XCTestCase {
             XCTAssertEqual(error as? VerifiedCompositionSessionPlanError, .invalidInstallerProvenanceSHA256)
         }
         XCTAssertThrowsError(
+            try makeSessionPlan(
+                requirements: [],
+                installerReleaseTrustConfigurationSHA256: "sha256:" + String(repeating: "e", count: 64)
+            )
+        ) { error in
+            XCTAssertEqual(
+                error as? VerifiedCompositionSessionPlanError,
+                .invalidInstallerReleaseTrustConfigurationSHA256
+            )
+        }
+        XCTAssertThrowsError(
             try makeSessionPlan(requirements: [], componentSelectionSequence: 0)
         ) { error in
             XCTAssertEqual(error as? VerifiedCompositionSessionPlanError, .invalidComponentSelectionSequence)
@@ -274,6 +287,7 @@ final class InstallerDomainTests: XCTestCase {
                 manifestSHA256: "sha256:" + String(repeating: "a", count: 64),
                 installerReleaseSequence: 1,
                 installerProvenanceSHA256: String(repeating: "b", count: 64),
+                installerReleaseTrustConfigurationSHA256: String(repeating: "e", count: 64),
                 compositionCatalogFeed: try VerifiedCompositionCatalogFeedLocator(
                     url: "https://catalog.example.test/feed.json"
                 ),
@@ -359,6 +373,7 @@ final class InstallerDomainTests: XCTestCase {
         sessionID: String = "session-1",
         installerReleaseSequence: UInt64 = 1,
         installerProvenanceSHA256: String = String(repeating: "b", count: 64),
+        installerReleaseTrustConfigurationSHA256: String = String(repeating: "e", count: 64),
         componentSelectionSequence: UInt64 = 4
     ) throws -> VerifiedCompositionSessionPlan {
         try VerifiedCompositionSessionPlan(
@@ -367,6 +382,7 @@ final class InstallerDomainTests: XCTestCase {
             manifestSHA256: "sha256:" + String(repeating: "a", count: 64),
             installerReleaseSequence: installerReleaseSequence,
             installerProvenanceSHA256: installerProvenanceSHA256,
+            installerReleaseTrustConfigurationSHA256: installerReleaseTrustConfigurationSHA256,
             compositionCatalogFeed: try VerifiedCompositionCatalogFeedLocator(
                 url: "https://catalog.example.test/feed.json"
             ),

@@ -749,123 +749,31 @@ struct GitHubInstallerReleaseDescriptor: Sendable {
         )
     }
 
-    private static func parseSignature(_ value: StrictJSONResourceValue) throws -> SignatureEnvelope {
-        guard let fields = value.objectValue,
-              Set(fields.keys) == Set(["algorithm", "key_id", "signature"]),
-              fields["algorithm"]?.stringValue == "ed25519",
-              let keyID = fields["key_id"]?.stringValue,
-              GitHubInstallerReleaseDescriptorValidation.isKeyID(keyID),
-              let signature = fields["signature"]?.stringValue,
-              let rawSignature = GitHubInstallerReleaseDescriptorValidation.decodeCanonicalBase64URL(signature),
-              rawSignature.count == 64 else {
-            throw GitHubInstallerReleaseDescriptorError.invalid
-        }
-        return SignatureEnvelope(keyID: keyID, rawSignature: rawSignature)
+    private static func parseSignature(_ value: StrictJSONResourceValue) throws -> StrictEd25519SignatureEnvelope {
+        try StrictSignedJSON.parseEd25519Signature(
+            value,
+            keyIDIsValid: GitHubInstallerReleaseDescriptorValidation.isKeyID
+        )
     }
 
     private static func verifySignatures(
-        _ signatures: [SignatureEnvelope],
+        _ signatures: [StrictEd25519SignatureEnvelope],
         canonicalPayload: Data,
         trustConfiguration: SealedInstallerReleaseTrustConfiguration
     ) throws -> Set<String> {
-        guard !signatures.isEmpty,
-              signatures.count <= trustConfiguration.ed25519PublicKeys.count else {
-            throw GitHubInstallerReleaseDescriptorError.invalid
-        }
         let trustedKeys = Dictionary(uniqueKeysWithValues: trustConfiguration.ed25519PublicKeys.map {
             ($0.keyID, $0.publicKeyBase64)
         })
-        var observedKeyIDs: Set<String> = []
-        var verifiedKeyIDs: Set<String> = []
-        for signature in signatures {
-            guard observedKeyIDs.insert(signature.keyID).inserted,
-                  let publicKeyBase64 = trustedKeys[signature.keyID],
-                  let rawPublicKey = Data(base64Encoded: publicKeyBase64),
-                  rawPublicKey.count == 32 else {
-                throw GitHubInstallerReleaseDescriptorError.invalid
-            }
-            let publicKey = try Curve25519.Signing.PublicKey(rawRepresentation: rawPublicKey)
-            guard publicKey.isValidSignature(signature.rawSignature, for: canonicalPayload) else {
-                throw GitHubInstallerReleaseDescriptorError.invalid
-            }
-            verifiedKeyIDs.insert(signature.keyID)
-        }
-        guard verifiedKeyIDs.count >= trustConfiguration.signatureThreshold else {
-            throw GitHubInstallerReleaseDescriptorError.invalid
-        }
-        return verifiedKeyIDs
+        return try StrictSignedJSON.verifyThreshold(
+            signatures,
+            canonicalPayload: canonicalPayload,
+            trustedPublicKeys: trustedKeys,
+            signatureThreshold: trustConfiguration.signatureThreshold
+        )
     }
 
     static func canonicalUnsignedPayload(from root: StrictJSONResourceValue) throws -> Data {
-        guard case .object(var fields) = root else {
-            throw GitHubInstallerReleaseDescriptorError.invalid
-        }
-        guard fields.removeValue(forKey: "signatures") != nil else {
-            throw GitHubInstallerReleaseDescriptorError.invalid
-        }
-        return Data(canonicalJSON(.object(fields)).utf8)
-    }
-
-    /// Matches Python's `json.dumps(..., sort_keys=True, separators=(",", ":"),
-    /// ensure_ascii=True, allow_nan=False)` for the strict JSON value domain.
-    private static func canonicalJSON(_ value: StrictJSONResourceValue) -> String {
-        switch value {
-        case .object(let fields):
-            let encoded = fields.keys.sorted().map { key in
-                canonicalString(key) + ":" + canonicalJSON(fields[key]!)
-            }
-            return "{" + encoded.joined(separator: ",") + "}"
-        case .array(let values):
-            return "[" + values.map(canonicalJSON).joined(separator: ",") + "]"
-        case .string(let value):
-            return canonicalString(value)
-        case .integer(let value):
-            return value
-        case .boolean(let value):
-            return value ? "true" : "false"
-        case .null:
-            return "null"
-        }
-    }
-
-    private static func canonicalString(_ value: String) -> String {
-        var result = "\""
-        for scalar in value.unicodeScalars {
-            switch scalar.value {
-            case 34:
-                result += "\\\""
-            case 92:
-                result += "\\\\"
-            case 8:
-                result += "\\b"
-            case 12:
-                result += "\\f"
-            case 10:
-                result += "\\n"
-            case 13:
-                result += "\\r"
-            case 9:
-                result += "\\t"
-            case 0...31:
-                result += unicodeEscape(scalar.value)
-            case 32...126:
-                result.unicodeScalars.append(scalar)
-            case 127...0xFFFF:
-                result += unicodeEscape(scalar.value)
-            default:
-                let planeValue = scalar.value - 0x10000
-                let high = 0xD800 + (planeValue >> 10)
-                let low = 0xDC00 + (planeValue & 0x3FF)
-                result += unicodeEscape(high)
-                result += unicodeEscape(low)
-            }
-        }
-        result += "\""
-        return result
-    }
-
-    private static func unicodeEscape(_ value: UInt32) -> String {
-        "\\u" + String(value, radix: 16, uppercase: false).leftPadding(to: 4, with: "0")
+        try StrictSignedJSON.canonicalUnsignedPayload(from: root)
     }
 
     private static func parseRFC3339(_ value: String) -> Date? {
@@ -882,10 +790,6 @@ struct GitHubInstallerReleaseDescriptor: Sendable {
         return standard.date(from: value)
     }
 
-    private struct SignatureEnvelope: Sendable {
-        let keyID: String
-        let rawSignature: Data
-    }
 }
 
 private enum GitHubInstallerReleaseDescriptorError: Error {
@@ -968,7 +872,13 @@ enum GitHubInstallerReleaseDescriptorValidation {
     }
 
     static func isHTTPSURL(_ value: String) -> Bool {
-        guard isASCII(value),
+        guard value.utf8.count <= 2048,
+              isASCII(value),
+              value.hasPrefix("https://"),
+              !hasEmptyQueryDelimiter(value),
+              let authorityRange = canonicalHTTPSAuthorityRange(in: value),
+              isCanonicalHTTPSAuthority(String(value[authorityRange])),
+              isCanonicalHTTPSPathAndQuery(String(value[authorityRange.upperBound...])),
               let components = URLComponents(string: value),
               components.scheme == "https",
               let host = components.host,
@@ -977,11 +887,98 @@ enum GitHubInstallerReleaseDescriptorValidation {
               components.password == nil,
               components.fragment == nil,
               components.port == nil || components.port == 443,
+              components.port == nil || String(value[authorityRange]).hasSuffix(":443"),
               let url = components.url,
               url.absoluteString == value else {
             return false
         }
         return true
+    }
+
+    private static func canonicalHTTPSAuthorityRange(in value: String) -> Range<String.Index>? {
+        let authorityStart = value.index(value.startIndex, offsetBy: "https://".count)
+        let separator = value[authorityStart...].firstIndex { $0 == "/" || $0 == "?" } ?? value.endIndex
+        guard authorityStart < separator else {
+            return nil
+        }
+        return authorityStart..<separator
+    }
+
+    /// A trailing question mark is invalid only when it is the empty query
+    /// delimiter. A nonempty query may itself end in `?`, which is admitted by
+    /// the shared schema and Python canonical-URL policy.
+    private static func hasEmptyQueryDelimiter(_ value: String) -> Bool {
+        guard let delimiter = value.firstIndex(of: "?") else {
+            return false
+        }
+        return value.index(after: delimiter) == value.endIndex
+    }
+
+    private static func isCanonicalHTTPSAuthority(_ value: String) -> Bool {
+        guard !value.isEmpty, !value.hasSuffix(":"), !value.contains("@") else {
+            return false
+        }
+        return value.unicodeScalars.allSatisfy { scalar in
+            (48...57).contains(scalar.value)
+                || (65...90).contains(scalar.value)
+                || (97...122).contains(scalar.value)
+                || scalar.value == 45
+                || scalar.value == 46
+                || scalar.value == 58
+                || scalar.value == 91
+                || scalar.value == 93
+        }
+    }
+
+    private static func isCanonicalHTTPSPathAndQuery(_ value: String) -> Bool {
+        let scalars = Array(value.unicodeScalars)
+        var index = 0
+        while index < scalars.count {
+            let scalar = scalars[index]
+            let isAllowed = (48...57).contains(scalar.value)
+                || (65...90).contains(scalar.value)
+                || (97...122).contains(scalar.value)
+                || scalar.value == 46
+                || scalar.value == 95
+                || scalar.value == 126
+                || scalar.value == 33
+                || scalar.value == 36
+                || scalar.value == 38
+                || scalar.value == 39
+                || scalar.value == 40
+                || scalar.value == 41
+                || scalar.value == 42
+                || scalar.value == 43
+                || scalar.value == 44
+                || scalar.value == 59
+                || scalar.value == 61
+                || scalar.value == 58
+                || scalar.value == 64
+                || scalar.value == 37
+                || scalar.value == 47
+                || scalar.value == 63
+                || scalar.value == 45
+            guard isAllowed else {
+                return false
+            }
+            if scalar.value == 37 {
+                guard index + 2 < scalars.count,
+                      isHexadecimal(scalars[index + 1]),
+                      isHexadecimal(scalars[index + 2]) else {
+                    return false
+                }
+                index += 3
+            } else {
+                index += 1
+            }
+        }
+        return true
+    }
+
+    private static func isHexadecimal(_ scalar: Unicode.Scalar) -> Bool {
+        (48...57).contains(scalar.value)
+            || (65...70).contains(scalar.value)
+            || (97...102).contains(scalar.value)
     }
 
     static func isASCII(_ value: String) -> Bool {
@@ -1005,14 +1002,5 @@ enum GitHubInstallerReleaseDescriptorValidation {
             || scalar.value == 45
             || scalar.value == 46
             || scalar.value == 95
-    }
-}
-
-private extension String {
-    func leftPadding(to length: Int, with character: Character) -> String {
-        guard count < length else {
-            return self
-        }
-        return String(repeating: String(character), count: length - count) + self
     }
 }

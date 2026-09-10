@@ -738,8 +738,17 @@ enum StrictJSONResourceError: Error {
 /// unsuitable for a code-signed trust-policy input. This reader rejects them
 /// at every object depth before semantic validation occurs.
 struct StrictJSONResourceReader {
+    /// Bounded before any semantic parser sees untrusted signed metadata or a
+    /// code-signed resource.  The limits are intentionally shared so a deeply
+    /// nested catalog cannot consume a different parser budget than the
+    /// installer descriptor it depends on.
+    static let maximumNestingDepth = 64
+    static let maximumNodeCount = 16_384
+
     private let scalars: [Unicode.Scalar]
     private var position = 0
+    private var nestingDepth = 0
+    private var nodeCount = 0
 
     init(data: Data) throws {
         guard let source = String(data: data, encoding: .utf8) else {
@@ -767,6 +776,7 @@ struct StrictJSONResourceReader {
 
     private mutating func parseValue() throws -> StrictJSONResourceValue {
         skipWhitespace()
+        try recordNode()
         guard let scalar = current else {
             throw StrictJSONResourceError.invalid
         }
@@ -794,6 +804,8 @@ struct StrictJSONResourceReader {
     }
 
     private mutating func parseObject() throws -> StrictJSONResourceValue {
+        try enterContainer()
+        defer { nestingDepth -= 1 }
         try consume(123)
         skipWhitespace()
         if current?.value == 125 {
@@ -828,6 +840,8 @@ struct StrictJSONResourceReader {
     }
 
     private mutating func parseArray() throws -> StrictJSONResourceValue {
+        try enterContainer()
+        defer { nestingDepth -= 1 }
         try consume(91)
         skipWhitespace()
         if current?.value == 93 {
@@ -984,6 +998,20 @@ struct StrictJSONResourceReader {
     private mutating func skipWhitespace() {
         while let scalar = current, scalar.value == 32 || scalar.value == 9 || scalar.value == 10 || scalar.value == 13 {
             position += 1
+        }
+    }
+
+    private mutating func recordNode() throws {
+        nodeCount += 1
+        guard nodeCount <= Self.maximumNodeCount else {
+            throw StrictJSONResourceError.invalid
+        }
+    }
+
+    private mutating func enterContainer() throws {
+        nestingDepth += 1
+        guard nestingDepth <= Self.maximumNestingDepth else {
+            throw StrictJSONResourceError.invalid
         }
     }
 }

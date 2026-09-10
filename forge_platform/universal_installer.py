@@ -53,6 +53,13 @@ DIFF_ACTIONS = frozenset({"INSTALL", "UPDATE", "REPAIR", "REMOVE", "NO_CHANGE", 
 REMOVAL_SUPPORT_STATES = frozenset({"SUPPORTED", "UNSUPPORTED", "UNKNOWN"})
 MAXIMUM_CANONICAL_HTTPS_URL_LENGTH = 2048
 MAXIMUM_INSTALLER_RELEASE_DESCRIPTOR_BYTES = 128 * 1024
+# The native outer-catalog verifier admits at most this many raw UTF-8 bytes
+# before strict parsing. Keeping the policy kernel on the same bound prevents a
+# Python qualifier from accepting a catalog the released macOS installer must
+# reject before any component selection or product action.
+MAXIMUM_COMPOSITION_CATALOG_BYTES = 512 * 1024
+MAXIMUM_COMPOSITION_CATALOG_JSON_NESTING_DEPTH = 64
+MAXIMUM_COMPOSITION_CATALOG_JSON_NODES = 16_384
 
 _SEMVER = re.compile(r"^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$")
 _DIGEST = re.compile(r"^sha256:[0-9a-f]{64}$")
@@ -81,6 +88,11 @@ _JOURNAL_FORBIDDEN_KEY_FRAGMENTS = frozenset({
 })
 _OPAQUE_JOURNAL_REFERENCE = re.compile(r"^receipt:[a-z0-9][a-z0-9._-]{0,127}$")
 _SAFE_TARGET_ID = re.compile(r"^[a-z0-9][a-z0-9._-]{0,127}$")
+# A composition identity is publication metadata, not a display label. Keep
+# Unicode non-whitespace identifiers possible, but prohibit controls and all
+# whitespace so its exact identity remains unambiguous across the schema,
+# Python qualifier and native macOS verifier.
+_COMPOSITION_CATALOG_ID = re.compile(r"[^\s\x00-\x1f\x7f]{1,256}")
 _CANONICAL_HTTPS_AUTHORITY = re.compile(r"^[A-Za-z0-9._:\[\]-]+$")
 _CANONICAL_HTTPS_PATH_OR_QUERY = re.compile(r"^[A-Za-z0-9._~!$&'()*+,;=:@%/?-]*$")
 _PERCENT_ESCAPE = re.compile(r"%[0-9A-Fa-f]{2}")
@@ -93,6 +105,13 @@ class UniversalInstallerError(RuntimeError):
 def _required(value: object, label: str) -> str:
     if not isinstance(value, str) or not value.strip():
         raise ValueError(f"{label} is required")
+    return value
+
+
+def _composition_catalog_id(value: object, label: str) -> str:
+    value = _required(value, label)
+    if _COMPOSITION_CATALOG_ID.fullmatch(value) is None:
+        raise ValueError(f"{label} must be a bounded whitespace-free identity")
     return value
 
 
@@ -219,7 +238,13 @@ def _reject_duplicate_pairs(pairs: list[tuple[object, object]]) -> dict[str, obj
     return result
 
 
-def _strict_json_mapping(raw_bytes: bytes, label: str) -> Mapping[str, object]:
+def _strict_json_mapping(
+    raw_bytes: bytes,
+    label: str,
+    *,
+    maximum_nesting_depth: int | None = None,
+    maximum_node_count: int | None = None,
+) -> Mapping[str, object]:
     if not isinstance(raw_bytes, bytes):
         raise ValueError(f"{label} bytes are required")
     try:
@@ -228,11 +253,59 @@ def _strict_json_mapping(raw_bytes: bytes, label: str) -> Mapping[str, object]:
             object_pairs_hook=_reject_duplicate_pairs,
             parse_constant=_reject_json_constant,
         )
-    except (UnicodeDecodeError, json.JSONDecodeError, ValueError) as error:
+    except (UnicodeDecodeError, json.JSONDecodeError, RecursionError, ValueError) as error:
         raise UniversalInstallerError(f"{label} is not valid strict JSON") from error
     if not isinstance(value, Mapping):
         raise UniversalInstallerError(f"{label} root must be an object")
+    if maximum_nesting_depth is not None or maximum_node_count is not None:
+        _require_bounded_json_structure(
+            value,
+            label=label,
+            maximum_nesting_depth=maximum_nesting_depth,
+            maximum_node_count=maximum_node_count,
+        )
     return value
+
+
+def _require_bounded_json_structure(
+    value: object,
+    *,
+    label: str,
+    maximum_nesting_depth: int | None,
+    maximum_node_count: int | None,
+) -> None:
+    """Mirror the native strict reader's container-depth and value budgets.
+
+    The check runs after duplicate-key/non-finite rejection and before a
+    catalog is semantically authorized. It is iterative so the qualifier does
+    not use Python recursion to assess hostile JSON. A JSON *value* (not an
+    object key) consumes one node, matching the Swift reader's `parseValue`.
+    Only object/array nesting consumes the separate container-depth budget.
+    """
+
+    if maximum_nesting_depth is not None and maximum_nesting_depth <= 0:
+        raise ValueError("maximum JSON nesting depth must be positive")
+    if maximum_node_count is not None and maximum_node_count <= 0:
+        raise ValueError("maximum JSON node count must be positive")
+
+    nodes = 0
+    pending: list[tuple[object, int]] = [(value, 0)]
+    while pending:
+        current, parent_container_depth = pending.pop()
+        nodes += 1
+        if maximum_node_count is not None and nodes > maximum_node_count:
+            raise UniversalInstallerError(f"{label} exceeds the native JSON node limit")
+
+        if isinstance(current, Mapping):
+            depth = parent_container_depth + 1
+            if maximum_nesting_depth is not None and depth > maximum_nesting_depth:
+                raise UniversalInstallerError(f"{label} exceeds the native JSON nesting limit")
+            pending.extend((child, depth) for child in current.values())
+        elif isinstance(current, list):
+            depth = parent_container_depth + 1
+            if maximum_nesting_depth is not None and depth > maximum_nesting_depth:
+                raise UniversalInstallerError(f"{label} exceeds the native JSON nesting limit")
+            pending.extend((child, depth) for child in current)
 
 
 @dataclass(frozen=True, order=True)
@@ -1149,7 +1222,7 @@ class CompositionCatalogEntry:
     installer_requirement: InstallerRequirement
 
     def __post_init__(self) -> None:
-        _required(self.composition_id, "composition catalog composition_id")
+        _composition_catalog_id(self.composition_id, "composition catalog composition_id")
         if self.channel not in INSTALLER_CHANNELS:
             raise ValueError("composition catalog channel is unsupported")
         if not isinstance(self.manifest, DownloadIdentity) or not isinstance(self.installer_requirement, InstallerRequirement):
@@ -1166,13 +1239,16 @@ class CompositionCatalogEntry:
         capabilities = requirement["capabilities"]
         if not isinstance(capabilities, list):
             raise ValueError("catalog installer capabilities must be a list")
+        parsed_capabilities = tuple(_required(capability, "catalog installer capability") for capability in capabilities)
+        if len(parsed_capabilities) != len(set(parsed_capabilities)):
+            raise ValueError("catalog installer capabilities must be unique")
         return cls(
-            _required(payload["composition_id"], "composition catalog composition_id"),
+            _composition_catalog_id(payload["composition_id"], "composition catalog composition_id"),
             _required(payload["channel"], "composition catalog channel"),
             DownloadIdentity(_https_url(payload["url"], "composition manifest URL"), _digest(payload["digest"], "composition manifest digest")),
             InstallerRequirement(
                 SemanticVersion.parse(requirement["minimum_version"], "catalog minimum installer version"),
-                frozenset(_required(capability, "catalog installer capability") for capability in capabilities),
+                frozenset(parsed_capabilities),
             ),
         )
 
@@ -1235,8 +1311,15 @@ class CompositionCatalog:
     ) -> "CompositionCatalog":
         """Verify downloaded catalog bytes before parsing their signed contents."""
 
+        if not isinstance(raw_bytes, bytes) or not raw_bytes or len(raw_bytes) > MAXIMUM_COMPOSITION_CATALOG_BYTES:
+            raise UniversalInstallerError("composition catalog bytes exceed the native admission limit")
         actual = "sha256:" + sha256(raw_bytes).hexdigest()
-        parsed_raw = _strict_json_mapping(raw_bytes, "composition catalog")
+        parsed_raw = _strict_json_mapping(
+            raw_bytes,
+            "composition catalog",
+            maximum_nesting_depth=MAXIMUM_COMPOSITION_CATALOG_JSON_NESTING_DEPTH,
+            maximum_node_count=MAXIMUM_COMPOSITION_CATALOG_JSON_NODES,
+        )
         if not isinstance(value, Mapping) or dict(parsed_raw) != dict(value):
             raise UniversalInstallerError("composition catalog object does not match verified catalog bytes")
         legacy_fields = frozenset({
@@ -1293,7 +1376,14 @@ class CompositionCatalog:
     ) -> "CompositionCatalog":
         """Parse exact, separately signed catalog bytes from the signed feed."""
 
-        value = _strict_json_mapping(raw_bytes, "composition catalog")
+        if not isinstance(raw_bytes, bytes) or not raw_bytes or len(raw_bytes) > MAXIMUM_COMPOSITION_CATALOG_BYTES:
+            raise UniversalInstallerError("composition catalog bytes exceed the native admission limit")
+        value = _strict_json_mapping(
+            raw_bytes,
+            "composition catalog",
+            maximum_nesting_depth=MAXIMUM_COMPOSITION_CATALOG_JSON_NESTING_DEPTH,
+            maximum_node_count=MAXIMUM_COMPOSITION_CATALOG_JSON_NODES,
+        )
         return cls.from_signed_metadata(
             value,
             verifier,
