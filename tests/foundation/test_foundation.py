@@ -47,6 +47,7 @@ REQUIRED = (
     "schemas/universal-installer-release.schema.json",
     "schemas/universal-installer-release-provenance.schema.json",
     "schemas/universal-installer-composition-catalog.schema.json",
+    "schemas/universal-installer-composition-catalog-trust.schema.json",
     "schemas/universal-installer-composition.schema.json",
     "macos/ForgePlatformInstaller/Package.swift",
     "macos/ForgePlatformInstaller/Sources/ForgePlatformInstaller/ForgePlatformInstallerApp.swift",
@@ -114,6 +115,14 @@ def main() -> None:
     catalog_signature = catalog["$defs"]["public_signature_envelope"]
     if catalog_signature["required"] != ["algorithm", "key_id", "signature"]:
         raise SystemExit("universal installer catalog must use a strict public signature envelope")
+    catalog_trust = json.loads((ROOT / "schemas/universal-installer-composition-catalog-trust.schema.json").read_text())
+    if catalog_trust["title"] != "Forge Platform installer composition catalog trust":
+        raise SystemExit("universal installer catalog trust schema identity is invalid")
+    if catalog_trust["required"] != [
+        "schema_version", "configuration_sha256", "installer_release_trust_configuration_sha256",
+        "signature_threshold", "ed25519_public_keys",
+    ]:
+        raise SystemExit("universal installer catalog trust schema must retain its strict public fields")
     installer_composition = json.loads((ROOT / "schemas/universal-installer-composition.schema.json").read_text())
     if installer_composition["title"] != "Forge Platform universal installer composition":
         raise SystemExit("universal installer composition schema identity is invalid")

@@ -1,0 +1,46 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/pcvantol/forge-platform/schemas/universal-installer-composition-catalog-trust.schema.json",
+  "title": "Forge Platform installer composition catalog trust",
+  "description": "Public, code-signed trust policy for the separately signed composition catalog. It binds a distinct Ed25519 key threshold to exactly one installer release-trust configuration; it contains no locator, transport, credential, private key, product runtime authority, or install action.",
+  "$comment": "maxSerializedUtf8Bytes=32768; maxJsonNestingDepth=64; maxJsonNodes=16384. JSON Schema validates values, while the strict runtime parser enforces byte/node bounds, canonical Base64, key ordering/uniqueness, threshold cardinality, and configuration_sha256 recomputation.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "configuration_sha256",
+    "installer_release_trust_configuration_sha256",
+    "signature_threshold",
+    "ed25519_public_keys"
+  ],
+  "properties": {
+    "schema_version": {"const": 1},
+    "configuration_sha256": {"$ref": "#/$defs/raw_sha256"},
+    "installer_release_trust_configuration_sha256": {"$ref": "#/$defs/raw_sha256"},
+    "signature_threshold": {"type": "integer", "minimum": 1, "maximum": 16},
+    "ed25519_public_keys": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 16,
+      "uniqueItems": true,
+      "items": {"$ref": "#/$defs/ed25519_public_key"},
+      "description": "The producer serializes keys in strictly ascending key_id order with unique key IDs and public-key material; strict runtime parsers enforce those semantic constraints before recomputing configuration_sha256."
+    }
+  },
+  "$defs": {
+    "raw_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "ed25519_public_key": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["key_id", "public_key_base64"],
+      "properties": {
+        "key_id": {"type": "string", "pattern": "^[a-z0-9][a-z0-9._-]{0,127}$"},
+        "public_key_base64": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9+/]{43}=$",
+          "description": "Canonical standard Base64 encoding of exactly 32 raw Ed25519 public-key bytes; strict runtime parsers verify decoded length and canonical re-encoding."
+        }
+      }
+    }
+  }
+}
