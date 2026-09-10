@@ -33,14 +33,21 @@ directory digests rejects rollback, replay and same-version/different-bytes
 replacement. After successful current-installer enforcement, the coordinator
 retains the exact signed catalog-feed locator and may hand only that sealed
 release context to an injected composition-session preparer. It accepts a plan
-only when installer sequence, provenance, catalog locator, distinct outer
-catalog/index identities, selected entry and provider requirements are bound
-to that context; concurrent, stale and mismatched results fail closed. The
-default preparer remains typed unavailable: this package still has no native
-catalog network client, catalog trust root or manifest verifier. A future
-trusted selector must first accept one immutable composition session; every
-enabled provider from that session must then be in the `verified` state before
-the wizard can continue.
+only when installer sequence, provenance, release-trust-configuration digest,
+catalog locator, distinct outer catalog/index identities, selected entry and
+provider requirements are bound to that context; concurrent, stale and
+mismatched results fail closed. The core now includes an internal, read-only
+outer-catalog admission kernel: it checks a bounded strict-JSON readback,
+five-minute trusted-clock freshness, exact locator/channel binding, a
+separately scoped Ed25519 threshold policy, expiry and caller-supplied
+anti-replay evidence. Its output is internal verified outer-catalog evidence
+plus a candidate anchor; it does not fetch, persist, select an index/manifest,
+produce a session or change a product. The default preparer therefore remains
+typed unavailable. This package still has no native catalog network client,
+code-signed catalog-trust resource loader, durable catalog-anchor store or
+manifest verifier. A future trusted selector must first accept one immutable
+composition session; every enabled provider from that session must then be in
+the `verified` state before the wizard can continue.
 
 The released app is wired through `ReleasedInstallerStartupBoundary`: it does
 not construct a wizard with `UnavailableInstallerWizardCoordinator`, and it

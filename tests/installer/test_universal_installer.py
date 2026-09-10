@@ -27,6 +27,9 @@ from forge_platform.universal_installer import (  # noqa: E402
     COMPOSITION_CATALOG_SCHEMA,
     COMPOSITION_SCHEMA,
     MAXIMUM_CANONICAL_HTTPS_URL_LENGTH,
+    MAXIMUM_COMPOSITION_CATALOG_BYTES,
+    MAXIMUM_COMPOSITION_CATALOG_JSON_NESTING_DEPTH,
+    MAXIMUM_COMPOSITION_CATALOG_JSON_NODES,
     MAXIMUM_INSTALLER_RELEASE_DESCRIPTOR_BYTES,
     CompositionCatalog,
     CompositionCatalogEntry,
@@ -456,6 +459,8 @@ class UniversalInstallerTests(unittest.TestCase):
     def test_canonical_https_urls_match_the_native_descriptor_admission_profile(self) -> None:
         accepted = "https://CATALOG.example.invalid:443/releases/catalog%20stable.json?sequence=%7E1"
         self.assertEqual(canonical_https_url(accepted, "catalog URL"), accepted)
+        trailing_query_character = "https://catalog.example.invalid/catalog.json?cursor?"
+        self.assertEqual(canonical_https_url(trailing_query_character, "catalog URL"), trailing_query_character)
 
         for rejected in (
             "http://catalog.example.invalid/catalog.json",
@@ -480,6 +485,111 @@ class UniversalInstallerTests(unittest.TestCase):
                 signature_policy=FIXTURE_SIGNATURE_POLICY,
                 sealed_release_trust=SEALED_RELEASE_TRUST,
             )
+
+    def test_catalog_bytes_and_capabilities_match_native_admission_limits(self) -> None:
+        # This is deliberately malformed: the public raw-bytes entrypoint
+        # must reject the size before attempting UTF-8/JSON parsing.
+        oversized = b"!" * (MAXIMUM_COMPOSITION_CATALOG_BYTES + 1)
+        with self.assertRaisesRegex(UniversalInstallerError, "native admission limit"):
+            CompositionCatalog.from_signed_bytes(
+                oversized,
+                FixtureVerifier(),
+                signature_policy=FIXTURE_SIGNATURE_POLICY,
+            )
+
+        too_deep = (
+            b'{"nested":'
+            + b"[" * MAXIMUM_COMPOSITION_CATALOG_JSON_NESTING_DEPTH
+            + b"0"
+            + b"]" * MAXIMUM_COMPOSITION_CATALOG_JSON_NESTING_DEPTH
+            + b"}"
+        )
+        with self.assertRaisesRegex(UniversalInstallerError, "native JSON nesting limit"):
+            CompositionCatalog.from_signed_bytes(
+                too_deep,
+                FixtureVerifier(),
+                signature_policy=FIXTURE_SIGNATURE_POLICY,
+            )
+
+        too_many_nodes = b'{"values":[' + b",".join(
+            b"0" for _ in range(MAXIMUM_COMPOSITION_CATALOG_JSON_NODES)
+        ) + b"]}"
+        with self.assertRaisesRegex(UniversalInstallerError, "native JSON node limit"):
+            CompositionCatalog.from_signed_bytes(
+                too_many_nodes,
+                FixtureVerifier(),
+                signature_policy=FIXTURE_SIGNATURE_POLICY,
+            )
+
+        catalog = {
+            "schema": COMPOSITION_CATALOG_SCHEMA,
+            "sequence": 4,
+            "channel": "stable",
+            "published_at": "2026-09-01T00:00:00Z",
+            "expires_at": "2026-10-01T00:00:00Z",
+            "compositions": [{
+                "composition_id": "stable-001",
+                "channel": "stable",
+                "url": "https://github.example.invalid/releases/stable-001.json",
+                "digest": MANIFEST_DIGEST,
+                "requires_installer": {
+                    "minimum_version": "1.0.0",
+                    "capabilities": ["composition/v1", "composition/v1"],
+                },
+            }],
+            "signatures": [dict(FIXTURE_SIGNATURE_ENVELOPE)],
+        }
+        raw = json.dumps(catalog, sort_keys=True, separators=(",", ":")).encode("utf-8")
+        with self.assertRaisesRegex(ValueError, "capabilities must be unique"):
+            CompositionCatalog.from_signed_bytes(
+                raw,
+                FixtureVerifier(),
+                signature_policy=FIXTURE_SIGNATURE_POLICY,
+            )
+
+        catalog["compositions"][0]["requires_installer"]["capabilities"] = ["composition/v1"]
+        raw = json.dumps(catalog, sort_keys=True, separators=(",", ":")).encode("utf-8")
+        self.assertEqual(
+            CompositionCatalog.from_signed_bytes(
+                raw,
+                FixtureVerifier(),
+                signature_policy=FIXTURE_SIGNATURE_POLICY,
+            ).entries[0].composition_id,
+            "stable-001",
+        )
+        for identity in ("stable 001", " stable-001", "stable-001 ", "stable\x00-001", "x" * 257):
+            catalog["compositions"][0]["composition_id"] = identity
+            boundary_raw = json.dumps(catalog, sort_keys=True, separators=(",", ":")).encode("utf-8")
+            with self.assertRaisesRegex(ValueError, "bounded whitespace-free identity"):
+                CompositionCatalog.from_signed_bytes(
+                    boundary_raw,
+                    FixtureVerifier(),
+                    signature_policy=FIXTURE_SIGNATURE_POLICY,
+                )
+        catalog["compositions"][0]["composition_id"] = "forge-é-🚀"
+        unicode_raw = json.dumps(catalog, sort_keys=True, separators=(",", ":")).encode("utf-8")
+        self.assertEqual(
+            CompositionCatalog.from_signed_bytes(
+                unicode_raw,
+                FixtureVerifier(),
+                signature_policy=FIXTURE_SIGNATURE_POLICY,
+            ).entries[0].composition_id,
+            "forge-é-🚀",
+        )
+        catalog["compositions"][0]["composition_id"] = "é"
+        decomposed_entry = dict(catalog["compositions"][0])
+        decomposed_entry["composition_id"] = "e\u0301"
+        catalog["compositions"].append(decomposed_entry)
+        exact_unicode_raw = json.dumps(catalog, sort_keys=True, separators=(",", ":")).encode("utf-8")
+        exact_unicode_catalog = CompositionCatalog.from_signed_bytes(
+            exact_unicode_raw,
+            FixtureVerifier(),
+            signature_policy=FIXTURE_SIGNATURE_POLICY,
+        )
+        self.assertEqual(
+            {entry.composition_id.encode("utf-8") for entry in exact_unicode_catalog.entries},
+            {"é".encode("utf-8"), "e\u0301".encode("utf-8")},
+        )
 
     def test_signed_release_requires_a_trust_root_and_canonical_payload(self) -> None:
         verifier = FixtureVerifier()

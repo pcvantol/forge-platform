@@ -44,6 +44,7 @@ final class ProviderDomainGatingTests: XCTestCase {
                 manifestSHA256: "sha256:" + String(repeating: "a", count: 64),
                 installerReleaseSequence: 1,
                 installerProvenanceSHA256: String(repeating: "b", count: 64),
+                installerReleaseTrustConfigurationSHA256: String(repeating: "e", count: 64),
                 compositionCatalogFeed: try VerifiedCompositionCatalogFeedLocator(
                     url: "https://catalog.example.test/feed.json"
                 ),
@@ -276,6 +277,7 @@ final class ProviderDomainGatingTests: XCTestCase {
             manifestSHA256: "sha256:" + String(repeating: "a", count: 64),
             installerReleaseSequence: 1,
             installerProvenanceSHA256: String(repeating: "b", count: 64),
+            installerReleaseTrustConfigurationSHA256: String(repeating: "e", count: 64),
             compositionCatalogFeed: try VerifiedCompositionCatalogFeedLocator(
                 url: "https://catalog.example.test/feed.json"
             ),

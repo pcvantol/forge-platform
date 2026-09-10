@@ -28,6 +28,11 @@ public struct CurrentVerifiedInstallerCompositionContext: Equatable, Sendable {
     public let installerChannel: InstallerReleaseChannel
     public let installerSourceRevision: String
     public let installerProvenanceSHA256: String
+    /// The exact code-signed V2 release-trust configuration that admitted the
+    /// current installer release.  A catalog policy must bind to this value;
+    /// a key set from another installer trust configuration is not silently
+    /// interchangeable merely because its key IDs happen to overlap.
+    public let installerReleaseTrustConfigurationSHA256: String
     public let installerCapabilities: [String]
     public let compositionCatalogFeed: VerifiedCompositionCatalogFeedLocator
 
@@ -37,6 +42,7 @@ public struct CurrentVerifiedInstallerCompositionContext: Equatable, Sendable {
         installerChannel = release.channel
         installerSourceRevision = release.sourceRevision
         installerProvenanceSHA256 = release.provenanceSHA256
+        installerReleaseTrustConfigurationSHA256 = release.expectedReleaseTrustConfigurationSHA256
         installerCapabilities = release.provenanceExpectation.capabilities
         compositionCatalogFeed = release.compositionCatalogFeed
     }
@@ -48,6 +54,7 @@ public struct CurrentVerifiedInstallerCompositionContext: Equatable, Sendable {
     func accepts(_ plan: VerifiedCompositionSessionPlan) -> Bool {
         plan.installerReleaseSequence == installerReleaseSequence
             && plan.installerProvenanceSHA256 == installerProvenanceSHA256
+            && plan.installerReleaseTrustConfigurationSHA256 == installerReleaseTrustConfigurationSHA256
             && plan.compositionCatalogFeed == compositionCatalogFeed
     }
 }

@@ -73,7 +73,13 @@
       "additionalProperties": false,
       "required": ["composition_id", "channel", "url", "digest", "requires_installer"],
       "properties": {
-        "composition_id": {"type": "string", "minLength": 1},
+        "composition_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256,
+          "pattern": "^[^\\s\\u0000-\\u001F\\u007F]+$",
+          "description": "Bounded Unicode composition identity without whitespace or C0/DEL controls; runtime validation mirrors this grammar exactly."
+        },
         "channel": {"enum": ["stable", "candidate"]},
         "url": {"$ref": "#/$defs/https_url"},
         "digest": {"$ref": "#/$defs/sha256"},

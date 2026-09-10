@@ -188,6 +188,34 @@ final class SelfUpdateCoordinatorTests: XCTestCase {
         XCTAssertEqual(preparerCalls, 1)
     }
 
+    func testSessionPlanWithMismatchedReleaseTrustConfigurationFailsClosed() async throws {
+        let release = try makeReleaseRecord(version: "1.0.0", sequence: 10)
+        let current = try makeCurrentIdentity(
+            version: "1.0.0",
+            sequence: 10,
+            sourceRevision: release.sourceRevision,
+            codeDirectorySHA256: release.expectedCodeDirectorySHA256,
+            provenanceSHA256: release.provenanceSHA256
+        )
+        let mismatchedPlan = try makeSessionPlan(
+            for: release,
+            installerReleaseTrustConfigurationSHA256: String(repeating: "e", count: 64)
+        )
+        let preparer = SessionPreparerSpy(result: .prepared(mismatchedPlan))
+        let coordinator = makeCoordinator(
+            feed: FeedSpy(result: .success(release)),
+            inspector: InspectorSpy(responses: [.success(current)]),
+            staging: StagingSpy(result: .success(try makeStagedAsset())),
+            compositionSessionPreparer: preparer
+        )
+
+        let enforcement = await coordinator.enforceCurrentInstaller(currentVersion: current.version)
+        let result = await coordinator.prepareVerifiedCompositionSession()
+
+        XCTAssertEqual(enforcement, .current(release.release))
+        XCTAssertEqual(result, .unavailable(.selectionUnavailable))
+    }
+
     func testSessionPlanWithMismatchedSignedCatalogLocatorFailsClosed() async throws {
         let release = try makeReleaseRecord(version: "1.0.0", sequence: 10)
         let current = try makeCurrentIdentity(
@@ -977,6 +1005,7 @@ final class SelfUpdateCoordinatorTests: XCTestCase {
     private func makeSessionPlan(
         for release: VerifiedInstallerReleaseRecord,
         installerProvenanceSHA256: String? = nil,
+        installerReleaseTrustConfigurationSHA256: String? = nil,
         compositionCatalogFeed: VerifiedCompositionCatalogFeedLocator? = nil
     ) throws -> VerifiedCompositionSessionPlan {
         try VerifiedCompositionSessionPlan(
@@ -985,6 +1014,8 @@ final class SelfUpdateCoordinatorTests: XCTestCase {
             manifestSHA256: "sha256:" + String(repeating: "a", count: 64),
             installerReleaseSequence: release.sequence,
             installerProvenanceSHA256: installerProvenanceSHA256 ?? release.provenanceSHA256,
+            installerReleaseTrustConfigurationSHA256: installerReleaseTrustConfigurationSHA256
+                ?? release.expectedReleaseTrustConfigurationSHA256,
             compositionCatalogFeed: compositionCatalogFeed ?? release.compositionCatalogFeed,
             compositionCatalog: try VerifiedCompositionCatalogIdentity(
                 sequence: 20,
