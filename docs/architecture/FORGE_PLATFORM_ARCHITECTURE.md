@@ -23,7 +23,10 @@ runtime identity. A composition is admissible only when its full arm64/macOS-26
 runtime material, every component's build/test qualification, and one isolated
 venv identity per product bind that same digest. Runtime selection never uses
 `PATH`; the accepted operation freezes the target and any retained rollback
-identity. No production Python artifact or runtime executor is claimed yet.
+identity. The source-level executor now durably coordinates exact acquisition,
+archive-evidence verification, immutable runtime/venv slots, final readback and
+frozen-identity rollback through injected adapters. No production Python
+artifact, privileged adapter or operational runtime installation is claimed.
 
 ## Installed-server deployment and topology bootstrap
 

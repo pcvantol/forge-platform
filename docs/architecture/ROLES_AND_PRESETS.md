@@ -24,3 +24,9 @@ server components use a product-owned system-domain `LaunchDaemon` contract;
 an EP Project Agent and user provider credentials remain user/host scoped. The
 shell does not itself install or mutate a product until a qualified product
 provisioner adapter exists.
+
+The platform-neutral managed-Python executor is distinct from product
+provisioning. It prepares the exact approved runtime and one isolated venv per
+selected product through a fixed privileged-adapter protocol; it never installs
+the Forge, Workspace or EP artifact into that venv and never assumes ownership
+of a product's service, data or migration lifecycle.
