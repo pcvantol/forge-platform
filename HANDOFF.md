@@ -14,6 +14,15 @@ evidence. It has no production runtime artifact, native transport/inspection,
 privileged adapter or released-installer wiring, so operational Python mutation
 remains fail-closed.
 
+The Universal Installer work is parked after source-level managed-Python
+executor delivery. The recorded resumption target is a single EP Server
+clean-install v1: no EP Project Agent, Forge, Workspace, provider login,
+upgrade, repair, migration, rollback, removal, cleanup or live mutation has
+been performed. Resume from the
+[EP Server clean-install v1 parking roadmap](docs/roadmap/EP_SERVER_CLEAN_INSTALL_V1.md),
+which records the verified baseline, ownership boundaries, external decisions
+and documentary DAG.
+
 The local generic projection is pinned in
 `docs/ai-development/projection-manifest.json`; validate it with
 `sh scripts/validate.sh`. For product authority and open work, use the local

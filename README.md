@@ -39,6 +39,12 @@ adapters remain unimplemented; this
 repository does not publish producer product artifacts or change product
 runtime behavior.
 
+The active installer resumption scope is deliberately narrower than the full
+universal lifecycle: one EP Server clean installation, without an EP Project
+Agent, Forge, Workspace, provider login, upgrade, migration, rollback, removal
+or cleanup. It remains planned and parked; see the
+[EP Server clean-install v1 parking roadmap](docs/roadmap/EP_SERVER_CLEAN_INSTALL_V1.md).
+
 ## Boundary
 
 Forge Platform consumes qualified, versioned artifacts published by product repositories and composes compatible provisioning requests and receipts. It does not rebuild their source or own product-local provisioning: for EP, its resolver/provisioner alone owns runtime and service selection, data compatibility, migration, rollback and cleanup. Forge Platform also does not own Forge, Workspace, Engineering Platform, Project Agent, TDE, generic AI-development governance, or Knowledge Base behavior.
@@ -54,6 +60,7 @@ Forge Platform consumes qualified, versioned artifacts published by product repo
 - [Universal macOS Installer contract](docs/architecture/UNIVERSAL_MACOS_INSTALLER_CONTRACT.md)
 - [Managed Python runtime execution contract](docs/architecture/MANAGED_PYTHON_RUNTIME_EXECUTION_CONTRACT.md)
 - [Roadmap](docs/roadmap/README.md)
+- [EP Server clean-install v1 parking roadmap](docs/roadmap/EP_SERVER_CLEAN_INSTALL_V1.md)
 - [MVP 1.0 roadmap](docs/roadmap/MVP_1_0.md)
 - [Development and bootstrap](docs/development/README.md)
 - [Governance](docs/governance/README.md)

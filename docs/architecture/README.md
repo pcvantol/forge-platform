@@ -42,6 +42,12 @@ slot, isolated-venv, interruption-resume and rollback boundary is defined in
 the [managed Python runtime execution contract](MANAGED_PYTHON_RUNTIME_EXECUTION_CONTRACT.md).
 No current source merge proves a live Mac installation.
 
+The current narrow resumption target is one EP Server clean installation only;
+it excludes the EP Project Agent, Forge, Workspace, provider login and all
+product lifecycle mutation other than the initial clean install. Its status,
+non-goals and documentary dependency DAG are recorded in the
+[EP Server clean-install v1 parking roadmap](../roadmap/EP_SERVER_CLEAN_INSTALL_V1.md).
+
 ## Lifecycle boundary
 
 The source-level component-operation contract can retain a product-owned

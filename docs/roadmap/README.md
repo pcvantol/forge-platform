@@ -21,6 +21,7 @@ workflow, grant, runtime activation or actual cleanup is changed here.
 
 ## Canonical entrypoints
 
+- [EP Server clean-install v1 parking roadmap](EP_SERVER_CLEAN_INSTALL_V1.md) — the current, deliberately narrow Universal Installer resumption path: one clean EP Server installation on Apple Silicon/macOS 26+, with no Project Agent, Forge, Workspace, provider login, upgrade, migration, rollback, removal, or cleanup. It is a documentary planning DAG, not a Forge execution DAG or operational-installation claim.
 - [Forge Platform MVP 1.0](MVP_1_0.md) — product boundary, capability waves, a two-chain DAG that joins only at `MVP_1_0_RELEASE_READY`, the B8 → B8C → B8D → B9 → `STANDALONE_EP_VERIFIED` → `EP_EXTRACTION_CUTOVER_COMPLETE` transition gates, and separate post-verification lanes (CENTRAL relocation, EP self-hosting, and bounded multi-repository parallel execution).
 - [Policy-aware composition](POLICY_GOVERNANCE_V1.md) — scoped policy/release DAG for `POLICY_GOVERNANCE_AND_EFFECTIVE_PROFILES_V1`; native Forge release planning, EP enforcement and actual published artifact evidence precede qualified production installer composition. Documentation only; implementation remains PLANNED.
 - [Historical migration register](MIGRATION_REGISTER.md) — auditable classification of relevant historical DJConnect material and its canonical destination or retained status.
