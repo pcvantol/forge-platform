@@ -148,6 +148,9 @@ final class MacOSStagedInstallerArchiveDigestVerifierTests: XCTestCase {
             capabilities: ["composition/v1", "provider-gate/v1"],
             provenanceSHA256: String(repeating: "c", count: 64),
             expectedReleaseTrustConfigurationSHA256: String(repeating: "d", count: 64),
+            compositionCatalogFeed: try VerifiedCompositionCatalogFeedLocator(
+                url: "https://catalog.example.invalid/forge-platform/stable.json"
+            ),
             notarizationReference: "receipt:notarization-ticket-v1",
             githubAsset: asset
         )

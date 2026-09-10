@@ -42,8 +42,20 @@ final class ProviderDomainGatingTests: XCTestCase {
                 sessionID: "session-1",
                 compositionIdentity: "forge-platform-complete-v1",
                 manifestSHA256: "sha256:" + String(repeating: "a", count: 64),
-                catalogSequence: 1,
-                catalogSHA256: "sha256:" + String(repeating: "b", count: 64),
+                installerReleaseSequence: 1,
+                installerProvenanceSHA256: String(repeating: "b", count: 64),
+                compositionCatalogFeed: try VerifiedCompositionCatalogFeedLocator(
+                    url: "https://catalog.example.test/feed.json"
+                ),
+                compositionCatalog: try VerifiedCompositionCatalogIdentity(
+                    sequence: 2,
+                    sha256: "sha256:" + String(repeating: "c", count: 64)
+                ),
+                componentCombinationCatalog: try VerifiedCompositionCatalogIdentity(
+                    sequence: 3,
+                    sha256: "sha256:" + String(repeating: "d", count: 64)
+                ),
+                componentSelectionSequence: 4,
                 providerRequirements: [
                     ProviderRequirement(provider: .codex, isRequired: true),
                     ProviderRequirement(provider: .codex, isRequired: false),
@@ -262,8 +274,20 @@ final class ProviderDomainGatingTests: XCTestCase {
             sessionID: sessionID,
             compositionIdentity: "forge-platform-complete-v1",
             manifestSHA256: "sha256:" + String(repeating: "a", count: 64),
-            catalogSequence: 1,
-            catalogSHA256: "sha256:" + String(repeating: "b", count: 64),
+            installerReleaseSequence: 1,
+            installerProvenanceSHA256: String(repeating: "b", count: 64),
+            compositionCatalogFeed: try VerifiedCompositionCatalogFeedLocator(
+                url: "https://catalog.example.test/feed.json"
+            ),
+            compositionCatalog: try VerifiedCompositionCatalogIdentity(
+                sequence: 2,
+                sha256: "sha256:" + String(repeating: "c", count: 64)
+            ),
+            componentCombinationCatalog: try VerifiedCompositionCatalogIdentity(
+                sequence: 3,
+                sha256: "sha256:" + String(repeating: "d", count: 64)
+            ),
+            componentSelectionSequence: 4,
             providerRequirements: requirements
         )
     }

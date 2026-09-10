@@ -177,6 +177,116 @@ final class InstallerDomainTests: XCTestCase {
         XCTAssertEqual(ProviderID.githubCLI.rawValue, "github-cli")
     }
 
+    func testSessionPlanRetainsSeparateCatalogAndSelectionEvidence() throws {
+        let minimumVersion = try InstallerVersion("1.2.3")
+        let outerCatalog = try VerifiedCompositionCatalogIdentity(
+            sequence: 20,
+            sha256: "sha256:" + String(repeating: "c", count: 64)
+        )
+        let componentCombinationCatalog = try VerifiedCompositionCatalogIdentity(
+            sequence: 30,
+            sha256: "sha256:" + String(repeating: "d", count: 64)
+        )
+        let requirement = ProviderRequirement(
+            provider: .codex,
+            isRequired: true,
+            minimumVersion: minimumVersion,
+            credentialScope: .user
+        )
+        let plan = try VerifiedCompositionSessionPlan(
+            sessionID: "session-evidence-1",
+            compositionIdentity: "forge-platform-complete-v1",
+            manifestSHA256: "sha256:" + String(repeating: "a", count: 64),
+            installerReleaseSequence: 10,
+            installerProvenanceSHA256: String(repeating: "b", count: 64),
+            compositionCatalogFeed: try VerifiedCompositionCatalogFeedLocator(
+                url: "https://catalog.example.test/feed.json"
+            ),
+            compositionCatalog: outerCatalog,
+            componentCombinationCatalog: componentCombinationCatalog,
+            componentSelectionSequence: 40,
+            providerRequirements: [requirement]
+        )
+
+        XCTAssertEqual(plan.compositionCatalog, outerCatalog)
+        XCTAssertEqual(plan.componentCombinationCatalog, componentCombinationCatalog)
+        XCTAssertNotEqual(plan.compositionCatalog, plan.componentCombinationCatalog)
+        XCTAssertEqual(plan.compositionCatalogFeed.url, "https://catalog.example.test/feed.json")
+        XCTAssertEqual(plan.catalogSequence, outerCatalog.sequence)
+        XCTAssertEqual(plan.catalogSHA256, outerCatalog.sha256)
+        XCTAssertEqual(plan.componentSelectionSequence, 40)
+        XCTAssertEqual(plan.providerRequirements, [requirement])
+        XCTAssertEqual(plan.providerRequirements.first?.minimumVersion, minimumVersion)
+        XCTAssertEqual(plan.providerRequirements.first?.credentialScope, .user)
+    }
+
+    func testCatalogAndInstallerEvidenceRejectNonCanonicalValues() throws {
+        XCTAssertThrowsError(
+            try VerifiedCompositionCatalogIdentity(
+                sequence: 0,
+                sha256: "sha256:" + String(repeating: "a", count: 64)
+            )
+        ) { error in
+            XCTAssertEqual(error as? VerifiedCompositionCatalogIdentityError, .invalidSequence)
+        }
+        XCTAssertThrowsError(
+            try VerifiedCompositionCatalogIdentity(
+                sequence: 1,
+                sha256: "sha256:" + String(repeating: "A", count: 64)
+            )
+        ) { error in
+            XCTAssertEqual(error as? VerifiedCompositionCatalogIdentityError, .invalidSHA256)
+        }
+        XCTAssertThrowsError(
+            try VerifiedCompositionCatalogFeedLocator(url: "http://catalog.example.test/feed.json")
+        ) { error in
+            XCTAssertEqual(error as? VerifiedCompositionCatalogFeedLocatorError, .invalidURL)
+        }
+    }
+
+    func testSessionPlanRejectsInvalidExpandedEvidence() throws {
+        XCTAssertThrowsError(
+            try makeSessionPlan(requirements: [], installerReleaseSequence: 0)
+        ) { error in
+            XCTAssertEqual(error as? VerifiedCompositionSessionPlanError, .invalidInstallerReleaseSequence)
+        }
+        XCTAssertThrowsError(
+            try makeSessionPlan(
+                requirements: [],
+                installerProvenanceSHA256: "sha256:" + String(repeating: "b", count: 64)
+            )
+        ) { error in
+            XCTAssertEqual(error as? VerifiedCompositionSessionPlanError, .invalidInstallerProvenanceSHA256)
+        }
+        XCTAssertThrowsError(
+            try makeSessionPlan(requirements: [], componentSelectionSequence: 0)
+        ) { error in
+            XCTAssertEqual(error as? VerifiedCompositionSessionPlanError, .invalidComponentSelectionSequence)
+        }
+        let catalog = try VerifiedCompositionCatalogIdentity(
+            sequence: 2,
+            sha256: "sha256:" + String(repeating: "c", count: 64)
+        )
+        XCTAssertThrowsError(
+            try VerifiedCompositionSessionPlan(
+                sessionID: "session-conflated-catalogs",
+                compositionIdentity: "forge-platform-complete-v1",
+                manifestSHA256: "sha256:" + String(repeating: "a", count: 64),
+                installerReleaseSequence: 1,
+                installerProvenanceSHA256: String(repeating: "b", count: 64),
+                compositionCatalogFeed: try VerifiedCompositionCatalogFeedLocator(
+                    url: "https://catalog.example.test/feed.json"
+                ),
+                compositionCatalog: catalog,
+                componentCombinationCatalog: catalog,
+                componentSelectionSequence: 4,
+                providerRequirements: []
+            )
+        ) { error in
+            XCTAssertEqual(error as? VerifiedCompositionSessionPlanError, .conflatedCatalogIdentities)
+        }
+    }
+
     func testVerifiedDashboardURLAcceptsOnlyProductSuppliedHTTPSEndpoints() throws {
         let dashboard = try VerifiedDashboardURL("https://ep.example.test:8765/dashboard")
         let localDashboard = try VerifiedDashboardURL("http://localhost:8765/dashboard")
@@ -246,14 +356,29 @@ final class InstallerDomainTests: XCTestCase {
 
     private func makeSessionPlan(
         requirements: [ProviderRequirement],
-        sessionID: String = "session-1"
+        sessionID: String = "session-1",
+        installerReleaseSequence: UInt64 = 1,
+        installerProvenanceSHA256: String = String(repeating: "b", count: 64),
+        componentSelectionSequence: UInt64 = 4
     ) throws -> VerifiedCompositionSessionPlan {
         try VerifiedCompositionSessionPlan(
             sessionID: sessionID,
             compositionIdentity: "forge-platform-complete-v1",
             manifestSHA256: "sha256:" + String(repeating: "a", count: 64),
-            catalogSequence: 1,
-            catalogSHA256: "sha256:" + String(repeating: "b", count: 64),
+            installerReleaseSequence: installerReleaseSequence,
+            installerProvenanceSHA256: installerProvenanceSHA256,
+            compositionCatalogFeed: try VerifiedCompositionCatalogFeedLocator(
+                url: "https://catalog.example.test/feed.json"
+            ),
+            compositionCatalog: try VerifiedCompositionCatalogIdentity(
+                sequence: 2,
+                sha256: "sha256:" + String(repeating: "c", count: 64)
+            ),
+            componentCombinationCatalog: try VerifiedCompositionCatalogIdentity(
+                sequence: 3,
+                sha256: "sha256:" + String(repeating: "d", count: 64)
+            ),
+            componentSelectionSequence: componentSelectionSequence,
             providerRequirements: requirements
         )
     }

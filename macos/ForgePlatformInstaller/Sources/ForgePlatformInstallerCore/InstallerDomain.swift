@@ -121,13 +121,72 @@ public enum ProviderID: String, CaseIterable, Codable, Hashable, Sendable, Ident
 public struct ProviderRequirement: Equatable, Sendable, Identifiable {
     public let provider: ProviderID
     public let isRequired: Bool
+    /// The minimum version is immutable composition evidence.  The wizard
+    /// deliberately does not turn it into a PATH lookup or a command.
+    public let minimumVersion: InstallerVersion?
+    /// Provider credentials are always user-scoped.  A system service account
+    /// credential is not a valid provider requirement for this installer.
+    public let credentialScope: ProviderCredentialScope
 
     public var id: ProviderID { provider }
 
-    public init(provider: ProviderID, isRequired: Bool) {
+    public init(
+        provider: ProviderID,
+        isRequired: Bool,
+        minimumVersion: InstallerVersion? = nil,
+        credentialScope: ProviderCredentialScope = .user
+    ) {
         self.provider = provider
         self.isRequired = isRequired
+        self.minimumVersion = minimumVersion
+        self.credentialScope = credentialScope
     }
+}
+
+/// The manifest contract admits only user-scoped provider credentials.  This
+/// closed type prevents a session projection from repurposing a product service
+/// identity as a Codex or GitHub CLI credential request.
+public enum ProviderCredentialScope: String, Equatable, Sendable {
+    case user
+}
+
+/// Immutable identity for one catalog payload already admitted by a trusted
+/// selector.  The outer signed composition catalog and its digest-pinned
+/// component-combination index remain separate identities; neither is inferred
+/// from a URL, a filename, or a selection result.
+public struct VerifiedCompositionCatalogIdentity: Equatable, Sendable {
+    public let sequence: UInt64
+    public let sha256: String
+
+    public init(sequence: UInt64, sha256: String) throws {
+        guard sequence > 0 else {
+            throw VerifiedCompositionCatalogIdentityError.invalidSequence
+        }
+        guard Self.isSHA256Identity(sha256) else {
+            throw VerifiedCompositionCatalogIdentityError.invalidSHA256
+        }
+        self.sequence = sequence
+        self.sha256 = sha256
+    }
+
+    private static func isSHA256Identity(_ value: String) -> Bool {
+        guard value.utf8.count == 71, value.hasPrefix("sha256:") else {
+            return false
+        }
+        return value.dropFirst("sha256:".count).unicodeScalars.allSatisfy { scalar in
+            switch scalar.value {
+            case 48...57, 97...102:
+                return true
+            default:
+                return false
+            }
+        }
+    }
+}
+
+public enum VerifiedCompositionCatalogIdentityError: Error, Equatable, Sendable {
+    case invalidSequence
+    case invalidSHA256
 }
 
 /// A bounded, non-secret reason why the currently running installer cannot
@@ -159,8 +218,10 @@ public enum VerifiedCompositionSessionPlanError: Error, Equatable, Sendable {
     case invalidSessionID
     case invalidCompositionIdentity
     case invalidManifestSHA256
-    case invalidCatalogSequence
-    case invalidCatalogSHA256
+    case invalidInstallerReleaseSequence
+    case invalidInstallerProvenanceSHA256
+    case invalidComponentSelectionSequence
+    case conflatedCatalogIdentities
     case duplicateProviderRequirement
 }
 
@@ -184,18 +245,42 @@ public struct VerifiedCompositionSessionPlan: Equatable, Sendable {
     public let compositionIdentity: String
     /// Exact immutable manifest identity already bound to the catalog entry.
     public let manifestSHA256: String
-    /// Monotonic sequence of the verified signed catalog.
-    public let catalogSequence: UInt64
-    /// Exact immutable catalog bytes admitted for this session.
-    public let catalogSHA256: String
+    /// The exact currently running installer release admitted by the mandatory
+    /// self-update gate.  The coordinator compares these values with its
+    /// current sealed-release context before it can accept the plan.
+    public let installerReleaseSequence: UInt64
+    public let installerProvenanceSHA256: String
+    /// The exact locator carried by the verified installer-release descriptor.
+    /// It is structural context binding only: this model neither fetches the
+    /// URL nor treats it as a catalog trust root.
+    public let compositionCatalogFeed: VerifiedCompositionCatalogFeedLocator
+    /// The separately signed composition catalog identity.
+    public let compositionCatalog: VerifiedCompositionCatalogIdentity
+    /// The digest-pinned component-combination index identity selected through
+    /// that outer catalog.  It is deliberately distinct from
+    /// `compositionCatalog`.
+    public let componentCombinationCatalog: VerifiedCompositionCatalogIdentity
+    /// The exact selected-entry sequence from the component-combination index.
+    /// It is not a product version or a wheel timestamp.
+    public let componentSelectionSequence: UInt64
     public let providerRequirements: [ProviderRequirement]
+
+    /// Compatibility projections used only by the current display shell. They
+    /// always refer to the outer signed composition catalog, never to the
+    /// component-combination index.
+    public var catalogSequence: UInt64 { compositionCatalog.sequence }
+    public var catalogSHA256: String { compositionCatalog.sha256 }
 
     public init(
         sessionID: String,
         compositionIdentity: String,
         manifestSHA256: String,
-        catalogSequence: UInt64,
-        catalogSHA256: String,
+        installerReleaseSequence: UInt64,
+        installerProvenanceSHA256: String,
+        compositionCatalogFeed: VerifiedCompositionCatalogFeedLocator,
+        compositionCatalog: VerifiedCompositionCatalogIdentity,
+        componentCombinationCatalog: VerifiedCompositionCatalogIdentity,
+        componentSelectionSequence: UInt64,
         providerRequirements: [ProviderRequirement]
     ) throws {
         guard Self.isSafeSessionID(sessionID) else {
@@ -207,11 +292,17 @@ public struct VerifiedCompositionSessionPlan: Equatable, Sendable {
         guard Self.isSHA256Identity(manifestSHA256) else {
             throw VerifiedCompositionSessionPlanError.invalidManifestSHA256
         }
-        guard catalogSequence > 0 else {
-            throw VerifiedCompositionSessionPlanError.invalidCatalogSequence
+        guard installerReleaseSequence > 0 else {
+            throw VerifiedCompositionSessionPlanError.invalidInstallerReleaseSequence
         }
-        guard Self.isSHA256Identity(catalogSHA256) else {
-            throw VerifiedCompositionSessionPlanError.invalidCatalogSHA256
+        guard Self.isRawSHA256(installerProvenanceSHA256) else {
+            throw VerifiedCompositionSessionPlanError.invalidInstallerProvenanceSHA256
+        }
+        guard componentSelectionSequence > 0 else {
+            throw VerifiedCompositionSessionPlanError.invalidComponentSelectionSequence
+        }
+        guard compositionCatalog != componentCombinationCatalog else {
+            throw VerifiedCompositionSessionPlanError.conflatedCatalogIdentities
         }
         guard Set(providerRequirements.map(\.provider)).count == providerRequirements.count else {
             throw VerifiedCompositionSessionPlanError.duplicateProviderRequirement
@@ -219,8 +310,12 @@ public struct VerifiedCompositionSessionPlan: Equatable, Sendable {
         self.sessionID = sessionID
         self.compositionIdentity = compositionIdentity
         self.manifestSHA256 = manifestSHA256
-        self.catalogSequence = catalogSequence
-        self.catalogSHA256 = catalogSHA256
+        self.installerReleaseSequence = installerReleaseSequence
+        self.installerProvenanceSHA256 = installerProvenanceSHA256
+        self.compositionCatalogFeed = compositionCatalogFeed
+        self.compositionCatalog = compositionCatalog
+        self.componentCombinationCatalog = componentCombinationCatalog
+        self.componentSelectionSequence = componentSelectionSequence
         self.providerRequirements = providerRequirements
     }
 
@@ -269,6 +364,17 @@ public struct VerifiedCompositionSessionPlan: Equatable, Sendable {
             return false
         }
         return value.dropFirst("sha256:".count).unicodeScalars.allSatisfy { scalar in
+            switch scalar.value {
+            case 48...57, 97...102:
+                return true
+            default:
+                return false
+            }
+        }
+    }
+
+    private static func isRawSHA256(_ value: String) -> Bool {
+        value.utf8.count == 64 && value.unicodeScalars.allSatisfy { scalar in
             switch scalar.value {
             case 48...57, 97...102:
                 return true

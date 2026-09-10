@@ -86,20 +86,213 @@ final class SelfUpdateCoordinatorTests: XCTestCase {
         XCTAssertEqual(stagedReleaseCount, 0)
     }
 
-    func testSelfUpdateOnlyCoordinatorCannotPrepareACompositionSession() async throws {
+    func testSessionPreparationBlocksBeforeCurrentEnforcementWithoutCallingPreparer() async throws {
         let current = try makeCurrentIdentity(version: "1.0.0", sequence: 10)
         let feed = FeedSpy(result: .success(try makeReleaseRecord(version: "1.0.0", sequence: 10)))
+        let preparer = SessionPreparerSpy(result: .unavailable(.coordinatorUnavailable))
         let coordinator = makeCoordinator(
             feed: feed,
             inspector: InspectorSpy(responses: [.success(current)]),
-            staging: StagingSpy(result: .success(try makeStagedAsset()))
+            staging: StagingSpy(result: .success(try makeStagedAsset())),
+            compositionSessionPreparer: preparer
         )
 
         let result = await coordinator.prepareVerifiedCompositionSession()
         let feedCalls = await feed.callCount()
+        let preparerCalls = await preparer.callCount()
 
-        XCTAssertEqual(result, .unavailable(.coordinatorUnavailable))
+        XCTAssertEqual(result, .unavailable(.selectionUnavailable))
         XCTAssertEqual(feedCalls, 0)
+        XCTAssertEqual(preparerCalls, 0)
+    }
+
+    func testCurrentEnforcementRetainsVerifiedRecordButDefaultSessionPreparerRemainsFailClosed() async throws {
+        let release = try makeReleaseRecord(version: "1.0.0", sequence: 10)
+        let current = try makeCurrentIdentity(
+            version: "1.0.0",
+            sequence: 10,
+            sourceRevision: release.sourceRevision,
+            codeDirectorySHA256: release.expectedCodeDirectorySHA256,
+            provenanceSHA256: release.provenanceSHA256
+        )
+        let coordinator = makeCoordinator(
+            feed: FeedSpy(result: .success(release)),
+            inspector: InspectorSpy(responses: [.success(current)]),
+            staging: StagingSpy(result: .success(try makeStagedAsset()))
+        )
+
+        let enforcement = await coordinator.enforceCurrentInstaller(currentVersion: current.version)
+        let result = await coordinator.prepareVerifiedCompositionSession()
+
+        XCTAssertEqual(enforcement, .current(release.release))
+        XCTAssertEqual(result, .unavailable(.coordinatorUnavailable))
+    }
+
+    func testCurrentEnforcementPassesSignedCatalogLocatorAndCachesOneExactSession() async throws {
+        let release = try makeReleaseRecord(version: "1.0.0", sequence: 10)
+        let current = try makeCurrentIdentity(
+            version: "1.0.0",
+            sequence: 10,
+            sourceRevision: release.sourceRevision,
+            codeDirectorySHA256: release.expectedCodeDirectorySHA256,
+            provenanceSHA256: release.provenanceSHA256
+        )
+        let plan = try makeSessionPlan(for: release)
+        let preparer = SessionPreparerSpy(result: .prepared(plan))
+        let coordinator = makeCoordinator(
+            feed: FeedSpy(result: .success(release)),
+            inspector: InspectorSpy(responses: [.success(current)]),
+            staging: StagingSpy(result: .success(try makeStagedAsset())),
+            compositionSessionPreparer: preparer
+        )
+
+        let enforcement = await coordinator.enforceCurrentInstaller(currentVersion: current.version)
+        let first = await coordinator.prepareVerifiedCompositionSession()
+        let second = await coordinator.prepareVerifiedCompositionSession()
+        let contexts = await preparer.contexts()
+
+        XCTAssertEqual(enforcement, .current(release.release))
+        XCTAssertEqual(first, .prepared(plan))
+        XCTAssertEqual(second, .prepared(plan))
+        XCTAssertEqual(contexts, [CurrentVerifiedInstallerCompositionContext(release: release)])
+        XCTAssertEqual(contexts.first?.compositionCatalogFeed, release.compositionCatalogFeed)
+    }
+
+    func testSessionPlanWithMismatchedCurrentInstallerEvidenceFailsClosed() async throws {
+        let release = try makeReleaseRecord(version: "1.0.0", sequence: 10)
+        let current = try makeCurrentIdentity(
+            version: "1.0.0",
+            sequence: 10,
+            sourceRevision: release.sourceRevision,
+            codeDirectorySHA256: release.expectedCodeDirectorySHA256,
+            provenanceSHA256: release.provenanceSHA256
+        )
+        let mismatchedPlan = try makeSessionPlan(
+            for: release,
+            installerProvenanceSHA256: String(repeating: "e", count: 64)
+        )
+        let preparer = SessionPreparerSpy(result: .prepared(mismatchedPlan))
+        let coordinator = makeCoordinator(
+            feed: FeedSpy(result: .success(release)),
+            inspector: InspectorSpy(responses: [.success(current)]),
+            staging: StagingSpy(result: .success(try makeStagedAsset())),
+            compositionSessionPreparer: preparer
+        )
+
+        let enforcement = await coordinator.enforceCurrentInstaller(currentVersion: current.version)
+        let result = await coordinator.prepareVerifiedCompositionSession()
+        let preparerCalls = await preparer.callCount()
+
+        XCTAssertEqual(enforcement, .current(release.release))
+        XCTAssertEqual(result, .unavailable(.selectionUnavailable))
+        XCTAssertEqual(preparerCalls, 1)
+    }
+
+    func testSessionPlanWithMismatchedSignedCatalogLocatorFailsClosed() async throws {
+        let release = try makeReleaseRecord(version: "1.0.0", sequence: 10)
+        let current = try makeCurrentIdentity(
+            version: "1.0.0",
+            sequence: 10,
+            sourceRevision: release.sourceRevision,
+            codeDirectorySHA256: release.expectedCodeDirectorySHA256,
+            provenanceSHA256: release.provenanceSHA256
+        )
+        let mismatchedPlan = try makeSessionPlan(
+            for: release,
+            compositionCatalogFeed: try VerifiedCompositionCatalogFeedLocator(
+                url: "https://catalog.example.test/other-feed.json"
+            )
+        )
+        let preparer = SessionPreparerSpy(result: .prepared(mismatchedPlan))
+        let coordinator = makeCoordinator(
+            feed: FeedSpy(result: .success(release)),
+            inspector: InspectorSpy(responses: [.success(current)]),
+            staging: StagingSpy(result: .success(try makeStagedAsset())),
+            compositionSessionPreparer: preparer
+        )
+
+        let enforcement = await coordinator.enforceCurrentInstaller(currentVersion: current.version)
+        let result = await coordinator.prepareVerifiedCompositionSession()
+        let preparerCalls = await preparer.callCount()
+
+        XCTAssertEqual(enforcement, .current(release.release))
+        XCTAssertEqual(result, .unavailable(.selectionUnavailable))
+        XCTAssertEqual(preparerCalls, 1)
+    }
+
+    func testConcurrentSessionPreparationFailsClosedWithoutStartingASecondSelector() async throws {
+        let release = try makeReleaseRecord(version: "1.0.0", sequence: 10)
+        let current = try makeCurrentIdentity(
+            version: "1.0.0",
+            sequence: 10,
+            sourceRevision: release.sourceRevision,
+            codeDirectorySHA256: release.expectedCodeDirectorySHA256,
+            provenanceSHA256: release.provenanceSHA256
+        )
+        let plan = try makeSessionPlan(for: release)
+        let preparer = BlockingSessionPreparer()
+        let coordinator = makeCoordinator(
+            feed: FeedSpy(result: .success(release)),
+            inspector: InspectorSpy(responses: [.success(current)]),
+            staging: StagingSpy(result: .success(try makeStagedAsset())),
+            compositionSessionPreparer: preparer
+        )
+
+        let enforcement = await coordinator.enforceCurrentInstaller(currentVersion: current.version)
+        XCTAssertEqual(enforcement, .current(release.release))
+        let firstTask = Task { await coordinator.prepareVerifiedCompositionSession() }
+        guard await waitForSessionPreparerCall(preparer) else {
+            await preparer.resumeNext(with: .unavailable(.selectionUnavailable))
+            _ = await firstTask.value
+            return XCTFail("The first session preparer was not invoked")
+        }
+        let concurrent = await coordinator.prepareVerifiedCompositionSession()
+        let preparerCalls = await preparer.callCount()
+        await preparer.resumeNext(with: .prepared(plan))
+        let first = await firstTask.value
+        let cached = await coordinator.prepareVerifiedCompositionSession()
+
+        XCTAssertEqual(concurrent, .unavailable(.selectionUnavailable))
+        XCTAssertEqual(preparerCalls, 1)
+        XCTAssertEqual(first, .prepared(plan))
+        XCTAssertEqual(cached, .prepared(plan))
+    }
+
+    func testInFlightSessionPreparationIsRejectedAfterARecheckInvalidatesCurrentContext() async throws {
+        let release = try makeReleaseRecord(version: "1.0.0", sequence: 10)
+        let current = try makeCurrentIdentity(
+            version: "1.0.0",
+            sequence: 10,
+            sourceRevision: release.sourceRevision,
+            codeDirectorySHA256: release.expectedCodeDirectorySHA256,
+            provenanceSHA256: release.provenanceSHA256
+        )
+        let plan = try makeSessionPlan(for: release)
+        let preparer = BlockingSessionPreparer()
+        let coordinator = makeCoordinator(
+            feed: FeedSpy(result: .success(release)),
+            inspector: InspectorSpy(responses: [.success(current), .success(current)]),
+            staging: StagingSpy(result: .success(try makeStagedAsset())),
+            compositionSessionPreparer: preparer
+        )
+
+        let enforcement = await coordinator.enforceCurrentInstaller(currentVersion: current.version)
+        XCTAssertEqual(enforcement, .current(release.release))
+        let task = Task { await coordinator.prepareVerifiedCompositionSession() }
+        guard await waitForSessionPreparerCall(preparer) else {
+            await preparer.resumeNext(with: .unavailable(.selectionUnavailable))
+            _ = await task.value
+            return XCTFail("The session preparer was not invoked")
+        }
+
+        let recheck = await coordinator.checkForUpdate(currentVersion: current.version)
+        await preparer.resumeNext(with: .prepared(plan))
+        let inFlightResult = await task.value
+        let nextPreparation = await coordinator.prepareVerifiedCompositionSession()
+
+        XCTAssertEqual(recheck, .verifiedGitHubRelease(release.release))
+        XCTAssertEqual(inFlightResult, .unavailable(.selectionUnavailable))
+        XCTAssertEqual(nextPreparation, .unavailable(.selectionUnavailable))
     }
 
     func testSameVersionWithChangedSignedIdentityFailsClosed() async throws {
@@ -707,7 +900,8 @@ final class SelfUpdateCoordinatorTests: XCTestCase {
         verifier: any StagedInstallerArtifactVerifying = ArtifactVerifierSpy(),
         handoff: any InstallerAtomicHandoffPerforming = AtomicHandoffSpy(result: .success(())),
         recoveryStore: any InstallerSelfUpdateRecoveryStoring = RecoveryStoreSpy(),
-        operationLock: any InstallerSelfUpdateOperationLocking = OperationLockSpy()
+        operationLock: any InstallerSelfUpdateOperationLocking = OperationLockSpy(),
+        compositionSessionPreparer: any VerifiedCompositionSessionPreparing = UnavailableVerifiedCompositionSessionPreparer()
     ) -> VerifiedInstallerSelfUpdateCoordinator {
         VerifiedInstallerSelfUpdateCoordinator(
             releaseFeed: feed,
@@ -716,7 +910,8 @@ final class SelfUpdateCoordinatorTests: XCTestCase {
             artifactVerifier: verifier,
             atomicHandoff: handoff,
             recoveryStore: recoveryStore,
-            operationLock: operationLock
+            operationLock: operationLock,
+            compositionSessionPreparer: compositionSessionPreparer
         )
     }
 
@@ -749,6 +944,9 @@ final class SelfUpdateCoordinatorTests: XCTestCase {
             capabilities: ["composition/v1", "provider-gate/v1"],
             provenanceSHA256: String(repeating: "c", count: 64),
             expectedReleaseTrustConfigurationSHA256: String(repeating: "d", count: 64),
+            compositionCatalogFeed: try VerifiedCompositionCatalogFeedLocator(
+                url: "https://catalog.example.invalid/forge-platform/stable.json"
+            ),
             notarizationReference: "receipt:notarization-ticket-v1",
             githubAsset: asset
         )
@@ -774,6 +972,48 @@ final class SelfUpdateCoordinatorTests: XCTestCase {
             provenanceSHA256: provenanceSHA256,
             releaseTrustConfigurationSHA256: releaseTrustConfigurationSHA256
         )
+    }
+
+    private func makeSessionPlan(
+        for release: VerifiedInstallerReleaseRecord,
+        installerProvenanceSHA256: String? = nil,
+        compositionCatalogFeed: VerifiedCompositionCatalogFeedLocator? = nil
+    ) throws -> VerifiedCompositionSessionPlan {
+        try VerifiedCompositionSessionPlan(
+            sessionID: "session-1",
+            compositionIdentity: "forge-platform-complete-v1",
+            manifestSHA256: "sha256:" + String(repeating: "a", count: 64),
+            installerReleaseSequence: release.sequence,
+            installerProvenanceSHA256: installerProvenanceSHA256 ?? release.provenanceSHA256,
+            compositionCatalogFeed: compositionCatalogFeed ?? release.compositionCatalogFeed,
+            compositionCatalog: try VerifiedCompositionCatalogIdentity(
+                sequence: 20,
+                sha256: "sha256:" + String(repeating: "b", count: 64)
+            ),
+            componentCombinationCatalog: try VerifiedCompositionCatalogIdentity(
+                sequence: 30,
+                sha256: "sha256:" + String(repeating: "d", count: 64)
+            ),
+            componentSelectionSequence: 40,
+            providerRequirements: [
+                ProviderRequirement(
+                    provider: .codex,
+                    isRequired: true,
+                    minimumVersion: try InstallerVersion("1.2.3"),
+                    credentialScope: .user
+                ),
+            ]
+        )
+    }
+
+    private func waitForSessionPreparerCall(_ preparer: BlockingSessionPreparer) async -> Bool {
+        for _ in 0..<100 {
+            if await preparer.callCount() == 1 {
+                return true
+            }
+            await Task.yield()
+        }
+        return false
     }
 
     private func makeStagedAsset() throws -> StagedInstallerAsset {
@@ -808,6 +1048,54 @@ private actor FeedSpy: SignedInstallerReleaseFeedVerifying {
 
     func callCount() -> Int {
         calls
+    }
+}
+
+private actor SessionPreparerSpy: VerifiedCompositionSessionPreparing {
+    private let result: InstallerSessionPreparationResult
+    private var receivedContexts: [CurrentVerifiedInstallerCompositionContext] = []
+
+    init(result: InstallerSessionPreparationResult) {
+        self.result = result
+    }
+
+    func prepareVerifiedCompositionSession(
+        for currentInstaller: CurrentVerifiedInstallerCompositionContext
+    ) async -> InstallerSessionPreparationResult {
+        receivedContexts.append(currentInstaller)
+        return result
+    }
+
+    func callCount() -> Int {
+        receivedContexts.count
+    }
+
+    func contexts() -> [CurrentVerifiedInstallerCompositionContext] {
+        receivedContexts
+    }
+}
+
+private actor BlockingSessionPreparer: VerifiedCompositionSessionPreparing {
+    private var continuations: [CheckedContinuation<InstallerSessionPreparationResult, Never>] = []
+
+    func prepareVerifiedCompositionSession(
+        for currentInstaller: CurrentVerifiedInstallerCompositionContext
+    ) async -> InstallerSessionPreparationResult {
+        _ = currentInstaller
+        return await withCheckedContinuation { continuation in
+            continuations.append(continuation)
+        }
+    }
+
+    func callCount() -> Int {
+        continuations.count
+    }
+
+    func resumeNext(with result: InstallerSessionPreparationResult) {
+        guard !continuations.isEmpty else {
+            return
+        }
+        continuations.removeFirst().resume(returning: result)
     }
 }
 

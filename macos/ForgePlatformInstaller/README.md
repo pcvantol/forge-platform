@@ -30,11 +30,17 @@ running bundle, stages one exact release asset, verifies its SHA-256,
 code-signature and notarization independently, and only then delegates an
 atomic handoff/relaunch. A release sequence plus source, provenance and code
 directory digests rejects rollback, replay and same-version/different-bytes
-replacement. The updater-only coordinator has no composition-selector
-authority and returns a typed unavailable session result. A future trusted
-selector must first accept one immutable composition session; every enabled
-provider from that session must then be in the `verified` state before the
-wizard can continue.
+replacement. After successful current-installer enforcement, the coordinator
+retains the exact signed catalog-feed locator and may hand only that sealed
+release context to an injected composition-session preparer. It accepts a plan
+only when installer sequence, provenance, catalog locator, distinct outer
+catalog/index identities, selected entry and provider requirements are bound
+to that context; concurrent, stale and mismatched results fail closed. The
+default preparer remains typed unavailable: this package still has no native
+catalog network client, catalog trust root or manifest verifier. A future
+trusted selector must first accept one immutable composition session; every
+enabled provider from that session must then be in the `verified` state before
+the wizard can continue.
 
 The released app is wired through `ReleasedInstallerStartupBoundary`: it does
 not construct a wizard with `UnavailableInstallerWizardCoordinator`, and it

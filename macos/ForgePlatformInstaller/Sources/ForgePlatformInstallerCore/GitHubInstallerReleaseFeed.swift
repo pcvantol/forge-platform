@@ -525,6 +525,7 @@ struct GitHubInstallerReleaseDescriptor: Sendable {
     let capabilities: [String]
     let expectedReleaseTrustConfigurationSHA256: String
     let provenanceSHA256: String
+    let compositionCatalogFeed: VerifiedCompositionCatalogFeedLocator
     let githubRepository: String
     let githubTag: String
     let descriptorAssetName: String
@@ -623,7 +624,7 @@ struct GitHubInstallerReleaseDescriptor: Sendable {
 
         guard Set(catalog.keys) == Set(["url"]),
               let catalogURL = catalog["url"]?.stringValue,
-              GitHubInstallerReleaseDescriptorValidation.isHTTPSURL(catalogURL) else {
+              let compositionCatalogFeed = try? VerifiedCompositionCatalogFeedLocator(url: catalogURL) else {
             throw GitHubInstallerReleaseDescriptorError.invalid
         }
 
@@ -659,6 +660,7 @@ struct GitHubInstallerReleaseDescriptor: Sendable {
             capabilities: parsedCapabilities,
             expectedReleaseTrustConfigurationSHA256: releaseTrustConfigurationSHA256,
             provenanceSHA256: provenanceSHA256,
+            compositionCatalogFeed: compositionCatalogFeed,
             githubRepository: githubRepository,
             githubTag: githubTag,
             descriptorAssetName: descriptorAssetName,
@@ -696,6 +698,7 @@ struct GitHubInstallerReleaseDescriptor: Sendable {
                 capabilities: capabilities,
                 provenanceSHA256: provenanceSHA256,
                 expectedReleaseTrustConfigurationSHA256: expectedReleaseTrustConfigurationSHA256,
+                compositionCatalogFeed: compositionCatalogFeed,
                 notarizationReference: asset.notarizationReceiptReference,
                 githubAsset: githubAsset
             )
