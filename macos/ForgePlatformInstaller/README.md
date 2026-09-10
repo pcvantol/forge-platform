@@ -43,11 +43,13 @@ separately scoped Ed25519 threshold policy, expiry and caller-supplied
 anti-replay evidence. Its output is internal verified outer-catalog evidence
 plus a candidate anchor; it does not fetch, persist, select an index/manifest,
 produce a session or change a product. The default preparer therefore remains
-typed unavailable. This package still has no native catalog network client,
-code-signed catalog-trust resource loader, durable catalog-anchor store or
-manifest verifier. A future trusted selector must first accept one immutable
-composition session; every enabled provider from that session must then be in
-the `verified` state before the wizard can continue.
+typed unavailable. The core now also has an unassembled, credential-free
+exact-locator transport seam and a code-signed catalog-trust resource loader;
+an absent resource fails closed and neither facility supplies trusted-clock
+evidence. This package still has no durable catalog-anchor store, manifest
+verifier or session-plan producer. A future trusted selector must first accept
+one immutable composition session; every enabled provider from that session
+must then be in the `verified` state before the wizard can continue.
 
 The released app is wired through `ReleasedInstallerStartupBoundary`: it does
 not construct a wizard with `UnavailableInstallerWizardCoordinator`, and it
