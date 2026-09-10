@@ -46,10 +46,14 @@ produce a session or change a product. The default preparer therefore remains
 typed unavailable. The core now also has an unassembled, credential-free
 exact-locator transport seam and a code-signed catalog-trust resource loader;
 an absent resource fails closed and neither facility supplies trusted-clock
-evidence. This package still has no durable catalog-anchor store, manifest
-verifier or session-plan producer. A future trusted selector must first accept
-one immutable composition session; every enabled provider from that session
-must then be in the `verified` state before the wizard can continue.
+evidence. It also has an unassembled, installer-owned durable catalog-anchor
+store keyed by raw release-trust digest, channel and exact feed locator. That
+store accepts only a typed `COMPLETE` terminal-operation commitment and rejects
+regression/conflicting bytes, but it has no product receipt validator or caller
+yet. This package still has no manifest verifier or session-plan producer. A
+future trusted selector must first accept one immutable composition session;
+every enabled provider from that session must then be in the `verified` state
+before the wizard can continue.
 
 The released app is wired through `ReleasedInstallerStartupBoundary`: it does
 not construct a wizard with `UnavailableInstallerWizardCoordinator`, and it

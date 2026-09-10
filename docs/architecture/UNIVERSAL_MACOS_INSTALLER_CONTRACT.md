@@ -1,6 +1,6 @@
 # Universal macOS Installer contract
 
-**Status:** Canonical implementation contract. Forge Platform has a source-level installer foundation, a native wizard shell, a read-only native outer-catalog admission kernel, and unassembled catalog-trust/transport seams. It does not yet certify a published installer, a privileged helper, a product provisioner adapter, or production deployment.
+**Status:** Canonical implementation contract. Forge Platform has a source-level installer foundation, a native wizard shell, a read-only native outer-catalog admission kernel, and unassembled catalog-trust/transport/acceptance-storage seams. It does not yet certify a published installer, a privileged helper, a product provisioner adapter, or production deployment.
 
 This contract implements [ADR-0004](adr/ADR-0004-universal-installer-artifact-composition.md) and [ADR-0006](adr/ADR-0006-server-deployment-and-discovery.md). It is not a second EP, Forge, or Workspace installation engine.
 
@@ -150,6 +150,28 @@ to session preparation, product selection, persistence, the wizard or a
 release artifact. A later reviewed boundary must provide independent trusted
 clock evidence and bind a verified terminal product operation before it can
 persist a catalog acceptance.
+
+The native C-2b acceptance store keeps the highest accepted catalog identity
+in a private installer-owned file per scope. Its scope is exactly the raw V2
+release-trust configuration digest, signed channel and exact catalog-feed URL;
+the catalog-trust-resource digest is intentionally not part of that scope, so
+policy rotation does not silently forget accepted provenance. A fixed
+SHA-256-derived file name prevents a URL or scope string from becoming a path.
+The store uses an independent non-blocking lock, secure `openat`/`mkdirat`
+reads, `0700` directories, `0600` records, durable synchronization of a new
+state root and each record directory with its parent, atomic fsync/rename
+persistence, and strict JSON. It accepts no bare anchor: its only write input binds the
+scope and catalog sequence/digest to `COMPLETE`, a bounded operation ID,
+composition identity, manifest digest and opaque receipt reference. Lower
+sequence and different bytes under the same sequence fail closed; an identical
+catalog commitment is idempotent and does not overwrite its original terminal
+binding.
+
+C-2b is still unassembled. It neither verifies a product receipt nor invokes
+a product operation, and no startup, runtime builder, catalog transport,
+session preparer, wizard or packager calls it. A future product-owned
+operation coordinator must create the terminal commitment only after it has
+verified its own terminal receipts, readiness and cleanup.
 
 ## Sealed installer release provenance V1
 
@@ -413,12 +435,12 @@ Discovery produces a candidate only. Product APIs verify product, instance, fing
 
 ## Current source and remaining work
 
-Forge Platform now contains strict schemas and a tested policy kernel for signed-release selection, canonical GitHub Release identity, structured public signature envelopes and key-ID/threshold gating, sealed V2 trust-configuration and V1 provenance identities, fresh/trusted-clock feed gates, catalog signature/sequence/digest anti-replay, context-bound composition selection, installer capability checks, preflight, Git/Python planning, provider gating, system-service declaration checks, and read-only composition diffs. The native core now also has a tested C-1 outer-catalog admission kernel, shared strict canonical-JSON/Ed25519 verification primitives, canonical HTTPS validation, bounded JSON parsing, a source-level sealed catalog-trust resource loader, and a credential-free exact-locator transport seam. The latter two remain deliberately unassembled: no source resource or production key exists, an absent resource fails closed, a catalog-host HTTP `Date` cannot establish trusted time, and no runtime/session/UI/product/packager path consumes either seam. No durable catalog-anchor store, component-index/manifest selector, or session-plan producer exists yet. It also contains a tested native SwiftUI wizard shell, a separate installer release-operation journal with an immutable `PREPARED` candidate precursor and durable sequence reservation, and a source-only release workflow framework. That framework verifies an exact merged `main` candidate, requires its exact version-preparation receipt, requires a reviewed release-identity policy, records required public sequence/provenance inputs, packages an **unsigned** `.app` candidate without manufacturing sealed resources, records the digest of the exact staged archive, and binds the later operation/descriptor handoff to the configured GitHub repository, tag, descriptor asset name, archive asset names, bundle identifier, Team identifier, CodeDirectory digest and typed notarization receipt. Its signing/notarization and public-GitHub-Release environments deliberately fail closed until a real protected Apple signer, notarization adapter, native trust/provenance loader, descriptor verifier and publisher are configured. The structural handoff verifier enforces the public envelope shape and reviewed identity binding, but intentionally reports that cryptographic signature verification was not performed; it is never a publication authorization.
+Forge Platform now contains strict schemas and a tested policy kernel for signed-release selection, canonical GitHub Release identity, structured public signature envelopes and key-ID/threshold gating, sealed V2 trust-configuration and V1 provenance identities, fresh/trusted-clock feed gates, catalog signature/sequence/digest anti-replay, context-bound composition selection, installer capability checks, preflight, Git/Python planning, provider gating, system-service declaration checks, and read-only composition diffs. The native core now also has a tested C-1 outer-catalog admission kernel, shared strict canonical-JSON/Ed25519 verification primitives, canonical HTTPS validation, bounded JSON parsing, a source-level sealed catalog-trust resource loader, a credential-free exact-locator transport seam, and a durable per-scope catalog-anchor store. These remain deliberately unassembled: no source resource or production key exists, an absent resource fails closed, a catalog-host HTTP `Date` cannot establish trusted time, and no runtime/session/UI/product/packager path consumes the trust/transport/store seams. The store has no product receipt validator or production caller, so it cannot by itself create an accepted catalog. No component-index/manifest selector or session-plan producer exists yet. It also contains a tested native SwiftUI wizard shell, a separate installer release-operation journal with an immutable `PREPARED` candidate precursor and durable sequence reservation, and a source-only release workflow framework. That framework verifies an exact merged `main` candidate, requires its exact version-preparation receipt, requires a reviewed release-identity policy, records required public sequence/provenance inputs, packages an **unsigned** `.app` candidate without manufacturing sealed resources, records the digest of the exact staged archive, and binds the later operation/descriptor handoff to the configured GitHub repository, tag, descriptor asset name, archive asset names, bundle identifier, Team identifier, CodeDirectory digest and typed notarization receipt. Its signing/notarization and public-GitHub-Release environments deliberately fail closed until a real protected Apple signer, notarization adapter, native trust/provenance loader, descriptor verifier and publisher are configured. The structural handoff verifier enforces the public envelope shape and reviewed identity binding, but intentionally reports that cryptographic signature verification was not performed; it is never a publication authorization.
 
 The structural verifier also reads V2 trust and V1 provenance resources directly
 from every supplied archive and binds their semantic identities to the durable
 reviewed release identity; it still does not authorize signing or publication.
 
-Next owning increments are: package a separately reviewed code-signed catalog-trust policy and compose the existing seams only with independent trusted-clock evidence and scoped durable anchor persistence, then add component-index/manifest selection only after an explicit preset/component-set and product-owned installed-composition readback exist; connect the protected signer/notarization/publisher to the installer release framework and qualify an actual GitHub Release; native trusted bootstrap/handoff; EP then Forge/Workspace execute/resume/uninstall adapters; managed-tool/provider coordinators that retain no secrets; and installed-artifact clean-Mac, add/update/remove, migration/rollback, reboot-recovery, pairing, readiness, and summary qualification.
+Next owning increments are: package a separately reviewed code-signed catalog-trust policy and compose the existing trust/transport/storage seams only with independent trusted-clock evidence and a product-owned terminal-operation receipt validator, then add component-index/manifest selection only after an explicit preset/component-set and product-owned installed-composition readback exist; connect the protected signer/notarization/publisher to the installer release framework and qualify an actual GitHub Release; native trusted bootstrap/handoff; EP then Forge/Workspace execute/resume/uninstall adapters; managed-tool/provider coordinators that retain no secrets; and installed-artifact clean-Mac, add/update/remove, migration/rollback, reboot-recovery, pairing, readiness, and summary qualification.
 
 Until those increments have their own evidence, this is `SOURCE_FIXED` for the installer foundation only, not `INSTALLATION_VERIFIED`, `SINGLE_OPERATIONAL_INSTALLATION_VERIFIED`, or release/publication authority.

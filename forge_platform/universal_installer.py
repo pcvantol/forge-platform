@@ -1423,18 +1423,78 @@ class CompositionCatalog:
 
 
 @dataclass(frozen=True)
-class AcceptedCatalogIdentity:
-    """Persisted anti-replay anchor for the separately signed catalog feed."""
+class CatalogAcceptanceScope:
+    """The exact verified-installer context for one catalog anti-replay anchor.
 
+    A catalog signature policy may rotate without discarding its accepted
+    provenance.  The anchor is therefore scoped by the current installer's
+    raw release-trust configuration, signed channel, and exact feed locator;
+    it is never keyed only by a display version or catalog channel.
+    """
+
+    installer_release_trust_configuration_sha256: str
     channel: str
+    catalog_feed_url: str
+
+    def __post_init__(self) -> None:
+        _raw_sha256(
+            self.installer_release_trust_configuration_sha256,
+            "accepted catalog installer release trust configuration digest",
+        )
+        if self.channel not in INSTALLER_CHANNELS:
+            raise ValueError("accepted catalog channel is unsupported")
+        _https_url(self.catalog_feed_url, "accepted catalog feed URL")
+
+    @classmethod
+    def from_verified_installer_context(
+        cls,
+        installer_context: VerifiedInstallerContext,
+    ) -> "CatalogAcceptanceScope":
+        if not isinstance(installer_context, VerifiedInstallerContext):
+            raise ValueError("verified installer context is required for accepted catalog scope")
+        return cls(
+            installer_context.release.release_trust_configuration_sha256,
+            installer_context.release.channel,
+            installer_context.release.composition_catalog_feed.url,
+        )
+
+
+@dataclass(frozen=True)
+class AcceptedCatalogIdentity:
+    """Candidate durable anti-replay anchor for one scoped signed catalog feed.
+
+    A future operation coordinator persists this only after its resulting
+    product operation reaches a verified terminal state. This policy model
+    deliberately provides no filesystem persistence or runtime wiring.
+    """
+
+    scope: CatalogAcceptanceScope
     sequence: int
     catalog_digest: str
 
     def __post_init__(self) -> None:
-        if self.channel not in INSTALLER_CHANNELS:
-            raise ValueError("accepted catalog channel is unsupported")
+        if not isinstance(self.scope, CatalogAcceptanceScope):
+            raise ValueError("accepted catalog scope is invalid")
         _sequence(self.sequence, "accepted catalog sequence")
         _digest(self.catalog_digest, "accepted catalog digest")
+
+    @property
+    def installer_release_trust_configuration_sha256(self) -> str:
+        """Compatibility projection of the required raw trust scope."""
+
+        return self.scope.installer_release_trust_configuration_sha256
+
+    @property
+    def channel(self) -> str:
+        """Compatibility projection; an anchor can no longer omit its scope."""
+
+        return self.scope.channel
+
+    @property
+    def catalog_feed_url(self) -> str:
+        """Exact signed feed locator retained by this anti-replay anchor."""
+
+        return self.scope.catalog_feed_url
 
 
 @dataclass(frozen=True)
@@ -2071,7 +2131,12 @@ class VerifiedCompositionSelection:
             raise ValueError("verified catalog identity and entry are required")
         if not isinstance(manifest, CompositionManifest):
             raise ValueError("verified composition manifest is required")
-        if catalog.channel != installer_context.release.channel or catalog_identity.channel != catalog.channel:
+        expected_catalog_scope = CatalogAcceptanceScope.from_verified_installer_context(installer_context)
+        if (
+            catalog_identity.scope != expected_catalog_scope
+            or catalog.channel != installer_context.release.channel
+            or catalog_identity.channel != catalog.channel
+        ):
             raise UniversalInstallerError("catalog channel is not bound to the verified installer context")
         if catalog_identity.sequence != catalog.sequence or catalog_identity.catalog_digest != catalog.catalog_digest:
             raise UniversalInstallerError("catalog identity is not bound to the verified catalog bytes")
@@ -2106,6 +2171,7 @@ class VerifiedCompositionSelection:
             raise UniversalInstallerError("trusted clock is required before composition feed selection")
         if _https_url(catalog_source_url, "composition catalog source URL") != installer_context.release.composition_catalog_feed.url:
             raise UniversalInstallerError("composition catalog source does not match the verified installer release")
+        expected_catalog_scope = CatalogAcceptanceScope.from_verified_installer_context(installer_context)
         catalog = CompositionCatalog.from_signed_bytes(
             catalog_raw_bytes,
             catalog_verifier,
@@ -2119,6 +2185,10 @@ class VerifiedCompositionSelection:
         if accepted_catalog is not None:
             if not isinstance(accepted_catalog, AcceptedCatalogIdentity):
                 raise ValueError("accepted catalog identity is invalid")
+            if accepted_catalog.scope != expected_catalog_scope:
+                raise UniversalInstallerError(
+                    "composition catalog anchor scope does not match the current verified installer context"
+                )
             if accepted_catalog.channel != catalog.channel:
                 raise UniversalInstallerError("composition catalog channel regresses accepted local provenance")
             if catalog.sequence < accepted_catalog.sequence:
@@ -2134,7 +2204,7 @@ class VerifiedCompositionSelection:
         return cls(
             installer_context,
             catalog,
-            AcceptedCatalogIdentity(catalog.channel, catalog.sequence, catalog.catalog_digest),
+            AcceptedCatalogIdentity(expected_catalog_scope, catalog.sequence, catalog.catalog_digest),
             entry,
             manifest,
             _marker=_VERIFIED_COMPOSITION_SELECTION_MARKER,
@@ -2208,6 +2278,10 @@ class CompositionPlan:
             raise ValueError("composition plan requires a verified installer context")
         if not isinstance(self.catalog_identity, AcceptedCatalogIdentity):
             raise ValueError("composition plan requires a verified catalog identity")
+        if self.catalog_identity.scope != CatalogAcceptanceScope.from_verified_installer_context(
+            self.installer_context
+        ):
+            raise ValueError("composition plan catalog identity scope does not match verified installer context")
         if self.installed_composition is not None and not isinstance(self.installed_composition, InstalledCompositionIdentity):
             raise ValueError("composition plan installed composition identity is invalid")
         if any(not isinstance(reason, str) or not reason for reason in self.composition_route_failures):
@@ -2290,7 +2364,11 @@ class CompositionPlan:
                 "manifest_digest": self.installed_composition.manifest_digest,
             },
             "catalog": {
+                "installer_release_trust_configuration_sha256": (
+                    self.catalog_identity.installer_release_trust_configuration_sha256
+                ),
                 "channel": self.catalog_identity.channel,
+                "feed_url": self.catalog_identity.catalog_feed_url,
                 "sequence": self.catalog_identity.sequence,
                 "digest": self.catalog_identity.catalog_digest,
             },
