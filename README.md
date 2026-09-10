@@ -19,6 +19,11 @@ catalog-approved Python-runtime planning, provider gating, and read-only diffs.
 The Python contract binds one immutable version/artifact/provenance/ABI identity,
 requires component build-and-test evidence against it, freezes rollback state,
 and assigns one isolated venv identity per product without consulting `PATH`.
+A durable source-level executor now captures and re-hashes the four exact
+runtime/source/provenance inputs, validates thin-arm64/macOS-26 archive evidence,
+coordinates immutable runtime slots and separate product venvs through an
+injected privileged adapter, resumes after interruption, and restores only the
+frozen prior runtime on rollback.
 A separate installer-release
 framework persists immutable `PREPARED` candidate bytes before qualification,
 can produce a source-only unsigned macOS `.app` candidate, and binds the exact
@@ -26,8 +31,9 @@ staged archive digest to future signed evidence and a durable installer
 operation. Its release identity policy intentionally starts
 `UNCONFIGURED`, so protected signing/notarization/publication gates fail closed
 until the actual GitHub namespace, bundle/team identity and public-key policy
-are reviewed. No production arm64 Python artifact is approved yet; runtime
-installation and venv creation remain fail-closed executor work. A signed and
+are reviewed. No production arm64 Python artifact, native transport/archive
+inspector, privileged runtime adapter, or released-installer wiring is approved
+yet; the executor therefore remains fail-closed in production. A signed and
 notarized installer release, privileged bootstrapper, and concrete product
 adapters remain unimplemented; this
 repository does not publish producer product artifacts or change product
@@ -46,6 +52,7 @@ Forge Platform consumes qualified, versioned artifacts published by product repo
 - [Cross-repository ownership matrix](docs/architecture/OWNERSHIP_MATRIX.md)
 - [Component-operation delegation contract](docs/architecture/COMPONENT_OPERATION_DELEGATION_CONTRACT.md)
 - [Universal macOS Installer contract](docs/architecture/UNIVERSAL_MACOS_INSTALLER_CONTRACT.md)
+- [Managed Python runtime execution contract](docs/architecture/MANAGED_PYTHON_RUNTIME_EXECUTION_CONTRACT.md)
 - [Roadmap](docs/roadmap/README.md)
 - [MVP 1.0 roadmap](docs/roadmap/MVP_1_0.md)
 - [Development and bootstrap](docs/development/README.md)

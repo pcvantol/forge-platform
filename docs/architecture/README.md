@@ -34,7 +34,13 @@ The canonical target is defined in [Evidence-gated cross-repository component co
 
 Forge Platform has a separately versioned native macOS Universal Installer and immutable qualified composition manifests; it does not build a combinatorial installer package for every Forge/Workspace/EP version combination. At every launch, an older installer must verify and hand off to a newer signed/notarized installer release before platform mutation. The signed composition catalog then selects only an installer-capable exact component set. See the [Universal macOS Installer contract](UNIVERSAL_MACOS_INSTALLER_CONTRACT.md).
 
-The source foundation and native SwiftUI shell are present, but the first published installer, privileged bootstrapper, and product-owned execution adapters remain separately qualified work. No current source merge proves a live Mac installation.
+The source foundation, native SwiftUI shell and platform-neutral managed-Python
+executor kernel are present, but the first published installer, native Python
+transport/archive inspector, privileged bootstrapper, and product-owned
+execution adapters remain separately qualified work. The executor's immutable
+slot, isolated-venv, interruption-resume and rollback boundary is defined in
+the [managed Python runtime execution contract](MANAGED_PYTHON_RUNTIME_EXECUTION_CONTRACT.md).
+No current source merge proves a live Mac installation.
 
 ## Lifecycle boundary
 
@@ -49,4 +55,4 @@ dispatches an exact qualified artifact/role only to the EP-owned
 resolver/provisioner and consumes its correlated readbacks; EP retains service,
 migration, data and cleanup authority.
 
-Read the [system architecture](FORGE_PLATFORM_ARCHITECTURE.md), [universal macOS installer contract](UNIVERSAL_MACOS_INSTALLER_CONTRACT.md), [evidence-gated composition contract](EVIDENCE_GATED_COMPONENT_COMPOSITION.md), [governed knowledge learning loop](KNOWLEDGE_LEARNING_LOOP.md), [ADRs](adr/README.md), [cross-repository ownership matrix](OWNERSHIP_MATRIX.md), [component-manifest contract](COMPONENT_MANIFEST_CONTRACT.md), [compatibility model](COMPATIBILITY.md), [roles and presets](ROLES_AND_PRESETS.md), and [security boundary](SECURITY.md).
+Read the [system architecture](FORGE_PLATFORM_ARCHITECTURE.md), [universal macOS installer contract](UNIVERSAL_MACOS_INSTALLER_CONTRACT.md), [managed Python runtime execution contract](MANAGED_PYTHON_RUNTIME_EXECUTION_CONTRACT.md), [evidence-gated composition contract](EVIDENCE_GATED_COMPONENT_COMPOSITION.md), [governed knowledge learning loop](KNOWLEDGE_LEARNING_LOOP.md), [ADRs](adr/README.md), [cross-repository ownership matrix](OWNERSHIP_MATRIX.md), [component-manifest contract](COMPONENT_MANIFEST_CONTRACT.md), [compatibility model](COMPATIBILITY.md), [roles and presets](ROLES_AND_PRESETS.md), and [security boundary](SECURITY.md).
