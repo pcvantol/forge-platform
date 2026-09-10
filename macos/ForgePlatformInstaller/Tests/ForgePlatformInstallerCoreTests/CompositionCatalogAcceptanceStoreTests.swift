@@ -113,6 +113,20 @@ final class CompositionCatalogAcceptanceStoreTests: XCTestCase {
         XCTAssertThrowsError(try CompositionCatalogTerminalCommitment(
             acceptance: acceptance,
             operationID: "operation:catalog-install-001",
+            compositionID: "forge\u{0085}ep-workspace-001",
+            manifestSHA256: taggedDigest("c"),
+            receiptReference: "receipt:catalog-complete-001"
+        ))
+        XCTAssertNoThrow(try CompositionCatalogTerminalCommitment(
+            acceptance: acceptance,
+            operationID: "operation:catalog-install-001",
+            compositionID: "forge\u{FEFF}ep-workspace-001",
+            manifestSHA256: taggedDigest("c"),
+            receiptReference: "receipt:catalog-complete-001"
+        ))
+        XCTAssertThrowsError(try CompositionCatalogTerminalCommitment(
+            acceptance: acceptance,
+            operationID: "operation:catalog-install-001",
             compositionID: "forge-ep-workspace-001",
             manifestSHA256: String(repeating: "c", count: 64),
             receiptReference: "receipt:catalog-complete-001"

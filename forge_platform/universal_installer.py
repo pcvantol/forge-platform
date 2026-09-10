@@ -36,6 +36,7 @@ from .component_operations import (
     ProductUpdateAssessment,
     QualifiedArtifact,
 )
+from .composition_identity import require_composition_identity
 
 
 INSTALLER_RELEASE_SCHEMA = "forge-platform.installer-release/v1"
@@ -92,7 +93,6 @@ _SAFE_TARGET_ID = re.compile(r"^[a-z0-9][a-z0-9._-]{0,127}$")
 # Unicode non-whitespace identifiers possible, but prohibit controls and all
 # whitespace so its exact identity remains unambiguous across the schema,
 # Python qualifier and native macOS verifier.
-_COMPOSITION_CATALOG_ID = re.compile(r"[^\s\x00-\x1f\x7f]{1,256}")
 _CANONICAL_HTTPS_AUTHORITY = re.compile(r"^[A-Za-z0-9._:\[\]-]+$")
 _CANONICAL_HTTPS_PATH_OR_QUERY = re.compile(r"^[A-Za-z0-9._~!$&'()*+,;=:@%/?-]*$")
 _PERCENT_ESCAPE = re.compile(r"%[0-9A-Fa-f]{2}")
@@ -109,10 +109,7 @@ def _required(value: object, label: str) -> str:
 
 
 def _composition_catalog_id(value: object, label: str) -> str:
-    value = _required(value, label)
-    if _COMPOSITION_CATALOG_ID.fullmatch(value) is None:
-        raise ValueError(f"{label} must be a bounded whitespace-free identity")
-    return value
+    return require_composition_identity(value, label)
 
 
 def _mapping(value: object, expected: frozenset[str], label: str) -> Mapping[str, object]:
@@ -1902,7 +1899,7 @@ class CompositionManifest:
     upgrade_from: tuple[str, ...]
 
     def __post_init__(self) -> None:
-        _required(self.composition_id, "composition_id")
+        _composition_catalog_id(self.composition_id, "composition_id")
         if self.channel not in INSTALLER_CHANNELS:
             raise ValueError("composition channel is unsupported")
         _digest(self.manifest_digest, "composition manifest_digest")
@@ -1931,7 +1928,11 @@ class CompositionManifest:
         ]
         if len(service_references) != len(set(service_references)):
             raise ValueError("composition system service references must be unique")
-        if len(set(self.upgrade_from)) != len(self.upgrade_from) or any(not isinstance(item, str) or not item for item in self.upgrade_from):
+        if not isinstance(self.upgrade_from, tuple):
+            raise ValueError("composition upgrade_from is invalid")
+        for identity in self.upgrade_from:
+            _composition_catalog_id(identity, "composition upgrade_from")
+        if len(set(self.upgrade_from)) != len(self.upgrade_from):
             raise ValueError("composition upgrade_from is invalid")
 
     @classmethod
@@ -1980,7 +1981,7 @@ class CompositionManifest:
         if not isinstance(architectures, list):
             raise ValueError("host supported_architectures must be a list")
         return cls(
-            composition_id=_required(payload["composition_id"], "composition_id"),
+            composition_id=_composition_catalog_id(payload["composition_id"], "composition_id"),
             channel=_required(payload["channel"], "composition channel"),
             manifest_digest=_digest(manifest_digest, "composition manifest_digest"),
             installer_requirement=InstallerRequirement(
@@ -2000,7 +2001,10 @@ class CompositionManifest:
             managed_tools=_parse_managed_tools(payload["managed_tools"]),
             providers=_parse_providers(payload["providers"]),
             components=_parse_components(payload["components"]),
-            upgrade_from=_parse_string_list(payload["upgrade_from"], "upgrade_from"),
+            upgrade_from=tuple(
+                _composition_catalog_id(identity, "composition upgrade_from")
+                for identity in _parse_string_list(payload["upgrade_from"], "upgrade_from")
+            ),
         )
 
 
@@ -2090,7 +2094,7 @@ class InstalledCompositionIdentity:
     manifest_digest: str
 
     def __post_init__(self) -> None:
-        _required(self.composition_id, "installed composition_id")
+        _composition_catalog_id(self.composition_id, "installed composition_id")
         _digest(self.manifest_digest, "installed composition manifest_digest")
 
 
@@ -2169,6 +2173,7 @@ class VerifiedCompositionSelection:
             raise ValueError("verified installer context is required")
         if not trusted_clock:
             raise UniversalInstallerError("trusted clock is required before composition feed selection")
+        composition_id = _composition_catalog_id(composition_id, "requested composition_id")
         if _https_url(catalog_source_url, "composition catalog source URL") != installer_context.release.composition_catalog_feed.url:
             raise UniversalInstallerError("composition catalog source does not match the verified installer release")
         expected_catalog_scope = CatalogAcceptanceScope.from_verified_installer_context(installer_context)
@@ -2272,7 +2277,7 @@ class CompositionPlan:
     component_diffs: tuple[ComponentDiff, ...]
 
     def __post_init__(self) -> None:
-        _required(self.composition_id, "composition plan composition_id")
+        _composition_catalog_id(self.composition_id, "composition plan composition_id")
         _digest(self.manifest_digest, "composition plan manifest_digest")
         if not isinstance(self.installer_context, VerifiedInstallerContext):
             raise ValueError("composition plan requires a verified installer context")
@@ -2521,7 +2526,7 @@ class InstallerOperationRecord:
         SemanticVersion.parse(self.installer_version, "installer journal installer_version")
         _required(self.installer_source_revision, "installer journal installer_source_revision")
         _digest(self.installer_bundle_digest, "installer journal installer_bundle_digest")
-        _required(self.composition_id, "installer journal composition_id")
+        _composition_catalog_id(self.composition_id, "installer journal composition_id")
         _digest(self.composition_manifest_digest, "installer journal composition_manifest_digest")
         if self.state not in INSTALLER_OPERATION_STATES:
             raise ValueError("installer operation state is unsupported")
@@ -2731,7 +2736,7 @@ class StandaloneInstallerJournal:
             _required(payload["installer_version"], "installer journal installer_version"),
             _required(payload["installer_source_revision"], "installer journal installer_source_revision"),
             _required(payload["installer_bundle_digest"], "installer journal installer_bundle_digest"),
-            _required(payload["composition_id"], "installer journal composition_id"),
+            _composition_catalog_id(payload["composition_id"], "installer journal composition_id"),
             _required(payload["composition_manifest_digest"], "installer journal composition_manifest_digest"),
             _required(payload["state"], "installer operation state"),
             tuple(events),

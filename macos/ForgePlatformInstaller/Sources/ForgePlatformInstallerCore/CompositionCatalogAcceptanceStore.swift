@@ -44,7 +44,7 @@ struct CompositionCatalogTerminalCommitment: Equatable, Sendable {
         receiptReference: String
     ) throws {
         guard CompositionCatalogAcceptanceRecordValidation.isOperationID(operationID),
-              CompositionCatalogAcceptanceRecordValidation.isCompositionID(compositionID),
+              CompositionCatalogValidation.isCompositionIdentity(compositionID),
               CompositionCatalogAcceptanceRecordValidation.isTaggedSHA256(manifestSHA256),
               CompositionCatalogAcceptanceRecordValidation.isReceiptReference(receiptReference) else {
             throw CompositionCatalogAcceptanceStorageFailure.unavailable
@@ -672,17 +672,6 @@ private enum CompositionCatalogAcceptanceRecordValidation {
 
     static func isReceiptReference(_ value: String) -> Bool {
         isBoundedReference(value, prefix: "receipt:")
-    }
-
-    static func isCompositionID(_ value: String) -> Bool {
-        guard !value.isEmpty, value.unicodeScalars.count <= 256 else {
-            return false
-        }
-        return value.unicodeScalars.allSatisfy { scalar in
-            scalar.value >= 0x20
-                && scalar.value != 0x7F
-                && !scalar.properties.isWhitespace
-        }
     }
 
     static func isTaggedSHA256(_ value: String) -> Bool {
